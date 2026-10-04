@@ -282,22 +282,27 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
   // several picks allowed). One Submit carries the whole picture to the coach
   // instead of dripping one answer per message.
   //   picked: { [questionIndex]: string[] }  — array so multi can hold several
+  //   drafts: { [questionIndex]: string }    — per-question free-text alternative
   const [picked, setPicked] = useState({});
-  const [clarificationDraft, setClarificationDraft] = useState("");
+  const [drafts, setDrafts] = useState({});
   const [clarificationsCollapsed, setClarificationsCollapsed] = useState(false);
   const clarificationKey = pendingClarifications
     ? pendingClarifications.messageId || `q${pendingClarifications.questions?.length || 0}`
     : "";
   useEffect(() => {
     setPicked({});
-    setClarificationDraft("");
+    setDrafts({});
     setClarificationsCollapsed(false);
   }, [clarificationKey]);
 
   const isPicked = (i, option) => (picked[i] || []).includes(option);
 
+  // Picking an option answers by choice; typing answers by hand. They are
+  // mutually exclusive per question — the last interaction wins, so the
+  // submitted line is never ambiguous ("01: DSA solid, <also random text>").
   const togglePick = (i, option, multi) =>
     setPicked((prev) => {
+      setDrafts((d) => (d[i] ? { ...d, [i]: "" } : d));
       const current = prev[i] || [];
       const next = multi
         ? current.includes(option)
@@ -312,24 +317,34 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
       return out;
     });
 
+  const setDraft = (i, value) => {
+    setDrafts((d) => (d[i] === value ? d : { ...d, [i]: value }));
+    if (value.trim()) setPicked((p) => (p[i] ? { ...p, [i]: [] } : p));
+  };
+
+  const answerFor = (i) => {
+    const typed = (drafts[i] || "").trim();
+    if (typed) return typed;
+    const chosen = picked[i] || [];
+    return chosen.length > 0 ? chosen.join(", ") : "";
+  };
+
   const questionCount = pendingClarifications?.questions?.length || 0;
-  const answeredCount = Object.keys(picked).length;
-  const answerCount = answeredCount + (clarificationDraft.trim() ? 1 : 0);
+  const answeredCount = Array.from({ length: questionCount }).filter((_, i) =>
+    Boolean(answerFor(i)),
+  ).length;
+  const answerCount = answeredCount;
 
   const submitClarifications = () => {
     const questions = pendingClarifications?.questions || [];
     const lines = [];
     questions.forEach((_, i) => {
-      const chosen = picked[i];
-      if (chosen && chosen.length > 0) {
-        lines.push(`${String(i + 1).padStart(2, "0")}: ${chosen.join(", ")}`);
-      }
+      const answer = answerFor(i);
+      if (answer) lines.push(`${String(i + 1).padStart(2, "0")}: ${answer}`);
     });
-    const typed = clarificationDraft.trim();
-    if (typed) lines.push(typed);
     if (!lines.length) return;
     setPicked({});
-    setClarificationDraft("");
+    setDrafts({});
     onAnswerClarification(lines.join("\n"));
   };
 
@@ -840,19 +855,23 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
                               })}
                             </div>
                           )}
+                          <div className="mt-2">
+                            <input
+                              type="text"
+                              data-testid={`clarification-free-text-${i}`}
+                              value={drafts[i] || ""}
+                              onChange={(e) => setDraft(i, e.target.value)}
+                              placeholder={opts.length > 0 ? "Add your own answer…" : "Type your answer…"}
+                              aria-label={`Your own answer for question ${i + 1}`}
+                              className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] px-2.5 py-2 text-xs text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-[var(--border-accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+                            />
+                            <p className="mt-1 text-[10px] leading-relaxed text-[var(--text-muted)]">
+                              Prefer to answer directly? Typing here replaces any option you picked.
+                            </p>
+                          </div>
                         </div>
                       );
                     })}
-
-                    <input
-                      type="text"
-                      data-testid="clarification-free-text"
-                      value={clarificationDraft}
-                      onChange={(e) => setClarificationDraft(e.target.value)}
-                      placeholder="Or type your own answer…"
-                      aria-label="Type your own answer"
-                      className="w-full rounded-[12px] border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-[var(--border-accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
-                    />
                   </div>
                 )}
                 {(answerCount > 0 || !clarificationsCollapsed) && (
