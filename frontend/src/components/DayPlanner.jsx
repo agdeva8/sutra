@@ -42,7 +42,7 @@ const blockerCoversDay = (b, dayStart) => {
  *   onChange  — called after any mutation so the parent re-fetches state
  *   onClose   — close the panel
  */
-export default function DayPlanner({ day, state, onChange = () => {}, onClose }) {
+export default function DayPlanner({ day, state, onChange = () => {}, onClose, initialAddType = null, onInitialAddTypeHandled }) {
   const [blocks, setBlocks] = useState([]);
   const [saving, setSaving] = useState(false);
 
@@ -74,6 +74,32 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose })
       .catch(() => { /* offline — keep the last list */ });
   }, []);
   useEffect(() => { loadBlocks(); }, [loadBlocks]);
+
+  useEffect(() => {
+    if (!day || !initialAddType) return;
+    const dateStr = fmtDate(day);
+    if (initialAddType === "block") {
+      setEditBlock(null);
+      setBlockLabel("");
+      setBlockKind("focus");
+      setBlockStart("09:00");
+      setBlockEnd("10:00");
+      setBlockNote("");
+      setBlockGoalId("");
+      setBlockDialogOpen(true);
+    } else if (initialAddType === "blocker") {
+      setEditBlocker(null);
+      setBlockerTitle("");
+      setBlockerStart(dateStr);
+      setBlockerEnd(dateStr);
+      setBlockerNote("");
+      setBlockerDialogOpen(true);
+    } else if (initialAddType === "commitment") {
+      setCommitmentText("");
+      setCommitmentOpen(true);
+    }
+    onInitialAddTypeHandled?.();
+  }, [day, initialAddType, onInitialAddTypeHandled]);
 
   const addHour = (hhmm) => {
     const [h, m] = hhmm.split(":").map(Number);

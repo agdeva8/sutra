@@ -21,6 +21,7 @@ const state = {
       target_date: day(75),
       created_at: day(-30),
       next_action: "Book the physio session",
+      phase_objectives: { Base: "Complete four weeks of planned training", Build: "Finish a 10k race rehearsal" },
     },
     {
       id: "g2",
@@ -73,7 +74,7 @@ export default {
   title: "Components/Timeline",
   component: Timeline,
   tags: ["autodocs"],
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen", api: { timetable: { blocks: [] } } },
   args: {
     state,
     onPrefill: fn(),

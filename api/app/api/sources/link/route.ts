@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ detail: 'Not authenticated' }, { status: 401 })
   }
 
-  let body: { url?: string; goal_id?: string; title?: string }
+  let body: { url?: string; goal_id?: string; title?: string; temporary?: boolean }
   try {
     body = await req.json()
   } catch {
@@ -95,6 +95,10 @@ export async function POST(req: NextRequest) {
       url,
       textExcerpt,
       isDeleted: false,
+      expiresAt:
+        body.temporary === true && !resolvedGoalId
+          ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+          : null,
     })
     .returning()
 

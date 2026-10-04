@@ -1,10 +1,10 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Calendar, CheckCircle2, Circle, Loader2, MessageSquareWarning, MessageSquarePlus, RefreshCw, MoreHorizontal, ChevronDown, ChevronUp } from "lucide-react";
 import { api } from "../lib/api";
 import { localDateKey } from "../lib/utils";
 
 /**
- * TodayTimetable — interactive list of today's commitments and blockers.
+ * TodayTimetable — today's timed blocks, commitments, and blockers.
  *
  * Per-item controls:
  *   - Clickable circle checkbox → mark done (PATCH /api/commitments/:id)
@@ -31,14 +31,15 @@ export default function TodayTimetable({ state, onChange, onOpenChat, compact = 
   const [error, setError] = useState(null);
   const [saving, setSaving] = useState(null); // id of item being saved
 
-  const refresh = () => {
+  const refresh = useCallback(() => {
     setLoading(true);
     setError(null);
     Promise.all([
       api.blockers(),
       api.commitments(),
+      api.timetable(),
     ])
-      .then(([blockersRes, commitmentsRes]) => {
+      .then(([blockersRes, commitmentsRes, timetableRes]) => {
         const rawBlockers = Array.isArray(blockersRes)
           ? blockersRes
           : (blockersRes?.blockers || []);
@@ -47,7 +48,7 @@ export default function TodayTimetable({ state, onChange, onOpenChat, compact = 
           : (commitmentsRes?.commitments || []);
 
         const todayKey = localDateKey();
-        const todayBlocks = rawBlockers.filter(
+        const todayBlockers = rawBlockers.filter(
           (b) => b.start_date === todayKey || (b.start_date <= todayKey && b.end_date >= todayKey),
         );
         // Match TrackerCard's `todayCommits` predicate exactly, so the
@@ -61,16 +62,22 @@ export default function TodayTimetable({ state, onChange, onOpenChat, compact = 
         const todayCommits = rawCommitments.filter(
           (c) => c.due === todayKey || (c.due && c.due < todayKey && c.status === "open"),
         );
+        const todayBlocks = (timetableRes?.blocks || []).filter(
+          (block) => block.block_date === todayKey,
+        );
         const merged = [
-          ...todayBlocks.map((b) => ({ ...b, _kind: "blocker" })),
+          ...todayBlocks.map((block) => ({ ...block, text: block.label, _kind: "block" })),
+          ...todayBlockers.map((b) => ({ ...b, _kind: "blocker" })),
           ...todayCommits.map((c) => ({ ...c, _kind: "commitment" })),
         ];
-        // Sort: overdue first, then today, by created_at desc.
+        // Timed blocks first in clock order; then blockers and commitments.
         merged.sort((a, b) => {
+          const rank = { block: 0, blocker: 1, commitment: 2 };
+          if (rank[a._kind] !== rank[b._kind]) return rank[a._kind] - rank[b._kind];
+          if (a._kind === "block") return String(a.start_time).localeCompare(String(b.start_time));
           const aOver = a._kind === "commitment" && a.due < todayKey;
           const bOver = b._kind === "commitment" && b.due < todayKey;
-          if (aOver !== bOver) return aOver ? -1 : 1;
-          return 0;
+          return aOver === bOver ? 0 : aOver ? -1 : 1;
         });
         setItems(merged);
       })
@@ -79,9 +86,9 @@ export default function TodayTimetable({ state, onChange, onOpenChat, compact = 
         setError(err);
       })
       .finally(() => setLoading(false));
-  };
+  }, []);
 
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => { refresh(); }, [refresh, state]);
 
   const toggleDone = async (c) => {
     if (c._kind !== "commitment") return;
@@ -179,6 +186,9 @@ export default function TodayTimetable({ state, onChange, onOpenChat, compact = 
   if (!loading && items.length === 0) return null;
 
   const todayKey = localDateKey();
+  const scheduledBlocks = items
+    .filter((item) => item._kind === "block")
+    .sort((a, b) => String(a.start_time).localeCompare(String(b.start_time)));
 
   return (
     <section
@@ -196,47 +206,10 @@ export default function TodayTimetable({ state, onChange, onOpenChat, compact = 
           </span>
         </header>
       )}
-      {fullTimetable && !compact && (
-        // Iteration 5 (Issue 6) — when the user has finalized, show the
-        // wake/sleep day-shape above the tasks. Times are illustrative
-        // until timetableBlocks ships a full UI; rendered as a thin
-        // day-band so the tab feels like a "full timetable" not just a
-        // task list.
-        //
-        // Visual: ROUTINE is the warmest/loudest stripe (morning ritual),
-        // AVAILABLE is the long medium-tone middle (where work + tasks
-        // live), REST is a quiet border-accent tail. The three swatches
-        // in the legend match the bar segments one-to-one so the eye can
-        // scan "what part of my day is what".
-        <div
-          data-testid="today-dayband"
-          className="px-4 py-3 border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--bg-primary)_50%,transparent)]"
-        >
-          <div className="flex items-center justify-between tabular-nums text-xs text-[var(--text-muted)] mb-2">
-            <span>Wake at 07:00</span>
-            <span>Sleep at 23:00</span>
-          </div>
-          <div className="relative h-2 rounded-full bg-[var(--bg-tertiary)] overflow-hidden" role="img" aria-label="Day shape: routine, available, rest">
-            <div className="absolute left-0 top-0 h-full w-[8%] bg-[var(--accent)]" aria-hidden="true" />
-            <div className="absolute left-[8%] top-0 h-full w-[78%] bg-[color-mix(in_srgb,var(--accent)_25%,transparent)]" aria-hidden="true" />
-            <div className="absolute left-[86%] top-0 h-full w-[14%] bg-[color-mix(in_srgb,var(--border-accent)_60%,transparent)]" aria-hidden="true" />
-          </div>
-          <div className="mt-2 flex items-center gap-3 text-xs">
-            <span className="inline-flex items-center gap-1 text-[var(--text-secondary)]">
-              <span className="inline-block h-1.5 w-3 bg-[var(--accent)] rounded-sm" /> Routine
-            </span>
-            <span className="inline-flex items-center gap-1 text-[var(--text-secondary)]">
-              <span className="inline-block h-1.5 w-3 bg-[color-mix(in_srgb,var(--accent)_25%,transparent)] rounded-sm" /> Available
-            </span>
-            <span className="inline-flex items-center gap-1 text-[var(--text-secondary)]">
-              <span className="inline-block h-1.5 w-3 bg-[color-mix(in_srgb,var(--border-accent)_60%,transparent)] rounded-sm" /> Rest
-            </span>
-          </div>
-        </div>
-      )}
       <ul className="divide-y divide-[var(--border)]" role="list">
         {items.map((item) => {
           const isCommitment = item._kind === "commitment";
+          const isTimedBlock = item._kind === "block";
           const done = isCommitment && item.status === "done";
           const overdue = isCommitment && item.due && item.due < todayKey;
           return (
@@ -268,13 +241,16 @@ export default function TodayTimetable({ state, onChange, onOpenChat, compact = 
                 </button>
                 <div className="flex-1 min-w-0">
                   <p className={`text-sm leading-snug ${done ? "line-through text-[var(--text-muted)]" : "text-[var(--text-primary)]"}`}>
-                    {item.text || item.title}
+                    {item.text || item.label || item.title}
                   </p>
                   <div className="mt-1 flex items-center gap-2 flex-wrap text-xs text-[var(--text-muted)]">
                     {item.goal_title && (
                       <span className="px-1.5 py-0.5 border border-[var(--border)] rounded text-[var(--text-secondary)]">
                         {item.goal_title}
                       </span>
+                    )}
+                    {isTimedBlock && item.start_time && item.end_time && (
+                      <span className="font-mono tabular-nums text-[var(--accent)]">{item.start_time}–{item.end_time}</span>
                     )}
                     {(item.due || item.start_date) && (
                       <span>{item.due || item.start_date}</span>
@@ -291,7 +267,7 @@ export default function TodayTimetable({ state, onChange, onOpenChat, compact = 
                   on mobile (sm+) shows both options inline; phones tap once
                   to reveal the two pre-fill chat intents. Same end-state
                   (opens the chat with the right prefill) just less chrome. */}
-              {!done && (
+              {!done && !isTimedBlock && (
                 <NeedHelpActions
                   item={item}
                   onCant={cantDoThis}

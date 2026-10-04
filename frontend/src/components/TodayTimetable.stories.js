@@ -10,8 +10,7 @@ const day = (offset) => {
   return localDateKey(d);
 };
 
-// GET /api/blockers and GET /api/commitments may each return a bare array
-// or an envelope; TodayTimetable accepts both.
+// Today's view combines direct blockers/commitments with timed blocks.
 const blockers = [
   {
     id: "b1",
@@ -27,6 +26,11 @@ const commitments = [
   { id: "c2", text: "Easy 5k before work", due: day(0), status: "open", goal_title: "Run a marathon", note: "" },
   { id: "c3", text: "Send the landing page copy to review", due: day(0), status: "done", goal_title: "Ship the v2 landing page", note: "Sent 09:40" },
 ];
+const timetable = {
+  blocks: [
+    { id: "t1", block_date: day(0), start_time: "09:00", end_time: "10:30", label: "System design practice", kind: "focus", goal_title: "Switch jobs" },
+  ],
+};
 
 export default {
   title: "Components/TodayTimetable",
@@ -34,14 +38,14 @@ export default {
   tags: ["autodocs"],
   parameters: {
     layout: "fullscreen",
-    api: { blockers, commitments },
+    api: { blockers, commitments, timetable },
   },
   args: {
     state: {},
     onChange: fn(),
     onOpenChat: fn(),
     compact: false,
-    fullTimetable: false,
+    fullTimetable: true,
   },
 };
 

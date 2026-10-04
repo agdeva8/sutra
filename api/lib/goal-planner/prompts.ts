@@ -10,7 +10,7 @@
  * greetings, no filler.
  */
 
-import type { Intent, Plan, RenegotiationOption } from './schemas'
+import type { Intent, PlanningMode, Plan, RenegotiationOption } from './schemas'
 
 const VOICE =
   'Voice: precise and curious, never warm or validating. No greetings, no ' +
@@ -18,21 +18,22 @@ const VOICE =
 
 export function intakePrompt(args: {
   intent: Intent
+  mode: PlanningMode
   message: string
   context: string
   today: string
 }): string {
   return `${VOICE}
 
-You are stage 1 (Intake) of a planning pipeline. You ONLY classify. You do not
-plan, and you do not decide whether something is possible — a later stage does
-that arithmetic. Today is ${args.today}. Conversation intent: ${args.intent}.
+You are stage 1 (Intake) of a planning pipeline. You ONLY classify and decide
+whether material details are missing. You do not plan or do capacity arithmetic.
+Today is ${args.today}. Conversation intent: ${args.intent}. Mode: ${args.mode}.
 
 Return a JSON object with:
 - "shape": one of "one_new_goal" | "multiple_goals" | "over_committed" |
   "returning_after_gap" | "meta_question" | "routine_return".
-- "needs_clarification": boolean (see the hard rule below).
-- "clarifying_questions": array of 0-2 items. Each item is EITHER a plain
+- "needs_clarification": boolean (see the mode rules below).
+- "clarifying_questions": array of 0-6 items. Each item is EITHER a plain
   string question OR an object {"question": "...", "options": ["...","..."],
   "multi": false}. Use the object form whenever the answer is a CHOICE — give
   2-5 short options so the user can tap instead of typing; set "multi": true
@@ -40,31 +41,50 @@ Return a JSON object with:
 - "referenced_goal_titles": existing goal titles the message names.
 - "framing_line": one short line, or "".
 
-HARD RULE for needs_clarification — default to FALSE. Set it true only when a
-required fact is ACTUALLY ABSENT from the user's message. Before you decide,
-extract these three things from the message and treat each as present if it
-appears in any form:
-  1. WHAT — the goal or activity. "run a half marathon", "learn Japanese".
-  2. WHEN — any timeframe. "in 5 months", "by March", "3 months".
-  3. HOW MUCH — any weekly effort. "6 hours a week", "12h/week".
-If all three are present, needs_clarification MUST be false. If two of the
-three are present, still false — fill the gap with a reasonable assumption
-and let the plan state it. Ask ONLY when WHAT is genuinely missing or truly
-ambiguous (e.g. "help me get better at stuff").
+Read the CURRENT MESSAGE together with RECENT CONVERSATION in LIVE STATE. The
+current message may answer a prior question; retain the original request and
+never ask for information already supplied.
+
+Mode rules:
+- AUTO: needs_clarification MUST be false. Let the plan state reasonable
+  assumptions and proceed.
+- ASK: ask when a missing fact would materially change this user's plan. Ask
+  only those high-impact questions; assume low-impact details. Continue across
+  turns until the important gaps are resolved.
+- GRILL: keep asking until you can tailor a concrete plan to the user's actual
+  situation. Ask every material unanswered detail, not generic intake
+  questions. There is no total-round limit; ask up to 6 useful questions in a
+  turn, then reassess the full conversation after the answers.
+
+For a job-change goal, a timeframe alone does not reveal the user's interview
+strengths, weak areas, application status, weekly availability, or constraints.
+Do not assume those. Ask about the missing details that change the plan (for
+example DSA/system design/behavioral readiness, applications/interviews, and
+hours available each week).
+
+If an attached source has no readable excerpt, its content is unknown. Never
+invent what a link or image says. If context says image text extraction is still
+running, say it is pending. For a source marked unreadable, ASK/GRILL should ask
+the user to paste relevant material when it would change the plan; AUTO should
+state that the source could not be read and proceed only from explicit facts.
 
 Rules:
 - "over_committed" is a SHAPE, not a reason to ask. If the user names a
   concrete new goal while their plate is already full, shape = "over_committed"
-  AND needs_clarification = false. The pipeline's headroom stage will then
+  unless ASK/GRILL still needs material information. The pipeline's headroom stage will then
   offer concrete ways to make room. Do NOT ask which goal to drop — that is
   the headroom stage's job, and it presents the choices as buttons.
-- Never set needs_clarification true for drop_goal.
+- Never set needs_clarification true for drop_goal or review_progress.
 - framing_line: a single clause, or "". Do not editorialize or explain your
   reasoning here.
 
 Worked examples:
+- "I want to switch jobs in 3 months."
+  → in ASK/GRILL, ask about readiness gaps, applications/interviews, and
+    weekly availability; do not create a generic goal plan yet.
 - "I want to run a half marathon in 5 months. I can train 6 hours a week."
-  → shape "one_new_goal", needs_clarification FALSE (WHAT+WHEN+HOW MUCH all present).
+  → in AUTO, needs_clarification FALSE; in ASK, ask only if an important
+    training constraint is still unknown.
 - "5 goals already active. Also add: learn Japanese in 3 months, 12h/week."
   → shape "over_committed", needs_clarification FALSE.
 - "I want to get better at something." → needs_clarification TRUE, ask WHAT.
@@ -75,6 +95,7 @@ ${args.context}`
 
 export function planPrompt(args: {
   intent: Intent
+  mode: PlanningMode
   message: string
   context: string
   today: string
@@ -98,7 +119,11 @@ Keep the same goal unless the choice is to drop/replace it.`
   return `${VOICE}
 
 You are stage 3 (Plan). Produce a realistic, phased plan for the user's
-message. Today is ${args.today}. Conversation intent: ${args.intent}.
+request. Today is ${args.today}. Conversation intent: ${args.intent}. Mode:
+${args.mode.toUpperCase()}. Use only facts in the conversation, live state,
+and readable attached-source excerpts. Do not guess the contents of sources.
+In AUTO, state material assumptions in prose. ASK/GRILL reach this stage only
+after material gaps have been resolved.
 
 Return a JSON object:
 {
@@ -107,8 +132,10 @@ Return a JSON object:
             "target_date": "YYYY-MM-DD", "weekly_hours": 1-20,
             "phase_objectives": { "<phase>": "<verifiable objective>", ... } }
           | null,
-  "milestones": [ { "title", "target_date", "phase", "rationale" } ],   // ≤5
+  "milestones": [ { "title", "target_date", "phase", "rationale" } ],   // ≤8
   "blockers":  [ { "title", "start_date", "end_date", "note" } ],       // ≤3
+  "blocks": [ { "block_date", "start_time", "end_time", "label", "kind",
+                 "goal_title?", "note?" } ],                               // ≤8
   "commitments": [ { "goal_title", "text", "due", "phase" } ],          // ≤3
   "prose": "one short paragraph (≤500 chars)"
 }
@@ -119,13 +146,28 @@ Rules:
   yours. Always produce the plan; the headroom stage will offer ways to make
   room. Set goal to null ONLY for drop_goal / review_progress when no new goal
   is warranted.
-- Decompose into 2-3 phases; each phase_objectives value must be OBSERVABLE
-  from outside ("Pass 5 SD mocks", not "read Ch 5"). Emit EXACTLY 3 milestones
-  (max 4), grouped by phase (milestone.phase MUST be a phase_objectives key).
+- Decompose a goal into 2-4 phases; each phase_objectives value must be
+  OBSERVABLE from outside ("Pass 5 SD mocks", not "read Ch 5"). Emit 3-8
+  milestones when the horizon warrants them, grouped by phase
+  (milestone.phase MUST be a phase_objectives key). Cover the first days and
+  weekly/monthly checkpoints; use quarter/year phases for longer goals. Do not
+  pad the plan with duplicate or vague milestones.
 - Emit 1-2 commitments: the SMALLEST next actions in the next 1-4 days (setup
   actions), and their "due" must be one of them.
 - Emit blockers ONLY if the user named them. Never invent a blocker.
 - If the user already did something, do not re-propose it.
+- For a job-change goal, base milestones and the first action on the user's
+  stated readiness gaps and application stage. If a source excerpt is readable,
+  use its concrete material. If it is not readable, say so instead of
+  inventing a curriculum.
+- For a whole-day plan (intent title is "Plan my day" or "Today (…)" and the
+  user is planning/telling you about the day), emit 1-8 timed blocks for the
+  requested day(s). Use supplied wake/sleep times and fixed events; in AUTO
+  only, assume a conservative day and state the assumption. Fit open
+  commitments and known timetable blocks, add realistic breaks, and never
+  overlap blocks. Do not invent fixed appointments. If essential schedule
+  details are missing in ASK/GRILL, intake must ask first. For a specific
+  commitment conversation that is not a whole-day plan, blocks may be empty.
 - Prefer a realistic target_date with buffer over an optimistic one, and name
   the trade-off in prose.
 - prose is a single tight paragraph, at most 280 characters, naming the
@@ -147,14 +189,15 @@ export function emitPrompt(args: {
 
 You are stage 4 (Emit). Convert the plan below into an ordered list of tool
 calls. Return:
-{ "tools": [ { "action": "<action>", "args": { ... } } ] }   // 1-8 tools
+ { "tools": [ { "action": "<action>", "args": { ... } } ] }   // up to 16 tools
 
 Fixed order when creating a goal: create_goal, then add_milestone ×N, then
 add_blocker ×N, then add_commitment ×N.
+For a day plan, emit add_block ×N for the planned blocks.
 
 Allowed actions for intent "${args.intent}":
 - add_goal: create_goal, add_milestone, add_blocker, add_commitment, set_goal_dates
-- plan_day: add_commitment, complete_commitment, add_blocker
+- plan_day: add_block, add_commitment, complete_commitment, add_blocker
 - edit_goal: update_goal, set_goal_dates, add_milestone, add_blocker, add_commitment
 - drop_goal: drop_goal, pause_goal
 - review_progress: update_goal, set_goal_dates, add_commitment,
@@ -176,6 +219,7 @@ Use these EXACT arg keys — do not rename or omit them:
   weekly_hours, phase_objectives, life_area }
 - add_milestone: { goal_title, title, target_date, phase }
 - add_blocker: { title, start_date, end_date, note }
+- add_block: { block_date, start_time, end_time, label, kind, goal_title?, note? }
 - add_commitment: { goal_title, text, due, phase }
 
 Copy weekly_hours and phase_objectives VERBATIM from the plan goal. Every

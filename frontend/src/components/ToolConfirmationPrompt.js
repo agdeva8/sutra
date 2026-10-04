@@ -1,4 +1,4 @@
-import { X, GitCommit, Pencil, Target, FileText, Calendar, Check, Loader2 } from "lucide-react";
+import { X, GitCommit, Pencil, Target, FileText, Calendar, Clock, Check, Loader2 } from "lucide-react";
 import NavigateCard from "./NavigateCard";
 import AskCard from "./AskCard";
 
@@ -8,6 +8,7 @@ const ACTION_LABELS = {
   set_goal_dates: "Timeline",
   add_milestone: "Milestone",
   add_blocker: "Blocker",
+  add_block: "Timetable block",
   drop_goal: "Goal",
   pause_goal: "Goal",
   add_commitment: "Commitment",
@@ -29,6 +30,7 @@ const CONFIRM_LABELS = {
   complete_commitment: "Mark done",
   update_commitment: "Update commitment",
   add_blocker: "Add blocker",
+  add_block: "Add to timetable",
 };
 
 /**
@@ -47,6 +49,7 @@ const SECTION_BY_ACTION = {
   complete_commitment: "COMMITMENT",
   update_commitment: "COMMITMENT",
   add_blocker: "BLOCKER",
+  add_block: "SCHEDULE",
 };
 
 function SectionBadge({ section }) {
@@ -190,6 +193,7 @@ export default function ToolConfirmationPrompt({ proposal, onConfirm, onOpenRefi
     if (section === "COMMITMENT") {
       return typeof d.text === "string" ? d.text.split("\n")[0].slice(0, 90) : "";
     }
+    if (section === "SCHEDULE") return d.label || "";
     return (
       d.title ||
       d.new_title ||
@@ -208,6 +212,7 @@ export default function ToolConfirmationPrompt({ proposal, onConfirm, onOpenRefi
     d.next_action ||
     d.target_date ||
     d.due ||
+    d.block_date ||
     d.start_date ||
     d.reason ||
     d.note;
@@ -217,6 +222,7 @@ export default function ToolConfirmationPrompt({ proposal, onConfirm, onOpenRefi
   const showMilestoneFields = section === "MILESTONE";
   const showCommitmentFields = section === "COMMITMENT";
   const showBlockerFields = section === "BLOCKER";
+  const showScheduleFields = section === "SCHEDULE";
 
   return (
     <div
@@ -303,6 +309,20 @@ export default function ToolConfirmationPrompt({ proposal, onConfirm, onOpenRefi
               value={d.start_date ? `${d.start_date}${d.end_date ? " – " + d.end_date : ""}` : null}
               accent
             />
+          </div>
+        )}
+
+        {showScheduleFields && (
+          <div className="space-y-2">
+            <FieldRow icon={Calendar} label="Date" value={d.block_date} accent />
+            <FieldRow
+              icon={Clock}
+              label="Time"
+              value={d.start_time && d.end_time ? `${d.start_time}–${d.end_time}` : null}
+            />
+            <FieldRow icon={FileText} label="Type" value={d.kind} />
+            <FieldRow icon={Target} label="Goal" value={d.goal_title} />
+            <FieldRow icon={FileText} label="Note" value={d.note} />
           </div>
         )}
 

@@ -22,7 +22,7 @@
 
 import { randomUUID } from 'node:crypto'
 
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { NextRequest, NextResponse } from 'next/server'
 
 import { isGoalPlannerEnabledFor } from '@/lib/goal-planner/config'
@@ -71,9 +71,12 @@ interface PlanRequestBody {
   scope?: unknown
   autoAnswer?: unknown
   auto_answer?: unknown
+  grillMe?: unknown
+  grill_me?: unknown
   provider?: unknown
   title?: unknown
   helperText?: unknown
+  sourceIds?: unknown
   renegotiation?: {
     round?: unknown
     choice?: unknown
@@ -123,10 +126,18 @@ export async function POST(req: NextRequest) {
       ? (body.provider as ProviderId)
       : ((caller.modelProvider as ProviderId | undefined) ?? DEFAULT_PROVIDER)
 
-  const autoAnswer =
-    body.autoAnswer === false || body.auto_answer === false ? false : true
+  const grillMe = body.grillMe === true || body.grill_me === true
+  const autoAnswer = !grillMe && !(body.autoAnswer === false || body.auto_answer === false)
+  const mode = grillMe ? 'grill' : autoAnswer ? 'auto' : 'ask'
+
+  const sourceIds = Array.isArray(body.sourceIds)
+    ? body.sourceIds
+        .filter((value): value is string => typeof value === 'string' && value.length > 0)
+        .slice(0, 10)
+    : []
 
   const refId = typeof body.refId === 'string' ? body.refId : null
+  const scope = typeof body.scope === 'string' ? body.scope : ''
   const conversationId = refId
     ? `conv_${intent}_${refId}`
     : `conv_${intent}_${userId}`
@@ -143,6 +154,16 @@ export async function POST(req: NextRequest) {
     import('@/lib/llm/state-builder'),
   ])
 
+  let conversationGoalId: string | null = null
+  if (intent === 'edit_goal' && scope === 'goal' && refId && !refId.startsWith('new_goal_')) {
+    const [ownedGoal] = await db
+      .select({ id: schema.goals.id })
+      .from(schema.goals)
+      .where(and(eq(schema.goals.id, refId), eq(schema.goals.userId, userId)))
+      .limit(1)
+    conversationGoalId = ownedGoal?.id ?? null
+  }
+
   await db
     .insert(schema.conversations)
     .values({
@@ -151,7 +172,7 @@ export async function POST(req: NextRequest) {
       kind: intent,
       title: convTitle,
       status: 'open',
-      goalId: refId && !refId.startsWith('new_goal_') ? refId : null,
+      goalId: conversationGoalId,
     })
     .onConflictDoNothing({ target: schema.conversations.id })
 
@@ -169,6 +190,7 @@ export async function POST(req: NextRequest) {
     stateBuilder.buildContext(userId, conversationId, intent, message, autoAnswer, {
       title: convTitle,
       helperText: convHelper,
+      sourceIds,
     }),
     stateBuilder.loadState(userId),
     db
@@ -205,6 +227,7 @@ export async function POST(req: NextRequest) {
     result = await runPlanPipeline({
       userId,
       intent,
+      mode,
       message,
       context,
       provider,
@@ -253,12 +276,17 @@ export async function POST(req: NextRequest) {
     action: string
     args: Record<string, unknown>
   }> =
-    result.kind === 'ok'
-      ? result.tools.map((t) => ({
-          id: newId('prop'),
-          action: t.action as string,
-          args: t.args as Record<string, unknown>,
-        }))
+      result.kind === 'ok'
+        ? result.tools.map((t) => ({
+            id: newId('prop'),
+            action: t.action as string,
+            args: {
+              ...(t.args as Record<string, unknown>),
+              ...(t.action === 'create_goal' && sourceIds.length > 0
+                ? { source_ids: sourceIds }
+                : {}),
+            },
+          }))
       : []
 
   // Deterministic drop guarantee. Stage 4 legitimately returns zero tools

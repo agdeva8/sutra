@@ -34,7 +34,7 @@
  * conversation even though it hasn't been persisted yet.
  */
 
-import { and, asc, desc, eq, inArray } from 'drizzle-orm'
+import { and, asc, desc, eq, gte, inArray, lte } from 'drizzle-orm'
 
 import { cacheKey, readThrough } from '@/lib/cache'
 import { db } from '@/lib/db'
@@ -46,6 +46,7 @@ import {
   messages,
   milestones,
   sources,
+  timetableBlocks,
 } from '@/db/schema'
 import {
   computeOverCommitment,
@@ -62,6 +63,7 @@ export interface StateGoal {
   title: string
   horizon: 'weekly' | 'short' | 'medium' | 'long'
   status: 'active' | 'paused' | 'dropped'
+  why?: string | null
   next_action?: string | null
   target_date?: string | null
   /** Goal window start — used by the re-plan trigger evaluation. */
@@ -70,6 +72,7 @@ export interface StateGoal {
   drift_status?: 'on_track' | 'at_risk'
   /** Estimate used to evaluate remaining weekly capacity after an edit. */
   weekly_hours?: number | null
+  phase_objectives?: Record<string, string>
   // Sources attached to this goal (the dashboard renders chips per
   // goal; the chat-time context doesn't currently use these but
   // keeping the field avoids a future migration).
@@ -83,6 +86,7 @@ export interface StateCommitment {
   due?: string | null
   goal_title?: string | null
   goal_id?: string | null
+  phase?: string
 }
 
 export interface StateMilestone {
@@ -92,6 +96,7 @@ export interface StateMilestone {
   goal_title?: string | null
   status: string
   goal_id?: string | null
+  phase?: string
 }
 
 export interface StateBlocker {
@@ -177,11 +182,13 @@ export async function loadStateCore(userId: string): Promise<CoachState> {
       title: goals.title,
       horizon: goals.horizon,
       status: goals.status,
+      why: goals.why,
       nextAction: goals.nextAction,
       startDate: goals.startDate,
       targetDate: goals.targetDate,
       driftStatus: goals.driftStatus,
       weeklyHours: goals.weeklyHours,
+      phaseObjectives: goals.phaseObjectives,
     })
     .from(goals)
     .where(eq(goals.userId, userId))
@@ -193,6 +200,7 @@ export async function loadStateCore(userId: string): Promise<CoachState> {
       id: commitments.id,
       text: commitments.text,
       status: commitments.status,
+      phase: commitments.phase,
       due: commitments.due,
       goalTitle: commitments.goalTitle,
       // Selected only to filter out children of dropped goals below —
@@ -211,6 +219,7 @@ export async function loadStateCore(userId: string): Promise<CoachState> {
       targetDate: milestones.targetDate,
       goalTitle: milestones.goalTitle,
       status: milestones.status,
+      phase: milestones.phase,
       // Selected only to filter out children of dropped goals below —
       // never surfaced in the state shape.
       goalId: milestones.goalId,
@@ -304,11 +313,13 @@ export async function loadStateCore(userId: string): Promise<CoachState> {
     title: g.title,
     horizon: g.horizon,
     status: g.status,
+    why: g.why,
     next_action: g.nextAction,
     target_date: g.targetDate,
     start_date: g.startDate,
     drift_status: g.driftStatus,
     weekly_hours: g.weeklyHours,
+    phase_objectives: (g.phaseObjectives ?? {}) as Record<string, string>,
     sources: byGoal.get(g.id) ?? [],
   }))
 
@@ -329,6 +340,7 @@ export async function loadStateCore(userId: string): Promise<CoachState> {
       due: c.due,
       goal_title: c.goalTitle,
       goal_id: c.goalId,
+      phase: c.phase,
     }))
 
   const milestonesList: StateMilestone[] = milestonesRows
@@ -340,6 +352,7 @@ export async function loadStateCore(userId: string): Promise<CoachState> {
       goal_title: m.goalTitle,
       status: m.status,
       goal_id: m.goalId,
+      phase: m.phase,
     }))
 
   const blockersList: StateBlocker[] = blockersRows.map((b) => ({
@@ -461,7 +474,7 @@ const ATTACHED_EXCERPT_MAX = 3000
 async function loadAttachedSources(
   userId: string,
   ids: string[] | undefined,
-): Promise<Array<{ filename: string; excerpt: string }>> {
+): Promise<Array<{ filename: string; excerpt: string; pending: boolean }>> {
   const unique = Array.from(new Set((ids ?? []).filter(Boolean))).slice(
     0,
     ATTACHED_SOURCE_MAX,
@@ -473,6 +486,7 @@ async function loadAttachedSources(
       id: sources.id,
       originalFilename: sources.originalFilename,
       textExcerpt: sources.textExcerpt,
+      contentType: sources.contentType,
     })
     .from(sources)
     .where(
@@ -490,6 +504,9 @@ async function loadAttachedSources(
     .map((r) => ({
       filename: r.originalFilename || 'attachment',
       excerpt: (r.textExcerpt ?? '').slice(0, ATTACHED_EXCERPT_MAX).trim(),
+      pending:
+        r.textExcerpt === null &&
+        (r.contentType.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp|tiff?|avif|heic|heif)$/i.test(r.originalFilename)),
     }))
 }
 
@@ -516,14 +533,40 @@ export async function buildContext(
     d.setUTCDate(d.getUTCDate() - 6)
     return d.toISOString().slice(0, 10)
   })()
+  const threeDaysOut = (() => {
+    const d = new Date(`${todayIso}T00:00:00Z`)
+    d.setUTCDate(d.getUTCDate() + 2)
+    return d.toISOString().slice(0, 10)
+  })()
 
-  const [state, history, dailyLogs, attachedSources] = await Promise.all([
+  const [state, history, dailyLogs, attachedSources, scheduledBlocks] = await Promise.all([
     loadState(userId),
     loadHistory(userId, conversationId, historyLimit),
     kind === 'general'
       ? Promise.resolve([] as DailyLogRow[])
       : getDailyLogsSince(userId, sevenDaysAgo),
     loadAttachedSources(userId, intent?.sourceIds),
+    kind === 'plan_day'
+      ? db
+          .select({
+            blockDate: timetableBlocks.blockDate,
+            startTime: timetableBlocks.startTime,
+            endTime: timetableBlocks.endTime,
+            label: timetableBlocks.label,
+            kind: timetableBlocks.kind,
+            goalTitle: timetableBlocks.goalTitle,
+          })
+          .from(timetableBlocks)
+          .where(
+            and(
+              eq(timetableBlocks.userId, userId),
+              gte(timetableBlocks.blockDate, todayIso),
+              lte(timetableBlocks.blockDate, threeDaysOut),
+            ),
+          )
+          .orderBy(asc(timetableBlocks.blockDate), asc(timetableBlocks.startTime))
+          .limit(100)
+      : Promise.resolve([]),
   ])
 
   // The following block renders the LIVE STATE & MEMORY section. Output
@@ -569,6 +612,8 @@ export async function buildContext(
       if (s.excerpt) {
         lines.push(`- ${s.filename}:`)
         lines.push(s.excerpt)
+      } else if (s.pending) {
+        lines.push(`- ${s.filename} (image text extraction is still running)`)
       } else {
         lines.push(`- ${s.filename} (no extractable text)`)
       }
@@ -609,7 +654,30 @@ export async function buildContext(
       lines.push('')
       lines.push('OPEN COMMITMENTS (titles only):')
       for (const c of openCommits.slice(0, 50)) {
-        lines.push(`- ${c.text} [goal: ${c.goal_title ?? ''}]`)
+        lines.push(`- ${c.text} [due: ${c.due ?? 'unscheduled'}; goal: ${c.goal_title ?? ''}]`)
+      }
+    }
+    if (kind === 'plan_day') {
+      const knownBlockers = state.blockers.filter(
+        (b) => !b.end_date || b.end_date >= todayIso,
+      )
+      if (knownBlockers.length > 0) {
+        lines.push('')
+        lines.push('KNOWN BLOCKERS (plan around these):')
+        for (const blocker of knownBlockers) {
+          lines.push(
+            `- ${blocker.title} ${blocker.start_date ?? ''}..${blocker.end_date ?? ''} ${blocker.note ?? ''}`.trim(),
+          )
+        }
+      }
+      if (scheduledBlocks.length > 0) {
+        lines.push('')
+        lines.push('EXISTING TIMETABLE BLOCKS (next 3 days; do not overlap):')
+        for (const block of scheduledBlocks) {
+          lines.push(
+            `- ${block.blockDate} ${block.startTime}-${block.endTime}: ${block.label} (${block.kind})${block.goalTitle ? ` [goal: ${block.goalTitle}]` : ''}`,
+          )
+        }
       }
     }
   } else {

@@ -109,12 +109,12 @@ export function buildOpsGraph(args: OpsGraphArgs) {
           // Hold back the last `TOOL_START.length` chars in case the delimiter
           // is split across chunks.
           const safeUpTo = Math.max(proseEmitted, fullText.length - TOOL_START.length)
-          if (safeUpTo > proseEmitted) {
+          if (autoAnswer && !clarify && safeUpTo > proseEmitted) {
             emit({ type: 'delta', content: fullText.slice(proseEmitted, safeUpTo) })
             proseEmitted = safeUpTo
           }
         } else {
-          if (toolIdx > proseEmitted) {
+          if (autoAnswer && !clarify && toolIdx > proseEmitted) {
             emit({ type: 'delta', content: fullText.slice(proseEmitted, toolIdx) })
           }
           proseEmitted = toolIdx
@@ -136,6 +136,7 @@ export function buildOpsGraph(args: OpsGraphArgs) {
 
   /* Node 2 — silent follow-up: force a [[TOOLS]] block. */
   const refineNode = async (s: OpsStateType): Promise<OpsUpdate> => {
+    emit({ type: 'delta', content: '\n\nFinishing the concrete proposal…' })
     const todayDate = new Date().toISOString().split('T')[0]
     const ninetyDaysOut = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000)
       .toISOString()
@@ -179,13 +180,18 @@ export function buildOpsGraph(args: OpsGraphArgs) {
       return {}
     }
 
-    const { proposals: followUpProposals } = splitProseAndTools(followUpFull)
+    const { prose: followUpProse, proposals: followUpProposals } = splitProseAndTools(followUpFull)
     if (followUpProposals.length > 0) {
-      return { proposals: followUpProposals }
+      if (followUpProse) emit({ type: 'delta', content: `\n\n${followUpProse}` })
+      return {
+        prose: followUpProse ? `${s.prose}\n\n${followUpProse}` : s.prose,
+        proposals: followUpProposals,
+      }
     }
-    const questions = extractClarifyingQuestions(followUpFull || s.prose)
+    const questions = extractClarifyingQuestions(followUpProse || followUpFull || s.prose)
     if (questions.length > 0) {
       return {
+        prose: followUpProse || s.prose,
         clarifyingQuestions: questions,
         needsClarification:
           'I want to make a real proposal, but I need a couple of details first.',
@@ -194,19 +200,99 @@ export function buildOpsGraph(args: OpsGraphArgs) {
     return {}
   }
 
+  /* Ask/Grill follow-up — never emit tools; collect tailored missing details. */
+  const askNode = async (s: OpsStateType): Promise<OpsUpdate> => {
+    const mode = clarify ? 'GRILL' : 'ASK'
+    const followUpMessages = [
+      ...coreMessages,
+      ...(s.prose ? [{ role: 'assistant' as const, content: s.prose }] : []),
+      {
+        role: 'user' as const,
+        content:
+          `MODE: ${mode}. Do not emit a [[TOOLS]] block or propose any state change. ` +
+          'Read the full recent conversation and ask only for details that materially ' +
+          'change this plan. ASK mode assumes low-impact details. GRILL mode asks ' +
+          'every material unanswered detail, in tailored rounds with no total-round ' +
+          'limit. Ask up to 6 questions now; do not repeat answered questions. ' +
+          'For a job change, check readiness gaps, application/interview stage, ' +
+          'weekly effort, and constraints. For a whole-day schedule, check wake/sleep ' +
+          'times and fixed commitments. If an attached source has no readable text, ' +
+          'say so rather than guessing. Reply with questions only.',
+      },
+    ]
+
+    let answer = ''
+    try {
+      for await (const ev of streamChat({
+        provider,
+        system,
+        messages: followUpMessages,
+        sessionId: userId,
+      })) {
+        if (ev.type === 'text_delta') answer += ev.content
+      }
+    } catch {
+      // A safe deterministic question is better than silently dropping a request.
+    }
+
+    const { prose: answerProse } = splitProseAndTools(answer)
+    let questions = extractClarifyingQuestions(answerProse)
+    if (questions.length === 0) {
+      questions = scopedKind === 'plan_day'
+        ? ['What time will you wake up and go to sleep, and what fixed commitments must the plan fit around?']
+        : /job|career|role|switch/i.test(message)
+        ? [
+            'Which interview areas are strong already, and which need work (for example DSA, system design, or behavioral)?',
+            'Have you started applying or interviewing, and how many hours per week can you spend on this?',
+          ]
+        : ['What missing detail would change the plan most, and how much time can you realistically give it?']
+    }
+    const prose = answerProse || questions.join('\n')
+    return {
+      prose,
+      proposals: [],
+      clarifyingQuestions: questions,
+      needsClarification: clarify
+        ? 'I need a few more specifics before I can build a tailored plan:'
+        : 'A few details will materially change the plan:',
+    }
+  }
+
   /* Node 3 — grill-me, drop safety net, general filter, publish result. */
   const finalizeNode = async (s: OpsStateType): Promise<OpsUpdate> => {
     let proposals = s.proposals
     let needsClarification = s.needsClarification
     let clarifyingQuestions = s.clarifyingQuestions
+    let prose = s.prose
 
-    // Grill-me mode — always surface clarifying questions.
-    if (clarify && proposals.length === 0) {
-      clarifyingQuestions = extractClarifyingQuestions(s.prose)
+    // Ask/Grill can never display a state-changing proposal alongside
+    // unanswered questions. After at least one clarification turn, a clean
+    // proposal with no new questions means the coach is satisfied.
+    if (clarify || !autoAnswer) {
+      const questionsInProse = extractClarifyingQuestions(s.prose)
+      const askQuestions = proposals
+        .filter((proposal) => proposal.action === 'ask')
+        .map((proposal) => proposal.args.question)
+        .filter((question): question is string => typeof question === 'string' && question.trim().length > 0)
+      if (questionsInProse.length > 0 || clarifyingQuestions.length > 0 || askQuestions.length > 0) {
+        proposals = proposals.filter((p) => p.action === 'navigate')
+      }
+      if (clarifyingQuestions.length === 0) {
+        clarifyingQuestions = questionsInProse.length > 0 ? questionsInProse : askQuestions
+      }
       if (clarifyingQuestions.length > 0) {
         needsClarification =
-          'Before I propose anything, a couple of details would change the plan meaningfully:'
+          clarify
+            ? 'Before I propose anything, I need a few specifics to tailor the plan:'
+            : 'A few details will materially change the plan:'
+      } else if (proposals.length === 0 && scopedKind !== 'general') {
+        clarifyingQuestions = scopedKind === 'plan_day'
+          ? ['What time will you wake up and go to sleep, and what fixed commitments must the plan fit around?']
+          : ['What missing detail would change the plan most, and how much time can you realistically give it?']
+        needsClarification = 'A few details will materially change the plan:'
+        prose = needsClarification
       }
+      if (needsClarification && clarifyingQuestions.length > 0) prose = needsClarification
     }
 
     // Final-tier safety net. For a drop/pause conversation this ALWAYS runs
@@ -256,17 +342,43 @@ export function buildOpsGraph(args: OpsGraphArgs) {
     }
 
     const result: OpsGraphResult = {
-      prose: s.prose,
+      prose,
       proposals,
       needsClarification,
       clarifyingQuestions,
       fullText: s.fullText,
     }
+    if ((clarify || !autoAnswer) && prose) emit({ type: 'delta', content: prose })
     emit({ type: 'result', ...result })
     return { result }
   }
 
   const afterGenerate = (s: OpsStateType): string => {
+    const needsClarificationMode = clarify || !autoAnswer
+    const hasQuestions = extractClarifyingQuestions(s.prose).length > 0
+    // Ask/Grill must not propose on a bare first turn, and must keep pushing
+    // while the reply leans on assumptions. It DOES stop once we have asked
+    // and the answer produced an assumption-free proposal: the clarification
+    // turn is persisted as one of finalize's fixed prompts, so search for
+    // those rather than a '?' (the prompt itself never has one).
+    const askedBefore = coreMessages.some(
+      (m) =>
+        m.role === 'assistant' &&
+        /details will materially change|need a few specifics|few details first|shape a real proposal/i.test(
+          m.content,
+        ),
+    )
+    const reliesOnAssumptions = /\b(assum(?:e|ing|ption)|guess(?:ing)?)\b/i.test(s.prose)
+    if (
+      needsClarificationMode &&
+      scopedKind !== 'general' &&
+      message.length > 0 &&
+      !hasQuestions &&
+      (s.proposals.length === 0 || !askedBefore || reliesOnAssumptions)
+    ) {
+      return 'n_ask'
+    }
+
     const shouldRefine =
       s.proposals.length === 0 &&
       autoAnswer &&
@@ -280,13 +392,16 @@ export function buildOpsGraph(args: OpsGraphArgs) {
   return new StateGraph(OpsState)
     .addNode('n_generate', generateNode)
     .addNode('n_refine', refineNode)
+    .addNode('n_ask', askNode)
     .addNode('n_finalize', finalizeNode)
     .addEdge(START, 'n_generate')
     .addConditionalEdges('n_generate', afterGenerate, {
       n_refine: 'n_refine',
+      n_ask: 'n_ask',
       n_finalize: 'n_finalize',
     })
     .addEdge('n_refine', 'n_finalize')
+    .addEdge('n_ask', 'n_finalize')
     .addEdge('n_finalize', END)
     .compile()
 }
@@ -295,7 +410,7 @@ export function buildOpsGraph(args: OpsGraphArgs) {
 /* extractClarifyingQuestions — pull 1-2 short questions out of a coach turn  */
 /* -------------------------------------------------------------------------- */
 
-export function extractClarifyingQuestions(text: string, max = 2): string[] {
+export function extractClarifyingQuestions(text: string, max = 6): string[] {
   if (!text || !text.trim()) return []
 
   const cleaned = text

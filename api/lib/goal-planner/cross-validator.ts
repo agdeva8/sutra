@@ -16,7 +16,7 @@
  *     `plan.goal.phase_objectives`;
  *   - `add_blocker` dates are one of the plan's blockers;
  *   - `add_commitment.due` is one of the plan's commitment dues;
- *   - for `add_goal`: goal present, 3-5 milestones, 1-3 commitments.
+ *   - for `add_goal`: goal present, 3-8 milestones, 1-3 commitments.
  *
  * Deliberately NOT enforced: that `target_date` falls inside the horizon
  * window. The PRD both says it MUST (glossary) and ships a worked example
@@ -26,6 +26,7 @@
  */
 
 import {
+  daysBetween,
   MAX_COMMITMENTS,
   MAX_MILESTONES,
   MIN_COMMITMENTS,
@@ -43,6 +44,7 @@ export interface CrossValidateInput {
   intent: Intent
   plan: Plan
   emit: Emit
+  today?: string
   /** Titles of the user's active goals (any non-dropped status). */
   existingGoalTitles: readonly string[]
 }
@@ -72,6 +74,12 @@ export function crossValidate(input: CrossValidateInput): CrossValidateResult {
     plan.milestones.map((m) => [norm(m.title), m]),
   )
   const planCommitmentDues = new Set(plan.commitments.map((c) => c.due))
+  const planBlocks = new Map(
+    plan.blocks.map((block) => [
+      `${block.block_date}|${block.start_time}|${block.end_time}|${norm(block.label)}`,
+      block,
+    ]),
+  )
   const planBlockerKeys = new Set(
     plan.blockers.map((b) => `${b.start_date}|${b.end_date}`),
   )
@@ -93,6 +101,30 @@ export function crossValidate(input: CrossValidateInput): CrossValidateResult {
       errors.push(
         `add_goal requires ${MIN_COMMITMENTS}-${MAX_COMMITMENTS} commitments (got ${cc})`,
       )
+    }
+  }
+
+  if (intent === 'plan_day') {
+    const byDate = new Map<string, typeof plan.blocks>()
+    for (const block of plan.blocks) {
+      const sameDay = byDate.get(block.block_date) ?? []
+      if (sameDay.some((other) => block.start_time < other.end_time && block.end_time > other.start_time)) {
+        errors.push(`plan_day blocks overlap on ${block.block_date}`)
+      }
+      sameDay.push(block)
+      byDate.set(block.block_date, sameDay)
+    }
+    const emittedBlocks = new Set(
+      emit.tools
+        .filter((tool) => tool.action === 'add_block')
+        .map((tool) => {
+          const args = tool.args as Record<string, unknown>
+          return `${args.block_date}|${args.start_time}|${args.end_time}|${norm(String(args.label ?? ''))}`
+        }),
+    )
+    for (const block of plan.blocks) {
+      const key = `${block.block_date}|${block.start_time}|${block.end_time}|${norm(block.label)}`
+      if (!emittedBlocks.has(key)) errors.push(`plan block '${block.label}' was not emitted`)
     }
   }
 
@@ -171,6 +203,23 @@ export function crossValidate(input: CrossValidateInput): CrossValidateResult {
           errors.push(
             `add_blocker dates ${key} are not in plan.blockers (the LLM must not invent blockers)`,
           )
+        }
+        break
+      }
+      case 'add_block': {
+        const key = `${args.block_date}|${args.start_time}|${args.end_time}|${norm(String(args.label))}`
+        const planned = planBlocks.get(key)
+        if (!planned || planned.kind !== args.kind) {
+          errors.push(`add_block '${args.label}' is not in plan.blocks`)
+        }
+        if (args.goal_title && !knownTitles.has(norm(String(args.goal_title)))) {
+          errors.push(`add_block.goal_title '${args.goal_title}' matches no plan/existing goal`)
+        }
+        if (input.today) {
+          const dayOffset = daysBetween(input.today, args.block_date)
+          if (dayOffset < 0 || dayOffset > 2) {
+            errors.push(`add_block.block_date '${args.block_date}' must be today or within the next 2 days`)
+          }
         }
         break
       }

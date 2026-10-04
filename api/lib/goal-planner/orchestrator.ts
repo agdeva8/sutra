@@ -68,6 +68,7 @@ import {
   type Intent,
   type Intake,
   type Plan,
+  type PlanningMode,
   type RenegotiationOption,
 } from './schemas'
 
@@ -95,6 +96,7 @@ export interface PlanRejectRecord {
 export interface PlanPipelineArgs {
   userId: string
   intent: Intent
+  mode?: PlanningMode
   message: string
   /** `buildContext(...)` output — the LIVE STATE & MEMORY string. */
   context: string
@@ -243,22 +245,26 @@ function buildPlannerGraph({ config: pArgs, complete, checkpointer }: BuildGraph
   /* Stage 1 — Intake ---------------------------------------------------- */
   const intakeNode = async (): Promise<PlanUpdate> => {
     try {
-      const { object: intake, mode } = await call(
+      const { object: parsedIntake, mode } = await call(
         IntakeSchema,
         intakePrompt({
           intent: pArgs.intent,
+          mode: pArgs.mode ?? 'ask',
           message: pArgs.message,
           context: pArgs.context,
           today: pArgs.today,
         }),
       )
+      const intake: Intake = pArgs.mode === 'auto'
+        ? { ...parsedIntake, needs_clarification: false, clarifying_questions: [] }
+        : parsedIntake
       const updates: PlanUpdate = { intake, modes: [mode] }
 
       // Pure conversational shapes early-return; `over_committed` only for
       // non-add_goal (add_goal must flow through headroom to make room).
       if (
         intake.shape === 'meta_question' ||
-        intake.shape === 'routine_return' ||
+        (intake.shape === 'routine_return' && pArgs.intent !== 'plan_day' && pArgs.resume === undefined) ||
         (intake.shape === 'over_committed' && pArgs.intent !== 'add_goal')
       ) {
         updates.result = {
@@ -308,6 +314,7 @@ function buildPlannerGraph({ config: pArgs, complete, checkpointer }: BuildGraph
         PlanSchema,
         planPrompt({
           intent: pArgs.intent,
+          mode: pArgs.mode ?? 'ask',
           message: pArgs.message,
           context: pArgs.context,
           today: pArgs.today,
@@ -451,6 +458,7 @@ function buildPlannerGraph({ config: pArgs, complete, checkpointer }: BuildGraph
       intent: pArgs.intent,
       plan: s.plan,
       emit: s.emit,
+      today: pArgs.today,
       existingGoalTitles: pArgs.existingGoalTitles,
     })
 
@@ -507,7 +515,9 @@ function buildPlannerGraph({ config: pArgs, complete, checkpointer }: BuildGraph
     .addNode('n_cross_validate', crossValidateNode)
     .addEdge(START, 'n_intake')
     .addConditionalEdges('n_intake', afterIntake, { n_clarify: 'n_clarify', n_plan: 'n_plan', [END]: END })
-    .addEdge('n_clarify', 'n_plan')
+    // After each answer, re-run intake against the complete conversation.
+    // ASK/GRILL can take as many clarification turns as the plan needs.
+    .addEdge('n_clarify', 'n_intake')
     .addConditionalEdges('n_plan', afterPlan, { n_headroom: 'n_headroom', [END]: END })
     .addConditionalEdges('n_headroom', afterHeadroom, { n_emit: 'n_emit', [END]: END })
     .addConditionalEdges('n_emit', afterEmit, { n_cross_validate: 'n_cross_validate', [END]: END })

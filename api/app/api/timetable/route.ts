@@ -1,9 +1,8 @@
 /**
  * /api/timetable — POST (create) and GET (list) the user's timetable blocks.
  *
- * Direct CRUD — Hard constraint #2: timetable blocks are scheduling/
- * constraint data, edited straight through the UI with no propose→confirm
- * step (same bucket as blockers).
+ * Manual timetable CRUD. The coach's plan_day action uses the standard
+ * proposal -> user-confirm flow; this route remains the direct UI path.
  *
  * Table: `timetable_blocks` (see db/schema.ts). Created by migration
  * 0006_timetable_blocks.sql.

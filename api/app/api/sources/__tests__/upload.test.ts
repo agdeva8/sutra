@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   mockGuestToken: vi.fn(),
   mockUploadFile: vi.fn(),
   mockExtractText: vi.fn(),
+  mockAfter: vi.fn(),
   mockDbInsertReturning: vi.fn(),
 }))
 
@@ -23,6 +24,10 @@ vi.mock('@/lib/env', () => ({
 }))
 
 vi.mock('@/lib/auth', () => ({ auth: mocks.mockAuth }))
+vi.mock('next/server', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('next/server')>()
+  return { ...actual, after: mocks.mockAfter }
+})
 vi.mock('@/lib/guest-token', () => ({ verifyGuestToken: mocks.mockGuestToken }))
 vi.mock('@/lib/storage', () => ({
   uploadFile: mocks.mockUploadFile,
@@ -75,7 +80,7 @@ vi.mock('@/lib/db', () => ({
 import { POST } from '../upload/route'
 import { NextRequest } from 'next/server'
 
-const { mockAuth, mockGuestToken, mockUploadFile, mockExtractText, mockDbInsertReturning } = mocks
+const { mockAuth, mockGuestToken, mockUploadFile, mockExtractText, mockAfter, mockDbInsertReturning } = mocks
 
 const SESSION_TOKEN = 'user_founder01'
 
@@ -95,6 +100,7 @@ function makeFile(name: string, content: string, type: string) {
 
 describe('POST /api/sources/upload', () => {
   beforeEach(() => {
+    mockAfter.mockImplementation(() => undefined)
     mockAuth.mockResolvedValue({
       user: { id: 'user_founder01', isGuest: false, modelProvider: 'gemini' },
     })
@@ -202,6 +208,18 @@ describe('POST /api/sources/upload', () => {
       const res = await POST(makeUploadRequest(form, SESSION_TOKEN))
       expect(res.status, `${name} should be accepted`).toBe(200)
     }
+  })
+
+  it('returns an image source before OCR and schedules extraction after the response', async () => {
+    const form = new FormData()
+    form.set('file', makeFile('profile.jpg', 'binary', 'image/jpeg'))
+
+    const res = await POST(makeUploadRequest(form, SESSION_TOKEN))
+
+    expect(res.status).toBe(200)
+    expect((await res.json()).text_pending).toBe(true)
+    expect(mockExtractText).not.toHaveBeenCalled()
+    expect(mockAfter).toHaveBeenCalledTimes(1)
   })
 
   it('calls Emergent Object Storage upload with user-scoped path', async () => {

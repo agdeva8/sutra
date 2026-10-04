@@ -19,7 +19,7 @@ vi.mock('@/lib/emergent/stream-chat', () => ({
   },
 }))
 
-import { buildOpsGraph, type OpsGraphArgs, type OpsGraphResult } from '../ops-graph'
+import { buildOpsGraph, extractClarifyingQuestions, type OpsGraphArgs, type OpsGraphResult } from '../ops-graph'
 
 function base(over: Partial<OpsGraphArgs> = {}): OpsGraphArgs {
   return {
@@ -111,5 +111,37 @@ describe('buildOpsGraph', () => {
     expect(result.proposals).toHaveLength(0)
     expect(result.clarifyingQuestions).toContain('Should you commit 3 or 6 months?')
     expect(result.needsClarification).toBeTruthy()
+  })
+
+  it('does not expose state-changing proposals in a grill turn that asks questions', async () => {
+    scripts.push([
+      'Which interview round is weakest? [[TOOLS]][{"action":"create_goal","title":"Switch jobs"}][[/TOOLS]]',
+    ])
+    const { result } = await run(base({ autoAnswer: false, clarify: true }))
+    expect(result.proposals).toEqual([])
+    expect(result.clarifyingQuestions).toEqual(['Which interview round is weakest?'])
+    expect(result.needsClarification).toBeTruthy()
+  })
+
+  it('asks a tailored follow-up when grill tries to propose without questions', async () => {
+    scripts.push(['A 3-month job transition plan. [[TOOLS]][{"action":"create_goal","title":"Switch jobs"}][[/TOOLS]]'])
+    scripts.push(['Which interview areas need the most work? Have you started applying? How many hours per week can you spend?'])
+    const { result } = await run(
+      base({ autoAnswer: false, clarify: true, message: 'I want to switch jobs in 3 months.' }),
+    )
+    expect(result.proposals).toEqual([])
+    expect(result.clarifyingQuestions).toHaveLength(3)
+    expect(result.clarifyingQuestions[0]).toContain('interview areas')
+  })
+
+  it('extracts more than two important clarification questions', async () => {
+    const questions = [
+      'Which role are you targeting?',
+      'Which interview areas need work?',
+      'Have you started applying?',
+      'How many hours per week are available?',
+      'What constraints should the plan respect?',
+    ].join(' ')
+    expect(extractClarifyingQuestions(questions)).toHaveLength(5)
   })
 })

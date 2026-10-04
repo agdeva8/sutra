@@ -41,6 +41,7 @@ const plan: Plan = {
     },
   ],
   blockers: [],
+  blocks: [],
   commitments: [
     {
       goal_title: TITLE,
@@ -199,11 +200,11 @@ describe('crossValidate — add_goal', () => {
     expect(r.errors.join(' ')).toContain('is not in plan.commitments')
   })
 
-  it('enforces the 3-5 milestone / 1-3 commitment bounds for add_goal', () => {
+  it('enforces the 3-8 milestone / 1-3 commitment bounds for add_goal', () => {
     const thinPlan: Plan = { ...plan, milestones: plan.milestones.slice(0, 2), commitments: [] }
     const r = crossValidate({ ...base, plan: thinPlan, emit: validEmit })
     expect(r.ok).toBe(false)
-    expect(r.errors.join(' ')).toContain('requires 3-5 milestones')
+    expect(r.errors.join(' ')).toContain('requires 3-8 milestones')
     expect(r.errors.join(' ')).toContain('requires 1-3 commitments')
   })
 
@@ -222,5 +223,70 @@ describe('crossValidate — add_goal', () => {
     })
     // goal_title resolves, but the due date is still checked against the plan.
     expect(r.errors.join(' ')).not.toContain('matches no plan/existing goal')
+  })
+
+  it('accepts a plan-day block only when it matches the plan', () => {
+    const block = {
+      block_date: '2026-10-05',
+      start_time: '09:00',
+      end_time: '10:30',
+      label: 'System design practice',
+      kind: 'focus' as const,
+      goal_title: TITLE,
+    }
+    const dayPlan: Plan = {
+      ...plan,
+      goal: null,
+      milestones: [],
+      blockers: [],
+      blocks: [block],
+      commitments: [],
+    }
+    const emit: Emit = { tools: [{ action: 'add_block', args: block }] }
+    const result = crossValidate({ intent: 'plan_day', plan: dayPlan, emit, today: '2026-10-03', existingGoalTitles: [TITLE] })
+    expect(result.ok).toBe(true)
+    expect(result.errors).toEqual([])
+  })
+
+  it('rejects overlapping plan-day blocks', () => {
+    const block = {
+      block_date: '2026-10-05',
+      start_time: '09:00',
+      end_time: '10:30',
+      label: 'System design practice',
+      kind: 'focus' as const,
+    }
+    const result = crossValidate({
+      intent: 'plan_day',
+      plan: {
+        ...plan,
+        goal: null,
+        milestones: [],
+        blockers: [],
+        commitments: [],
+        blocks: [block, { ...block, start_time: '10:00', end_time: '11:00', label: 'Application work' }],
+      },
+      emit: { tools: [{ action: 'add_block', args: block }] },
+      existingGoalTitles: [],
+    })
+    expect(result.errors.join(' ')).toContain('blocks overlap')
+  })
+
+  it('rejects timetable blocks outside the three-day planning window', () => {
+    const block = {
+      block_date: '2026-10-06',
+      start_time: '09:00',
+      end_time: '10:30',
+      label: 'System design practice',
+      kind: 'focus' as const,
+    }
+    const result = crossValidate({
+      intent: 'plan_day',
+      plan: { ...plan, goal: null, milestones: [], blockers: [], commitments: [], blocks: [block] },
+      emit: { tools: [{ action: 'add_block', args: block }] },
+      today: '2026-10-03',
+      existingGoalTitles: [],
+    })
+    expect(result.errors.join(' ')).toContain('within the next 2 days')
   })
 })

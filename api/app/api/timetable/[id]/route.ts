@@ -1,8 +1,7 @@
 /**
  * /api/timetable/[id] — PUT (replace) or DELETE a timetable block.
  *
- * Direct CRUD — Hard constraint #2 (scheduling/constraint data, no
- * propose→confirm).
+ * Direct UI CRUD for an existing timetable block.
  *
  * PUT body (zod-validated; 400 on failure):
  *   {

@@ -327,12 +327,12 @@ export default function Coach() {
     });
   };
 
-  const uploadFile = async (file, goalId = "") => {
+  const uploadFile = async (file, goalId = "", options = {}) => {
     toast.message(`Uploading ${file.name}…`);
     try {
       // Capture the created source so callers (chat chips, AddGoalDialog)
       // can hold its real server id and delete it server-side on X.
-      const source = await api.uploadSource(file, goalId);
+      const source = await api.uploadSource(file, goalId, options);
       await refreshState();
       toast.success(`Added ${file.name} as a source`);
       return source;
@@ -342,11 +342,11 @@ export default function Coach() {
     }
   };
 
-  const addLink = async (url, goalId = "") => {
+  const addLink = async (url, goalId = "", options = {}) => {
     if (!url) return null;
     try {
       const prevState = state;
-      const source = await api.addLink({ url, goal_id: goalId });
+      const source = await api.addLink({ url, goal_id: goalId, temporary: options.temporary === true });
       await refreshState();
       if (goalId && prevState?.goals) {
         const goal = prevState.goals.find((g) => g.id === goalId);

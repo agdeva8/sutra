@@ -98,6 +98,8 @@ export default function FocusedTaskChatDialog({
   // Iteration 10 — renegotiation dialog state.
   const [renegotiation, setRenegotiation] = useState(null);
   const [busyChoice, setBusyChoice] = useState(null);
+  const previousAutoAnswerRef = useRef(autoAnswer);
+  const autoResumePendingRef = useRef(false);
   // Operation-scoped context (spec §10) — current conversation bucket,
   // seeded from the parent's `refId` prop and swapped on confirm /
   // defensive redirect. For focused-task chats the parent usually
@@ -179,11 +181,13 @@ export default function FocusedTaskChatDialog({
   // and deps (TDZ error otherwise).
   const { tryPlan } = usePlanSend({
     kind,
+    scope,
     refIdRef,
     title,
     helperText,
     autoAnswer,
     grillMe,
+    sources,
     setMessages,
     applyPlan,
   });
@@ -206,10 +210,10 @@ export default function FocusedTaskChatDialog({
           streaming: true,
         },
       ]);
-      // Iteration 10 — planned kinds try the typed pipeline first.
-      const handled = await tryPlan(text, streamId);
-      if (handled) return;
       try {
+        // Iteration 10 — planned kinds try the typed pipeline first.
+        const handled = await tryPlan(text, streamId);
+        if (handled) return;
         const resp = await fetch(`${API}/chat/stream`, {
           method: "POST",
           credentials: "include",
@@ -315,10 +319,26 @@ export default function FocusedTaskChatDialog({
         );
       } finally {
         setSending(false);
+        setMessages((prev) => prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)));
       }
     },
     [open, user, autoAnswer, grillMe, scope, kind, title, helperText, sources, tryPlan],
   );
+
+  useEffect(() => {
+    const switchedToAuto = autoAnswer && !previousAutoAnswerRef.current;
+    previousAutoAnswerRef.current = autoAnswer;
+    if (switchedToAuto && (pendingClarifications || sending)) {
+      autoResumePendingRef.current = true;
+    }
+    if (autoAnswer && autoResumePendingRef.current && pendingClarifications && !sending) {
+      autoResumePendingRef.current = false;
+      setPendingClarifications(null);
+      send('Proceed with reasonable assumptions for anything unanswered and make the plan now.');
+    } else if (!sending && !pendingClarifications) {
+      autoResumePendingRef.current = false;
+    }
+  }, [autoAnswer, pendingClarifications, sending, send]);
 
   // Iteration 10 — renegotiation choice → pipeline round 2.
   const onRenegotiationChoice = useCallback(
@@ -365,6 +385,7 @@ export default function FocusedTaskChatDialog({
             ?.proposals?.find((p) => p.id === proposalId);
           const title =
             proposal?.args?.title ||
+            proposal?.args?.label ||
             proposal?.args?.goal_title ||
             proposal?.args?.new_title ||
             proposal?.title;
@@ -374,6 +395,7 @@ export default function FocusedTaskChatDialog({
               drop_goal: "Dropped",
               pause_goal: "Paused",
               add_milestone: "Added milestone",
+              add_block: "Scheduled",
               add_commitment: "Added commitment",
               complete_commitment: "Completed",
             }[proposal?.action] || "Confirmed";
@@ -558,7 +580,7 @@ export default function FocusedTaskChatDialog({
   const uploadFile = useCallback(
     async (file) => {
       try {
-        const created = await api.uploadSource(file, "");
+        const created = await api.uploadSource(file, "", { temporary: true });
         const fresh = await api.state();
         onStateChange?.(fresh);
         if (created?.id) setSources((prev) => [...prev, created]);
@@ -575,7 +597,7 @@ export default function FocusedTaskChatDialog({
     async (url) => {
       if (!url) return null;
       try {
-        const created = await api.addLink({ url, goal_id: "" });
+        const created = await api.addLink({ url, goal_id: "", temporary: true });
         const fresh = await api.state();
         onStateChange?.(fresh);
         if (created?.id) setSources((prev) => [...prev, created]);

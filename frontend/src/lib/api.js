@@ -98,10 +98,11 @@ export const api = {
   addLink: (body) => req("/sources/link", { method: "POST", body: JSON.stringify(body) }),
   previewLink: (url) => req("/sources/link/preview", { method: "POST", body: JSON.stringify({ url }) }),
   deleteSource: (id) => req(`/sources/${id}`, { method: "DELETE" }),
-  uploadSource: async (file, goalId = "") => {
+  uploadSource: async (file, goalId = "", { temporary = false } = {}) => {
     const fd = new FormData();
     fd.append("file", file);
     fd.append("goal_id", goalId);
+    if (temporary) fd.append("temporary", "true");
     const controller = new AbortController();
     const res = await withTimeout(
       fetch(`${API}/sources/upload`, {

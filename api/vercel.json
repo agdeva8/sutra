@@ -1,5 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "nextjs",
-  "buildCommand": "sh scripts/vercel-build.sh"
+  "buildCommand": "sh scripts/vercel-build.sh",
+  "crons": [
+    { "path": "/api/cron/cleanup-sources", "schedule": "0 3 * * *" }
+  ]
 }

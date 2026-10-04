@@ -3,21 +3,21 @@ import { ChevronDown, Sparkles, HelpCircle, Zap } from "lucide-react";
 
 /**
  * ChatModeSelect — replaces the two-toggle button pair with a single
- * 3-option dropdown. Order matters: default (coach may ask) first, then
- * the aggressive / passive options.
+ * 3-option dropdown. Ask is the default; Auto assumes low-impact details,
+ * while Grill keeps asking until the plan is specific.
  *
  * Modes:
- *   - "coach"  (default) — coach decides: asks 1-2 light clarifying
- *     questions when truly needed, otherwise proposes directly.
+ *   - "coach"  (default) — Ask for missing details that materially change
+ *     the plan; assume the rest.
  *   - "auto"             — coach makes reasonable assumptions and just
  *     proposes (auto-answer mode).
  *   - "grill"            — coach pushes back: keeps asking until it has
  *     enough specifics to propose something concrete.
  */
 const MODES = [
-  { id: "coach", label: "coach may ask", shortLabel: "may ask", description: "Light — 1–2 questions only when truly needed", icon: HelpCircle },
-  { id: "auto",  label: "answering for you", shortLabel: "auto", description: "Auto — assumes and proposes", icon: Sparkles },
-  { id: "grill", label: "grill me", shortLabel: "grill", description: "Intense — keeps pushing until specifics land", icon: Zap },
+  { id: "coach", label: "Ask me", shortLabel: "ask", description: "Ask for missing details that materially change the plan; assume the rest.", icon: HelpCircle },
+  { id: "auto",  label: "Auto", shortLabel: "auto", description: "Make reasonable assumptions and propose the plan now.", icon: Sparkles },
+  { id: "grill", label: "Grill me", shortLabel: "grill", description: "Keep asking tailored questions until you have enough to plan.", icon: Zap },
 ];
 
 export default function ChatModeSelect({ autoAnswer, grillMe, setAutoAnswer, setGrillMe, initialOpen = false }) {

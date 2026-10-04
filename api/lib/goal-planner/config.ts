@@ -76,12 +76,13 @@ export const MAX_WEEKLY_HOURS = 20
 export const MIN_PHASES = 2
 export const MAX_PHASES = 4
 export const MIN_MILESTONES = 3
-export const MAX_MILESTONES = 5
+export const MAX_MILESTONES = 8
 export const MAX_BLOCKERS = 3
 export const MIN_COMMITMENTS = 1
 export const MAX_COMMITMENTS = 3
-export const MAX_TOOLS = 8
-export const MAX_CLARIFYING_QUESTIONS = 2
+export const MAX_PLAN_BLOCKS = 8
+export const MAX_TOOLS = 16
+export const MAX_CLARIFYING_QUESTIONS = 6
 
 /* -------------------------------------------------------------------------- */
 /* Horizon windows                                                            */

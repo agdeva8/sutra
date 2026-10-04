@@ -307,10 +307,11 @@ export const sources = pgTable('sources', {
   url: text('url').notNull().default(''),
   textExcerpt: text('text_excerpt'),
   isDeleted: boolean('is_deleted').notNull().default(false),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true })
     .notNull()
     .defaultNow(),
-})
+}, (t) => [index('sources_expires_at_idx').on(t.expiresAt)])
 
 /* -------------------------------------------------------------------------- */
 /* Memories — user-pinned photos and Instagram-style embeds. Distinct from   */
@@ -357,11 +358,10 @@ export const memories = pgTable('memories', {
 /* -------------------------------------------------------------------------- */
 /* Timetable blocks — Phase 6 planner                                          */
 /*                                                                             */
-/* Direct CRUD, not LLM-mediated (Hard constraint #2 — only blockers and       */
-/* timetable blocks skip the propose->confirm path). A block can be a          */
-/* commitment, routine, blocker, or focus slot; source=plan means the coach   */
-/* proposed it during a `plan_day` conversation, manual means the user typed   */
-/* it directly, etc.                                                          */
+/* Manual UI CRUD remains available. `plan_day` can also create blocks through */
+/* the coach's proposal -> user-confirm path. `source=plan` marks those blocks;*/
+/* `manual` means the user typed the block directly. A block can be a          */
+/* commitment, routine, blocker, or focus slot.                               */
 /* -------------------------------------------------------------------------- */
 
 export const timetableBlocks = pgTable('timetable_blocks', {

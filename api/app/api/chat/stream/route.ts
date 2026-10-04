@@ -319,6 +319,11 @@ export async function POST(req: NextRequest) {
         const addGoalHint = proactive_propose
           ? '\n\n=== ADD GOAL MODE ===\nThe user has opened the Add Goal dialog and wants a goal created now. State your single biggest assumption in one short line, then emit a [[TOOLS]] block with a create_goal + 2-3 add_milestone actions. Use TODAY + ~90 days as the default target_date if no deadline was given.'
           : ''
+        const modeHint = clarify
+          ? '\n\n=== GRILL MODE — OVERRIDES GENERAL CLARIFY RULE ===\nAsk tailored questions about every material missing detail, up to 6 per turn. Never invent strengths, weaknesses, application status, time, or source contents. Continue across turns until the plan is specific; once satisfied, propose it. Do not emit state-changing tools in a turn that asks questions.'
+          : !autoAnswer
+          ? '\n\n=== ASK MODE — OVERRIDES GENERAL CLARIFY RULE ===\nAsk up to 6 questions about details that materially change the plan; assume low-impact details. Use the full conversation so you do not repeat answered questions. Ask job-goal users about readiness gaps, applications/interviews, weekly time, and constraints when missing. After the user answers and you have enough, propose the plan. Do not emit state-changing tools in a turn that asks questions.'
+          : ''
 
         // The whole turn (generate → optional refine → finalize) is a
         // LangGraph in `lib/chat/ops-graph.ts`, streaming prose deltas back
@@ -326,7 +331,7 @@ export async function POST(req: NextRequest) {
         const graph = buildOpsGraph({
           userId: caller.userId,
           provider: requestedProvider,
-          system: SYSTEM_PROMPT + '\n\n=== LIVE STATE & MEMORY ===\n' + contextString + addGoalHint,
+          system: SYSTEM_PROMPT + modeHint + '\n\n=== LIVE STATE & MEMORY ===\n' + contextString + addGoalHint,
           coreMessages,
           scopedKind,
           autoAnswer,
@@ -373,13 +378,17 @@ export async function POST(req: NextRequest) {
           })
 
           for (const p of proposals) {
+            const args =
+              p.action === 'create_goal' && scopedKind === 'add_goal' && sourceIds.length > 0
+                ? { ...p.args, source_ids: sourceIds }
+                : p.args
             await tx.insert(proposalsTable).values({
               id: p.id,
               messageId: assistantMessageId!,
               userId: caller.userId,
               conversationId,
               action: p.action,
-              args: p.args,
+              args,
               status: 'pending',
             })
           }

@@ -6,7 +6,7 @@
  * line up with the PRD glossary on purpose — a mismatch there is a bug.
  *
  * Deviation from the PRD sketch (deliberate): the shared `PlanSchema` does NOT
- * enforce 3-5 milestones / 1-3 commitments, because those bounds are specific
+ * enforce 3-8 milestones / 1-3 commitments, because those bounds are specific
  * to the `add_goal` intent — `drop_goal` / `plan_day` legitimately emit fewer.
  * The intent-specific bounds are enforced in `crossValidate()` when
  * `intent === 'add_goal'`.
@@ -20,6 +20,7 @@ import {
   MAX_CLARIFYING_QUESTIONS,
   MAX_COMMITMENTS,
   MAX_MILESTONES,
+  MAX_PLAN_BLOCKS,
   MAX_PHASES,
   MAX_TOOLS,
   MAX_WEEKLY_HOURS,
@@ -30,6 +31,8 @@ import {
 const isoDate = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, 'expected YYYY-MM-DD')
+const time = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/, 'expected HH:MM')
+const blockKind = z.enum(['commitment', 'routine', 'blocker', 'focus'])
 
 export const HorizonSchema = z.enum(HORIZONS)
 
@@ -47,6 +50,9 @@ export const INTENTS = [
 export const IntentSchema = z.enum(INTENTS)
 export type Intent = z.infer<typeof IntentSchema>
 
+export const PLANNING_MODES = ['auto', 'ask', 'grill'] as const
+export type PlanningMode = (typeof PLANNING_MODES)[number]
+
 /** The four renegotiation buttons surfaced when Stage 3.5 says no. */
 export const RenegotiationOptionSchema = z.enum([
   'shift_existing_target',
@@ -56,7 +62,7 @@ export const RenegotiationOptionSchema = z.enum([
 ])
 export type RenegotiationOption = z.infer<typeof RenegotiationOptionSchema>
 
-/** The 9 executor actions (api/lib/proposal-executor.ts:191-211). */
+/** Proposal actions applied by api/lib/proposal-executor.ts. */
 export const TOOL_ACTIONS = [
   'create_goal',
   'update_goal',
@@ -65,6 +71,7 @@ export const TOOL_ACTIONS = [
   'set_goal_dates',
   'add_milestone',
   'add_blocker',
+  'add_block',
   'add_commitment',
   'complete_commitment',
 ] as const
@@ -79,7 +86,7 @@ export const ALLOWED_ACTIONS: Record<Intent, readonly ToolAction[]> = {
   // cross-validator still requires the referenced goal to exist and any
   // dates to come from the plan.
   add_goal: ['create_goal', 'add_milestone', 'add_blocker', 'add_commitment', 'set_goal_dates'],
-  plan_day: ['add_commitment', 'complete_commitment', 'add_blocker'],
+  plan_day: ['add_block', 'add_commitment', 'complete_commitment', 'add_blocker'],
   edit_goal: [
     'update_goal',
     'set_goal_dates',
@@ -138,6 +145,21 @@ export const ACTION_ARG_SCHEMAS: Record<ToolAction, z.ZodTypeAny> = {
       note: z.string().optional(),
     })
     .passthrough(),
+  add_block: z
+    .object({
+      block_date: isoDate,
+      start_time: time,
+      end_time: time,
+      label: z.string().trim().min(1),
+      kind: blockKind,
+      goal_title: z.string().optional(),
+      note: z.string().optional(),
+    })
+    .passthrough()
+    .refine((block) => block.end_time > block.start_time, {
+      path: ['end_time'],
+      message: 'end_time must be after start_time',
+    }),
   add_commitment: z
     .object({
       goal_title: z.string().min(1),
@@ -229,6 +251,21 @@ export const PlanBlockerSchema = z.object({
   note: z.string().optional(),
 })
 
+export const PlanBlockSchema = z
+  .object({
+    block_date: isoDate,
+    start_time: time,
+    end_time: time,
+    label: z.string().trim().min(1),
+    kind: blockKind,
+    goal_title: z.string().optional(),
+    note: z.string().optional(),
+  })
+  .refine((block) => block.end_time > block.start_time, {
+    path: ['end_time'],
+    message: 'end_time must be after start_time',
+  })
+
 export const PlanCommitmentSchema = z.object({
   goal_title: z.string().min(1),
   text: z.string().min(1),
@@ -240,6 +277,7 @@ export const PlanSchema = z.object({
   goal: PlanGoalSchema.nullable(),
   milestones: z.array(PlanMilestoneSchema).max(MAX_MILESTONES),
   blockers: z.array(PlanBlockerSchema).max(MAX_BLOCKERS),
+  blocks: z.array(PlanBlockSchema).max(MAX_PLAN_BLOCKS).default([]),
   commitments: z.array(PlanCommitmentSchema).max(MAX_COMMITMENTS),
   prose: z.string().min(1).max(500),
 })

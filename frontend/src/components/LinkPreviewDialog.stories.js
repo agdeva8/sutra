@@ -5,7 +5,22 @@ export default {
   title: "Components/LinkPreviewDialog",
   component: LinkPreviewDialog,
   tags: ["autodocs"],
-  parameters: { layout: "fullscreen" },
+  parameters: {
+    layout: "fullscreen",
+    api: {
+      "sources/link/preview": {
+        ok: true,
+        url: "https://example.com",
+        host: "example.com",
+        title: "Example Domain",
+        description: "An example page used for documentation.",
+        snippet: "This excerpt is the text fetched from the page and available to the coach.",
+        content_type: "text/html",
+        status: 200,
+        error: null,
+      },
+    },
+  },
   args: {
     open: true,
     url: "https://example.com",

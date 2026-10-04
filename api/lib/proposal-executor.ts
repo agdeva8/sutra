@@ -42,7 +42,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray, isNull } from 'drizzle-orm'
 
 import { applyGoalDropCascade, resolveGoalRef } from '@/lib/goal-drop'
 
@@ -167,6 +167,8 @@ export async function applyProposal(
       return applyAddMilestone(db, schema, userId, proposal)
     case 'add_blocker':
       return applyAddBlocker(db, schema, userId, proposal)
+    case 'add_block':
+      return applyAddTimetableBlock(db, schema, userId, proposal)
     case 'add_commitment':
       return applyAddCommitment(db, schema, userId, proposal)
     case 'complete_commitment':
@@ -243,6 +245,22 @@ async function applyCreateGoal(
       lifeArea,
       status: 'active',
     })
+    const sourceIds = Array.isArray(args.source_ids)
+      ? args.source_ids.filter((id: unknown): id is string => typeof id === 'string').slice(0, 10)
+      : []
+    if (sourceIds.length > 0) {
+      await tx
+        .update(schema.sources)
+        .set({ goalId, goalTitle: title, expiresAt: null })
+        .where(
+          and(
+            eq(schema.sources.userId, userId),
+            eq(schema.sources.isDeleted, false),
+            isNull(schema.sources.goalId),
+            inArray(schema.sources.id, sourceIds),
+          ),
+        )
+    }
     await tx.insert(schema.auditLog).values({
       id: newId('audit'),
       userId,
@@ -579,6 +597,69 @@ async function applyAddBlocker(
   return {
     success: true,
     result: `Blocker '${title}' ${startDate}..${endDate}`,
+  }
+}
+
+async function applyAddTimetableBlock(
+  db: any,
+  schema: any,
+  userId: string,
+  proposal: Proposal,
+): Promise<ApplyProposalResult> {
+  const args = proposal.args
+  const blockDate = typeof args.block_date === 'string' ? args.block_date : ''
+  const startTime = typeof args.start_time === 'string' ? args.start_time : ''
+  const endTime = typeof args.end_time === 'string' ? args.end_time : ''
+  const label = typeof args.label === 'string' ? args.label.trim() : ''
+  const kind = args.kind
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(blockDate) ||
+    !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(startTime) ||
+    !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(endTime) ||
+    endTime <= startTime ||
+    !label ||
+    !['commitment', 'routine', 'blocker', 'focus'].includes(kind)
+  ) {
+    return { success: false, result: 'Invalid timetable block details.' }
+  }
+
+  let goalId: string | null = null
+  let goalTitle = ''
+  if (typeof args.goal_title === 'string' && args.goal_title.trim()) {
+    const ref = await resolveGoalRef(db, schema, userId, args)
+    if (!ref) {
+      return { success: false, result: `No matching goal for '${args.goal_title}'` }
+    }
+    goalId = ref.goalId
+    goalTitle = ref.goalTitle
+  }
+
+  await db.transaction(async (tx: any) => {
+    await tx.insert(schema.timetableBlocks).values({
+      id: newId('blk'),
+      userId,
+      blockDate,
+      startTime,
+      endTime,
+      label,
+      kind,
+      source: 'plan',
+      goalId,
+      goalTitle,
+      note: typeof args.note === 'string' ? args.note : '',
+    })
+    await tx.insert(schema.auditLog).values({
+      id: newId('audit'),
+      userId,
+      type: `confirm:${proposal.action}`,
+      summary: `Scheduled '${label}' ${blockDate} ${startTime}-${endTime}`,
+      payload: { proposal_id: proposal.id, args },
+    })
+  })
+
+  return {
+    success: true,
+    result: `Scheduled '${label}' ${blockDate} ${startTime}-${endTime}`,
   }
 }
 

@@ -5,7 +5,7 @@
  * cookie OR `Authorization: Bearer <token>` (test/dev compat).
  */
 
-import { NextRequest, NextResponse } from 'next/server'
+import { after, NextRequest, NextResponse } from 'next/server'
 import { randomUUID } from 'node:crypto'
 
 import { auth } from '@/lib/auth'
@@ -27,9 +27,13 @@ const ALLOWED_EXTENSIONS = new Set([
   'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'tif', 'tiff', 'avif',
   'heic', 'heif',
 ])
+const IMAGE_EXTENSIONS = new Set([
+  'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'tif', 'tiff', 'avif', 'heic', 'heif',
+])
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
+export const maxDuration = 60
 
 /**
  * Resolve the authenticated user ID from the request via the unified
@@ -77,6 +81,7 @@ export async function POST(req: NextRequest) {
   }
 
   const goalId = String(formData.get('goal_id') ?? '')
+  const temporary = formData.get('temporary') === 'true'
 
   // Read file bytes once (cannot re-read a File/Blob in browser-like streams)
   const buffer = Buffer.from(await file.arrayBuffer())
@@ -89,8 +94,11 @@ export async function POST(req: NextRequest) {
     file.type || 'application/octet-stream',
   )
 
-  // Extract text excerpt
-  const textExcerpt = await extractText(filename, buffer)
+  // OCR must not hold up the attachment response. Next's `after` keeps the
+  // worker alive on supported serverless runtimes while returning the source
+  // row immediately; the planner treats an empty excerpt as unreadable.
+  const isImage = IMAGE_EXTENSIONS.has(ext) || file.type.startsWith('image/')
+  const textExcerpt = isImage ? null : await extractText(filename, buffer)
 
   // P1 security: goal ownership must be enforced. If goal_id is
   // supplied, the goal MUST belong to the caller — otherwise an
@@ -132,8 +140,31 @@ export async function POST(req: NextRequest) {
       url: '',
       textExcerpt,
       isDeleted: false,
+      expiresAt:
+        temporary && !resolvedGoalId
+          ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+          : null,
     })
     .returning()
+
+  if (isImage) {
+    after(async () => {
+      try {
+        const excerpt = await extractText(filename, buffer)
+        await db
+          .update(sources)
+          .set({ textExcerpt: excerpt })
+          .where(and(eq(sources.id, id), eq(sources.userId, userId), eq(sources.isDeleted, false)))
+      } catch (error) {
+        console.warn('[sources] background image text extraction failed', error)
+        await db
+          .update(sources)
+          .set({ textExcerpt: '' })
+          .where(and(eq(sources.id, id), eq(sources.userId, userId), eq(sources.isDeleted, false)))
+          .catch(() => undefined)
+      }
+    })
+  }
 
   return NextResponse.json({
     id: row.id,
@@ -147,6 +178,7 @@ export async function POST(req: NextRequest) {
     size: row.size,
     url: row.url,
     is_deleted: row.isDeleted,
+    text_pending: isImage,
     created_at: row.createdAt.toISOString(),
   })
 }

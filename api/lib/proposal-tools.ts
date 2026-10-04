@@ -9,7 +9,7 @@
  *
  * Why a text-block protocol:
  *   The Emergent LLM proxy is OpenAI-compatible; it doesn't expose the
- *   AI-SDK `tool_calls` channel with our 9 action schemas. We instead
+ *   AI-SDK `tool_calls` channel with our action schemas. We instead
  *   ship the JSON schema of allowed actions in the system prompt and
  *   parse the assistant's emitted `[[TOOLS]]` block into typed
  *   `Proposal` objects server-side. This mirrors what the Python
@@ -32,7 +32,7 @@
  */
 
 /* -------------------------------------------------------------------------- */
-/* 9 action names — same set the system prompt advertises.                  */
+/* Action names — same set the system prompt advertises.                     */
 /*                                                                             */
 /* The chat UI (`components/coach/ToolConfirmationPrompt.tsx`) uses these   */
 /* to drive a switch in `describeAction()`. Keeping them here, exported   */
@@ -48,6 +48,7 @@ export const PROPOSAL_ACTIONS = [
   'set_goal_dates',
   'add_milestone',
   'add_blocker',
+  'add_block',
   'add_commitment',
   'complete_commitment',
 ] as const

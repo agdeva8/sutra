@@ -40,7 +40,8 @@ export default function LinkPreviewDialog({ open, onClose, url = "", onAttach })
       .then((data) => {
         if (cancelled) return;
         setPreview(data);
-        setStatus("ok");
+        setStatus(data?.ok ? "ok" : "fail");
+        if (!data?.ok) setError(data?.error || "Couldn't read that link.");
       })
       .catch((e) => {
         if (cancelled) return;
@@ -97,14 +98,25 @@ export default function LinkPreviewDialog({ open, onClose, url = "", onAttach })
                     </p>
                   )}
                   <div className="mt-2 text-[10px] uppercase tracking-widest text-[var(--text-muted)]">
-                    {preview.content_type || "link"} · {preview.byte_size ? `${preview.byte_size} bytes` : "fetched"}
+                    {preview.content_type || "link"}{preview.status ? ` · HTTP ${preview.status}` : ""}
                   </div>
                 </div>
               </div>
             </div>
-            <p className="text-xs text-[var(--text-muted)]">
-              We fetched the page and pulled out the title + description. Attach it so the coach can read it as context for your goal.
-            </p>
+            {preview.snippet?.trim() ? (
+              <div data-testid="link-preview-snippet" className="max-h-36 overflow-y-auto rounded border border-[var(--border)] bg-[var(--bg-primary)] p-3 text-xs leading-relaxed text-[var(--text-secondary)] whitespace-pre-wrap">
+                {preview.snippet}
+              </div>
+            ) : (
+              <p className="text-xs text-[var(--warning)]">
+                The page responded, but no readable text was fetched. The coach will only receive the URL; paste or upload the relevant content for a grounded plan.
+              </p>
+            )}
+            {preview.snippet?.trim() && (
+              <p className="text-xs text-[var(--text-muted)]">
+                This excerpt was fetched from the page and will be available to the coach as context.
+              </p>
+            )}
           </div>
         )}
         {status === "fail" && (
@@ -116,7 +128,7 @@ export default function LinkPreviewDialog({ open, onClose, url = "", onAttach })
               <p className="text-xs text-[var(--danger)] font-mono">{error}</p>
             )}
             <p className="text-xs text-[var(--text-muted)]">
-              You can still attach it — the coach will see just the URL until it can fetch a fresh copy.
+              You can attach the URL, but the coach will not have the page content. Paste or upload the relevant text instead of relying on an unreadable link.
             </p>
           </div>
         )}
@@ -155,7 +167,7 @@ export default function LinkPreviewDialog({ open, onClose, url = "", onAttach })
             ) : (
               <>
                 <Link2 className="w-3.5 h-3.5" aria-hidden="true" />
-                {status === "ok" ? "Attach" : "Attach anyway"}
+                {status === "ok" && preview?.snippet?.trim() ? "Attach fetched text" : "Attach URL only"}
               </>
             )}
           </button>

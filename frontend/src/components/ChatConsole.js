@@ -1,5 +1,5 @@
 import { useRef, useEffect, useLayoutEffect, useState } from "react";
-import { ArrowUp, Paperclip, Link2, X, FileText, Trash2, HelpCircle, Mic, Square, Camera } from "lucide-react";
+import { ArrowUp, Paperclip, Link2, X, FileText, Trash2, Mic, Square, Camera, Check, Send, ChevronDown, ChevronUp } from "lucide-react";
 import ToolConfirmationPrompt from "./ToolConfirmationPrompt";
 import ChatModeSelect from "./ChatModeSelect";
 import MarkdownMessage from "./MarkdownMessage";
@@ -213,12 +213,25 @@ function Message({ m, settled = false, onConfirm, onReject, onRefine, onOpenRefi
           this. One arrival, one animation — the coach's, not the bubble's. */}
       {/* Coach reply. While streaming we render the raw text (cheap per
           delta + keeps the caret); once it settles we render GFM markdown
-          so tables/lists/code display properly instead of as raw pipes. */}
+          so tables/lists/code display properly instead of as raw pipes.
+          Before the first delta arrives the bubble holds no prose — show a
+          small grey status instead so the warm-up can never be mistaken
+          for the coach's actual answer. */}
       {m.streaming ? (
-        <div className="max-w-[92%] text-lg leading-[1.65] font-serif whitespace-pre-wrap break-words text-[var(--voice-fg)]">
-          <SetLines content={m.content} settled={false} />
-          <span className="gc-caret text-[var(--accent)]">▋</span>
-        </div>
+        m.content ? (
+          <div className="max-w-[92%] text-lg leading-[1.65] font-serif whitespace-pre-wrap break-words text-[var(--voice-fg)]">
+            <SetLines content={m.content} settled={false} />
+            <span className="gc-caret text-[var(--accent)]">▋</span>
+          </div>
+        ) : (
+          <div
+            data-testid="chat-response-pending"
+            className="max-w-[92%] text-xs leading-relaxed text-[var(--text-muted)]"
+          >
+            Checking your goals, commitments, and attached sources…
+            <span className="gc-caret text-[var(--accent)]">▋</span>
+          </div>
+        )
       ) : (
         <div className={`max-w-[92%] text-lg leading-[1.65] font-serif break-words text-[var(--voice-fg)]${settled ? " gc-type-set" : ""}`}>
           <MarkdownMessage content={m.content} />
@@ -262,6 +275,63 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
   const [voiceListening, setVoiceListening] = useState(false);
   const [voiceError, setVoiceError] = useState("");
   const recognitionRef = useRef(null);
+
+  // --- Clarification answers -------------------------------------------------
+  // Answer-all-then-submit: tapping an option SELECTS it (never sends). Works
+  // for single-choice questions (radio) and `multi: true` questions (checkbox,
+  // several picks allowed). One Submit carries the whole picture to the coach
+  // instead of dripping one answer per message.
+  //   picked: { [questionIndex]: string[] }  — array so multi can hold several
+  const [picked, setPicked] = useState({});
+  const [clarificationDraft, setClarificationDraft] = useState("");
+  const [clarificationsCollapsed, setClarificationsCollapsed] = useState(false);
+  const clarificationKey = pendingClarifications
+    ? pendingClarifications.messageId || `q${pendingClarifications.questions?.length || 0}`
+    : "";
+  useEffect(() => {
+    setPicked({});
+    setClarificationDraft("");
+    setClarificationsCollapsed(false);
+  }, [clarificationKey]);
+
+  const isPicked = (i, option) => (picked[i] || []).includes(option);
+
+  const togglePick = (i, option, multi) =>
+    setPicked((prev) => {
+      const current = prev[i] || [];
+      const next = multi
+        ? current.includes(option)
+          ? current.filter((o) => o !== option)
+          : [...current, option]
+        : current.includes(option)
+          ? []
+          : [option];
+      const out = { ...prev };
+      if (next.length > 0) out[i] = next;
+      else delete out[i];
+      return out;
+    });
+
+  const questionCount = pendingClarifications?.questions?.length || 0;
+  const answeredCount = Object.keys(picked).length;
+  const answerCount = answeredCount + (clarificationDraft.trim() ? 1 : 0);
+
+  const submitClarifications = () => {
+    const questions = pendingClarifications?.questions || [];
+    const lines = [];
+    questions.forEach((_, i) => {
+      const chosen = picked[i];
+      if (chosen && chosen.length > 0) {
+        lines.push(`${String(i + 1).padStart(2, "0")}: ${chosen.join(", ")}`);
+      }
+    });
+    const typed = clarificationDraft.trim();
+    if (typed) lines.push(typed);
+    if (!lines.length) return;
+    setPicked({});
+    setClarificationDraft("");
+    onAnswerClarification(lines.join("\n"));
+  };
 
   // --- Attach: link composer -------------------------------------------------
   // The link button used to be `onClick={onAddLink}`, which passed the click
@@ -392,6 +462,18 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, sending]);
+
+  // When a clarification turn lands, bring the card's HEADER into view rather
+  // than the transcript end — the card can be taller than the log, and the
+  // prompt, progress and collapse control all live at its top.
+  const clarificationRef = useRef(null);
+  useEffect(() => {
+    if (!clarificationKey) return undefined;
+    const t = setTimeout(() => {
+      clarificationRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 60);
+    return () => clearTimeout(t);
+  }, [clarificationKey]);
 
   // When focusOnMount is true (set by the parent when this console
   // mounts inside an open modal), move focus into the textarea after
@@ -663,6 +745,141 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
         {messages.slice(-CHAT_RENDER_CAP).map((m) => (
           <Message key={m.id} m={m} settled={settledId === m.id} onConfirm={onConfirm} onReject={onReject} onRefine={onRefine} onOpenRefine={onOpenRefine} onOpenReject={onOpenReject} onNavigate={onNavigate} onAnswerChoice={onAnswerChoice} showConfirm={showConfirm} busyProposal={busyProposal} onViewGoal={onViewGoal} />
         ))}
+        {/* Clarification card lives at the END of the transcript, not below the
+            composer: it is part of the coach's turn, so it scrolls with the
+            reply and the composer stays pinned. Picking options no longer sends
+            immediately — answers accumulate and go in one Submit. */}
+        {pendingClarifications && pendingClarifications.questions?.length > 0 && (
+          <div
+            ref={clarificationRef}
+            data-testid="clarification-chips"
+            className="rounded-2xl border border-[var(--border)] bg-[var(--bg-secondary)] p-4"
+          >
+            <div className="flex items-start gap-3">
+              <div className="min-w-0 flex-1">
+                <button
+                  type="button"
+                  data-testid="clarification-toggle"
+                  onClick={() => setClarificationsCollapsed((v) => !v)}
+                  aria-expanded={!clarificationsCollapsed}
+                  aria-controls="clarification-body"
+                  className="w-full rounded text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+                >
+                  <span className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--accent)]">
+                      A few details
+                    </span>
+                    <span className="shrink-0 inline-flex items-center gap-1 font-mono text-[10px] tabular-nums uppercase tracking-wider text-[var(--text-muted)]">
+                      {answeredCount} of {questionCount}
+                      {clarificationsCollapsed
+                        ? <ChevronDown className="w-3.5 h-3.5" aria-hidden="true" />
+                        : <ChevronUp className="w-3.5 h-3.5" aria-hidden="true" />}
+                    </span>
+                  </span>
+                  <span className="mt-1.5 block text-sm leading-relaxed text-[var(--text-primary)]">
+                    {pendingClarifications.prompt || "I want to make a real proposal, but I need a couple of details first."}
+                  </span>
+                </button>
+
+                {!clarificationsCollapsed && (
+                  <div id="clarification-body" className="mt-3 space-y-3">
+                    {showModeSelect && !autoAnswer && (
+                      <p data-testid="auto-mode-escape-hint" className="text-[11px] leading-relaxed text-[var(--text-muted)]">
+                        Answer what you can, then submit — or switch to Auto and I'll assume the rest.
+                      </p>
+                    )}
+
+                    {pendingClarifications.questions.map((q, i) => {
+                      const item = typeof q === "string" ? { question: q } : (q || {});
+                      const opts = Array.isArray(item.options)
+                        ? item.options.filter((o) => typeof o === "string" && o.trim())
+                        : [];
+                      const multi = item.multi === true;
+                      return (
+                        <div key={i} data-testid={`clarification-question-${i}`}>
+                          <div className="flex items-baseline gap-2">
+                            <span className="font-mono text-[10px] tabular-nums text-[var(--text-muted)]">{String(i + 1).padStart(2, "0")}</span>
+                            <span className="text-sm font-medium leading-snug text-[var(--text-primary)]">{item.question}</span>
+                            {multi && (
+                              <span className="ml-auto shrink-0 text-[10px] uppercase tracking-wide text-[var(--text-muted)]">Select all</span>
+                            )}
+                          </div>
+                          {opts.length > 0 && (
+                            <div
+                              role={multi ? "group" : "radiogroup"}
+                              aria-label={item.question}
+                              className="mt-2 divide-y divide-[var(--border)] overflow-hidden rounded-[12px] border border-[var(--border)] bg-[var(--bg-primary)]"
+                            >
+                              {opts.map((o, j) => {
+                                const on = isPicked(i, o);
+                                return (
+                                  <button
+                                    key={j}
+                                    type="button"
+                                    role={multi ? "checkbox" : "radio"}
+                                    aria-checked={on}
+                                    data-testid={`clarification-option-${i}-${j}`}
+                                    onClick={() => togglePick(i, o, multi)}
+                                    className={`flex min-h-11 w-full items-center gap-3 px-4 text-left text-sm transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--accent)] ${
+                                      on
+                                        ? "bg-[color-mix(in_srgb,var(--accent)_10%,transparent)] text-[var(--text-primary)]"
+                                        : "text-[var(--text-primary)] hover:bg-[color-mix(in_srgb,var(--accent)_8%,transparent)]"
+                                    }`}
+                                  >
+                                    <span className="min-w-0 flex-1 py-2.5">{o}</span>
+                                    {on ? (
+                                      <Check className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />
+                                    ) : (
+                                      <span
+                                        aria-hidden="true"
+                                        className={`h-4 w-4 shrink-0 border border-[var(--border-accent)] ${multi ? "rounded-[4px]" : "rounded-full"}`}
+                                      />
+                                    )}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    <input
+                      type="text"
+                      data-testid="clarification-free-text"
+                      value={clarificationDraft}
+                      onChange={(e) => setClarificationDraft(e.target.value)}
+                      placeholder="Or type your own answer…"
+                      aria-label="Type your own answer"
+                      className="w-full rounded-[12px] border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-[var(--border-accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+                    />
+                  </div>
+                )}
+                {(answerCount > 0 || !clarificationsCollapsed) && (
+                  <button
+                    type="button"
+                    data-testid="clarification-submit"
+                    onClick={submitClarifications}
+                    disabled={!answerCount || sending}
+                    className="mt-3 flex min-h-11 w-full items-center justify-center gap-2 rounded-[12px] bg-[var(--accent)] text-sm font-semibold text-[var(--bg-primary)] transition-opacity disabled:opacity-30 hover:opacity-90 active:scale-[0.99]"
+                  >
+                    <Send className="w-3.5 h-3.5" aria-hidden="true" />
+                    {answerCount > 0 ? `Submit ${answerCount} answer${answerCount === 1 ? "" : "s"}` : "Submit"}
+                  </button>
+                )}
+              </div>
+              <button
+                onClick={onDismissClarifications}
+                data-testid="clarification-dismiss"
+                title="Dismiss"
+                aria-label="Dismiss suggestions"
+                className="-mr-2 -mt-1 inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
         <div ref={endRef} />
       </div>
 
@@ -697,7 +914,7 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
               inputMode="url"
               data-testid="chat-link-input"
               value={linkValue}
-              onChange={(e) => setLinkValue(e.targetValue)}
+              onChange={(e) => setLinkValue(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Escape") {
                   e.preventDefault();
@@ -839,90 +1056,6 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
           </p>
         )}
 
-        {pendingClarifications && pendingClarifications.questions?.length > 0 && (
-          <div data-testid="clarification-chips" className="mt-2 p-3 border border-[color-mix(in_srgb,var(--border-accent)_40%,transparent)] rounded-md bg-[var(--bg-secondary)]">
-            <div className="flex items-start gap-2">
-              <HelpCircle className="w-4 h-4 mt-0.5 text-[var(--accent)] shrink-0" />
-              <div className="flex-1 min-w-0">
-                <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
-                  {pendingClarifications.prompt || "I want to make a real proposal, but I need a couple of details first."}
-                </p>
-                {/* Claude-style: full-width single-choice options + a free-text fallback input below */}
-                <div className="mt-2.5 space-y-2">
-                  {pendingClarifications.questions.map((q, i) => {
-                    const item = typeof q === "string" ? { question: q } : (q || {});
-                    const opts = Array.isArray(item.options)
-                      ? item.options.filter((o) => typeof o === "string" && o.trim())
-                      : [];
-                    if (opts.length > 0) {
-                      return (
-                        <div
-                          key={i}
-                          data-testid={`clarification-question-${i}`}
-                          className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2"
-                        >
-                          <div className="text-xs leading-relaxed text-[var(--text-primary)]">
-                            <span className="tabular-nums text-xs text-[var(--text-muted)] mr-2">{String(i + 1).padStart(2, "0")}</span>
-                            {item.question}
-                          </div>
-                          <div className="mt-2 flex flex-wrap gap-1.5">
-                            {opts.map((o, j) => (
-                              <button
-                                key={j}
-                                type="button"
-                                data-testid={`clarification-option-${i}-${j}`}
-                                onClick={() => onAnswerClarification(o)}
-                                className="min-h-11 text-left text-xs px-2.5 py-1.5 rounded-full border border-[var(--border)] bg-[var(--bg-primary)] text-[var(--text-primary)] hover:border-[var(--accent)] hover:text-[var(--accent)] hover:bg-[color-mix(in_srgb,var(--accent)_5%,transparent)] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
-                              >
-                                {o}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      );
-                    }
-                    return (
-                      <button
-                        key={i}
-                        type="button"
-                        data-testid={`clarification-chip-${i}`}
-                        onClick={() => onAnswerClarification(item.question)}
-                        className="w-full text-left min-h-11 text-xs leading-relaxed px-3 py-2 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] text-[var(--text-primary)] hover:border-[var(--accent)] hover:bg-[color-mix(in_srgb,var(--accent)_5%,transparent)] transition-colors"
-                      >
-                        <span className="tabular-nums text-xs text-[var(--text-muted)] mr-2">{String(i + 1).padStart(2, "0")}</span>
-                        {item.question}
-                      </button>
-                    );
-                  })}
-                </div>
-                <div className="mt-2.5 flex items-center gap-1.5">
-                  <input
-                    type="text"
-                    data-testid="clarification-free-text"
-                    placeholder="Or type your own answer…"
-                    aria-label="Type your own answer"
-                    className="flex-1 min-w-0 bg-[var(--bg-primary)] border border-[var(--border)] focus:border-[var(--border-accent)] outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] rounded-md px-2.5 py-1.5 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && e.currentTarget.value.trim()) {
-                        onAnswerClarification(e.currentTarget.value);
-                        e.currentTarget.value = "";
-                      }
-                    }}
-                  />
-                </div>
-              </div>
-              <button
-                onClick={onDismissClarifications}
-                data-testid="clarification-dismiss"
-                title="Dismiss"
-                aria-label="Dismiss suggestions"
-                className="min-h-11 min-w-11 inline-flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] shrink-0"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          </div>
-        )}
       </div>
       <LinkPreviewDialog
         open={previewOpen}

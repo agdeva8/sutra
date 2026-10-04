@@ -77,11 +77,13 @@ export function getActiveRenegotiation() {
  */
 export function usePlanSend({
   kind,
+  scope,
   refIdRef,
   title,
   helperText,
   autoAnswer,
   grillMe,
+  sources = [],
   setMessages,
   applyPlan,
 }) {
@@ -101,19 +103,22 @@ export function usePlanSend({
 
       if (!PLANNED_KINDS.has(kind) && !isRenegRound) return false;
 
-      // Grill-me is a legacy-only flow (SSE needs_clarification event);
-      // don't intercept it.
-      if (grillMe && !isRenegRound) return false;
-
+      let handled = false;
       try {
         setApplyingPlan(true);
+        // The bubble stays empty while the (non-streaming) planner runs;
+        // ChatConsole renders a small grey status for an empty streaming
+        // message, so the warm-up reads as progress, not as a reply.
         const body = {
           message: text,
           kind,
+          scope,
           refId: refIdRef?.current ?? null,
           title,
           helperText,
           auto_answer: autoAnswer,
+          grillMe,
+          sourceIds: sources.map((source) => source.id).filter(Boolean),
         };
         if (reneg && reneg.refId === (refIdRef?.current ?? null)) {
           body.renegotiation = {
@@ -128,9 +133,15 @@ export function usePlanSend({
         }
         const result = await api.plan(body);
 
-        // Legacy path disabled (flag off) or kind not planned server-side —
-        // fall through silently.
-        if (result?.status === "disabled" || result?.status === "not_planned") {
+        // Disabled / not planned / pipeline stage failure (`no_change` only
+        // ever means a stage failed in this pipeline) — fall through to the
+        // streaming chat path so the user still gets a real reply instead of
+        // a dead-end "no changes needed" bubble.
+        if (
+          result?.status === "disabled" ||
+          result?.status === "not_planned" ||
+          result?.status === "no_change"
+        ) {
           return false;
         }
 
@@ -147,6 +158,7 @@ export function usePlanSend({
         }
 
         applyPlan?.(result, { streamId });
+        handled = true;
         return true;
       } catch (e) {
         // Planner-specific failure on a planned kind. The SSE path can't
@@ -158,10 +170,19 @@ export function usePlanSend({
         }
         return false;
       } finally {
+        if (!handled) {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === streamId
+                ? { ...m, content: '', streaming: true }
+                : m,
+            ),
+          );
+        }
         setApplyingPlan(false);
       }
     },
-    [kind, refIdRef, title, helperText, autoAnswer, grillMe, applyPlan],
+    [kind, scope, refIdRef, title, helperText, autoAnswer, grillMe, sources, setMessages, applyPlan],
   );
 
   return { tryPlan, applyingPlan };

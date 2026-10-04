@@ -35,6 +35,7 @@ const plan: Plan = {
     { title: 'Offer', target_date: '2027-01-29', phase: 'Active', rationale: 'z' },
   ],
   blockers: [],
+  blocks: [],
   commitments: [
     { goal_title: TITLE, text: 'Pick a resource', due: '2026-10-02', phase: 'Foundations' },
   ],
@@ -60,16 +61,19 @@ const emitOk: Emit = {
 
 function fakeComplete(opts: {
   intake?: unknown
+  intakes?: unknown[]
   plan?: unknown
   emits?: unknown[]
   throwAt?: 'intake' | 'plan' | 'emit'
 }) {
   let emitIdx = 0
+  let intakeIdx = 0
   return (async (args: { schema: unknown }) => {
     const meta = { mode: 'object' as const }
     if (args.schema === IntakeSchema) {
       if (opts.throwAt === 'intake') throw new Error('intake boom')
-      return { object: opts.intake, meta }
+      const object = opts.intakes ? opts.intakes[intakeIdx++] : opts.intake
+      return { object, meta }
     }
     if (args.schema === PlanSchema) {
       if (opts.throwAt === 'plan') throw new Error('plan boom')
@@ -293,13 +297,13 @@ describe('runPlanPipeline', () => {
     expect(res.tools.some((t) => t.action === 'add_blocker')).toBe(true)
   })
 
-  it('pauses on a clarify interrupt and resumes with the answer (LangGraph)', async () => {
+  it('keeps clarifying across turns, then plans when the remaining details are answered', async () => {
     const complete = fakeComplete({
-      intake: {
-        ...intakeOk,
-        needs_clarification: true,
-        clarifying_questions: [{ question: 'By when?', options: ['3 months', '6 months'] }],
-      },
+      intakes: [
+        { ...intakeOk, needs_clarification: true, clarifying_questions: ['Which interview areas need work?'] },
+        { ...intakeOk, needs_clarification: true, clarifying_questions: ['Have you started applying?'] },
+        intakeOk,
+      ],
       plan,
       emits: [emitOk],
     })
@@ -308,14 +312,36 @@ describe('runPlanPipeline', () => {
     const first = await runPlanPipeline(base({ threadId, deps: { complete } }))
     expect(first.kind).toBe('clarify')
     if (first.kind === 'clarify') {
-      expect(first.questions).toEqual([{ question: 'By when?', options: ['3 months', '6 months'] }])
+      expect(first.questions).toEqual(['Which interview areas need work?'])
     }
 
-    // Resume: the graph re-runs only the clarify node, then plans + emits.
     const second = await runPlanPipeline(
-      base({ threadId, message: '6 months', resume: '6 months', deps: { complete } }),
+      base({ threadId, message: 'System design and behavioral.', resume: 'System design and behavioral.', deps: { complete } }),
     )
-    expect(second.kind).toBe('ok')
-    if (second.kind === 'ok') expect(second.tools).toHaveLength(3)
+    expect(second.kind).toBe('clarify')
+    if (second.kind === 'clarify') expect(second.questions).toEqual(['Have you started applying?'])
+
+    const third = await runPlanPipeline(
+      base({ threadId, message: 'I have not applied yet.', resume: 'I have not applied yet.', deps: { complete } }),
+    )
+    expect(third.kind).toBe('ok')
+    if (third.kind === 'ok') expect(third.tools).toHaveLength(3)
+  })
+
+  it('switching to auto bypasses a pending clarify and plans from the full history', async () => {
+    const needsMore = {
+      ...intakeOk,
+      needs_clarification: true,
+      clarifying_questions: ['One more important detail?'],
+    }
+    const complete = fakeComplete({ intakes: [needsMore, needsMore], plan, emits: [emitOk] })
+    const threadId = `auto-${Math.random().toString(36).slice(2)}`
+    const first = await runPlanPipeline(base({ threadId, mode: 'ask', deps: { complete } }))
+    expect(first.kind).toBe('clarify')
+
+    const resumed = await runPlanPipeline(
+      base({ threadId, mode: 'auto', message: 'Use reasonable assumptions.', resume: 'Use reasonable assumptions.', deps: { complete } }),
+    )
+    expect(resumed.kind).toBe('ok')
   })
 })

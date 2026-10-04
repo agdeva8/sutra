@@ -87,6 +87,8 @@ export default function ChatModal({
   // confirm (server pre-mints the next bucket) or on a defensive
   // redirect in the `done` SSE event.
   const refIdRef = useRef(refId ?? null);
+  const previousAutoAnswerRef = useRef(autoAnswer);
+  const autoResumePendingRef = useRef(false);
 
   // Re-seed the bucket whenever the modal reopens or the parent swaps
   // the scoped context. Falls back to a kind-appropriate mint when a
@@ -105,17 +107,17 @@ export default function ChatModal({
     } else if (kind === "add_goal") {
       refIdRef.current = `new_goal_${crypto.randomUUID()}`;
     } else if (kind === "plan_day") {
-      refIdRef.current = `plan_${new Date().toISOString().slice(0, 10)}`;
+      refIdRef.current = `action_${crypto.randomUUID()}`;
     } else if (kind === "review_progress") {
-      // Daily read / accountability check-ins get their own per-day
-      // bucket so yesterday's read doesn't bleed into today's.
-      refIdRef.current = `review_${new Date().toISOString().slice(0, 10)}`;
+      refIdRef.current = `action_${crypto.randomUUID()}`;
+    } else if (scope || title || (kind && kind !== "general")) {
+      refIdRef.current = `action_${crypto.randomUUID()}`;
     } else {
       // General / unscoped chat — server falls back to
       // conv_general_<userId>; no client-side bucket.
       refIdRef.current = null;
     }
-  }, [open, refId, kind]);
+  }, [open, refId, kind, scope, title]);
 
   // Seed the input whenever the modal opens or the opener swaps the
   // prefill. Two jobs:
@@ -225,11 +227,13 @@ export default function ChatModal({
   // and deps (TDZ error otherwise).
   const { tryPlan } = usePlanSend({
     kind,
+    scope,
     refIdRef,
     title,
     helperText,
     autoAnswer,
     grillMe,
+    sources,
     setMessages,
     applyPlan,
   });
@@ -254,9 +258,9 @@ export default function ChatModal({
       // Iteration 10 — the five planned kinds try the typed pipeline first.
       // falls back to the SSE path below when the planner is disabled,
       // errors, or isn't applicable.
-      const handled = await tryPlan(text, streamId);
-      if (handled) return;
       try {
+      const handled = await tryPlan(text, streamId);
+        if (handled) return;
         const resp = await fetch(`${API}/chat/stream`, {
           method: "POST",
           credentials: "include",
@@ -377,6 +381,21 @@ export default function ChatModal({
     [autoAnswer, grillMe, scope, kind, title, helperText, sources, tryPlan],
   );
 
+  useEffect(() => {
+    const switchedToAuto = autoAnswer && !previousAutoAnswerRef.current;
+    previousAutoAnswerRef.current = autoAnswer;
+    if (switchedToAuto && (pendingClarifications || sending)) {
+      autoResumePendingRef.current = true;
+    }
+    if (autoAnswer && autoResumePendingRef.current && pendingClarifications && !sending) {
+      autoResumePendingRef.current = false;
+      setPendingClarifications(null);
+      send('Proceed with reasonable assumptions for anything unanswered and make the plan now.');
+    } else if (!sending && !pendingClarifications) {
+      autoResumePendingRef.current = false;
+    }
+  }, [autoAnswer, pendingClarifications, sending, send]);
+
   const confirmProposal = useCallback(
     async (messageId, proposalId) => {
       setBusyProposal(proposalId);
@@ -394,6 +413,7 @@ export default function ChatModal({
             ?.proposals?.find((p) => p.id === proposalId);
           const title =
             proposal?.args?.title ||
+            proposal?.args?.label ||
             proposal?.args?.goal_title ||
             proposal?.args?.new_title ||
             proposal?.title;
@@ -403,6 +423,7 @@ export default function ChatModal({
               drop_goal: "Dropped",
               pause_goal: "Paused",
               add_milestone: "Added milestone",
+              add_block: "Scheduled",
               add_commitment: "Added commitment",
               complete_commitment: "Completed",
             }[proposal?.action] || "Confirmed";
@@ -613,7 +634,8 @@ export default function ChatModal({
     async (file) => {
       toast.message(`Uploading ${file.name}…`);
       try {
-        const created = await api.uploadSource(file, "");
+        const goalId = scope === "goal" && refId ? refId : "";
+        const created = await api.uploadSource(file, goalId, { temporary: !goalId && Boolean(title) });
         if (created?.id) setSources((prev) => [...prev, created]);
         toast.success(`Added ${file.name} as a source`);
         const fresh = await api.state();
@@ -622,14 +644,15 @@ export default function ChatModal({
         toast.error(typeof e?.message === 'string' ? e.message : "Couldn't upload that file. Try again.");
       }
     },
-    [onStateChange],
+    [onStateChange, refId, scope, title],
   );
 
   const addLink = useCallback(
     async (url) => {
       if (!url || typeof url !== "string") return;
       try {
-        const created = await api.addLink({ url, goal_id: "" });
+        const goalId = scope === "goal" && refId ? refId : "";
+        const created = await api.addLink({ url, goal_id: goalId, temporary: !goalId && Boolean(title) });
         if (created?.id) setSources((prev) => [...prev, created]);
         toast.success("Link added as a source");
         const fresh = await api.state();
@@ -638,7 +661,7 @@ export default function ChatModal({
         toast.error(typeof e?.message === 'string' ? e.message : "Couldn't add the link. Try again.");
       }
     },
-    [onStateChange],
+    [onStateChange, refId, scope, title],
   );
 
   // Dismissing an attachment chip must actually remove the row — the chip

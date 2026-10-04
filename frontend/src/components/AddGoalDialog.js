@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Sparkles,
   ArrowLeft,
@@ -17,7 +17,9 @@ import CenteredDialog from "./CenteredDialog";
 import ChatConsole from "./ChatConsole";
 import RefineModal from "./RefineModal";
 import RejectModal from "./RejectModal";
+import RenegotiationDialog from "./RenegotiationDialog";
 import { useDialogBack } from "../hooks/useDialogBack";
+import { usePlanSend, renegotiationChoiceLabel, clearRenegotiation } from "../hooks/use-plan-send";
 import { toast } from "sonner";
 import { api, API } from "../lib/api";
 
@@ -128,6 +130,8 @@ export default function AddGoalDialog({
   const [sending, setSending] = useState(false);
   const [busyProposal, setBusyProposal] = useState(null);
   const [pendingClarifications, setPendingClarifications] = useState(null);
+  const [renegotiation, setRenegotiation] = useState(null);
+  const [busyChoice, setBusyChoice] = useState(null);
   const streamIdRef = useRef(0);
   // Operation-scoped context (spec §10) — the current conversation
   // bucket. Minted fresh on every dialog open; swapped only on
@@ -183,6 +187,9 @@ export default function AddGoalDialog({
   // Sources attached within this dialog session (attached to a goal
   // once it's created — shown as chips above the chat textarea).
   const [sources, setSources] = useState([]);
+  const autoResumePendingRef = useRef(false);
+  const previousModeRef = useRef({ autoAnswer: initialAutoAnswer, grillMe: initialGrillMe });
+  const sendRef = useRef(null);
 
   useEffect(() => {
     if (open) {
@@ -196,10 +203,15 @@ export default function AddGoalDialog({
       setSending(false);
       setBusyProposal(null);
       setPendingClarifications(null);
+      setRenegotiation(null);
+      setBusyChoice(null);
+      clearRenegotiation();
       setActiveCategory(null);
       setStep("tiles");
       setFocusToken(0);
       setSources([]);
+      autoResumePendingRef.current = false;
+      previousModeRef.current = { autoAnswer: initialAutoAnswer, grillMe: initialGrillMe };
       setRefiningProposal(null);
       setRejectingProposal(null);
       setAutoAnswer(initialAutoAnswer);
@@ -209,6 +221,48 @@ export default function AddGoalDialog({
       refIdRef.current = `new_goal_${crypto.randomUUID()}`;
     }
   }, [open, initialAutoAnswer, initialGrillMe]);
+
+  const applyPlan = useCallback((result, { streamId }) => {
+    const finalize = (patch) =>
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.id === streamId ? { ...message, streaming: false, ...patch } : message,
+        ),
+      );
+
+    if (result.status === "ok") {
+      finalize({
+        id: result.message_id,
+        content: result.prose || "",
+        proposals: result.proposals || [],
+      });
+    } else if (result.status === "clarify") {
+      finalize({ id: result.message_id, content: result.prose || "A few details first:" });
+      setPendingClarifications({
+        messageId: result.message_id,
+        prompt: result.prose || "",
+        questions: result.questions || [],
+      });
+    } else if (result.status === "renegotiate") {
+      finalize({ id: result.message_id, content: result.prose || "" });
+      setRenegotiation({ headroom: result.headroom, options: result.options || [] });
+    } else {
+      finalize({ id: result.message_id, content: result.prose || "No changes needed." });
+    }
+  }, []);
+
+  const { tryPlan } = usePlanSend({
+    kind: "add_goal",
+    scope: "goal",
+    refIdRef,
+    title: activeCategory ? `${activeCategory} goal` : "Add a new goal",
+    helperText: "Build a realistic, source-grounded plan for this goal.",
+    autoAnswer,
+    grillMe,
+    sources,
+    setMessages,
+    applyPlan,
+  });
 
   const send = async (text) => {
     const trimmed = text.trim();
@@ -224,6 +278,8 @@ export default function AddGoalDialog({
     ]);
 
     try {
+      const handled = await tryPlan(trimmed, streamId);
+      if (handled) return;
       const resp = await fetch(`${API}/chat/stream`, {
         method: "POST",
         credentials: "include",
@@ -232,7 +288,7 @@ export default function AddGoalDialog({
           message: trimmed,
           auto_answer: autoAnswer,
           clarify: grillMe,
-          proactive_propose: true,
+          proactive_propose: autoAnswer && !grillMe,
           // Operation-scoped context (spec §10.3) — same refId for
           // every turn in this bucket.
           scope: "goal",
@@ -293,7 +349,40 @@ export default function AddGoalDialog({
       setMessages((prev) => prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)));
     } finally {
       setSending(false);
+      setMessages((prev) => prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)));
     }
+  };
+
+  sendRef.current = send;
+  useEffect(() => {
+    const switchedToAuto = autoAnswer && !previousModeRef.current.autoAnswer;
+    previousModeRef.current = { autoAnswer, grillMe };
+    if (switchedToAuto && (pendingClarifications || sending)) {
+      autoResumePendingRef.current = true;
+    }
+    if (autoAnswer && autoResumePendingRef.current && pendingClarifications && !sending) {
+      autoResumePendingRef.current = false;
+      setPendingClarifications(null);
+      sendRef.current?.("Proceed with reasonable assumptions for anything unanswered and make the plan now.");
+    } else if (!sending && !pendingClarifications) {
+      autoResumePendingRef.current = false;
+    }
+  }, [autoAnswer, grillMe, pendingClarifications, sending]);
+
+  const onRenegotiationChoice = (choice) => {
+    setBusyChoice(choice);
+    setRenegotiation(null);
+    const streamId = `stream_${++streamIdRef.current}`;
+    setMessages((prev) => [
+      ...prev,
+      { id: streamId, role: "assistant", content: "", proposals: [], streaming: true },
+    ]);
+    tryPlan(renegotiationChoiceLabel(choice), streamId).finally(() => setBusyChoice(null));
+  };
+
+  const closeRenegotiation = () => {
+    setRenegotiation(null);
+    clearRenegotiation();
   };
 
   const buildMessage = () => {
@@ -362,7 +451,7 @@ export default function AddGoalDialog({
     try {
       // Coach.uploadFile returns the created server source — use its real
       // id so the chip's X deletes it server-side instead of a local stub.
-      const created = await onUploadSource(file);
+      const created = await onUploadSource(file, "", { temporary: true });
       if (!created?.id) return;
       setSources((prev) => [
         ...prev,
@@ -377,7 +466,7 @@ export default function AddGoalDialog({
 
   const handleAddLink = async (url) => {
     try {
-      const created = await onAddLink(url);
+      const created = await onAddLink(url, "", { temporary: true });
       if (!created?.id) return;
       setSources((prev) => [
         ...prev,
@@ -396,51 +485,66 @@ export default function AddGoalDialog({
   };
 
   const confirm = async (messageId, proposalId) => {
-    setBusyProposal(proposalId);
+    const plan = messages.find((message) => message.id === messageId)?.proposals || [];
+    const pending = plan.filter(
+      (proposal) =>
+        (proposal.status || "pending") === "pending" &&
+        proposal.action !== "ask" &&
+        proposal.action !== "navigate",
+    );
+    if (pending.length === 0) return;
+
+    let freshState = null;
+    const confirmedIds = [];
+    setSending(true);
     try {
-      const resp = await api.confirm(messageId, proposalId);
-      // Spec §10.4 — on confirm the server closes this bucket and
-      // (for add_goal) pre-mints the next one. Swap immediately so
-      // the next send() lands in a fresh conversation.
-      if (resp?.ref_id) refIdRef.current = resp.ref_id;
+      // Create the goal first, then confirm its dependent milestones and
+      // commitments so the resolver can attach them to the new goal.
+      const ordered = [...pending].sort((a, b) =>
+        Number(b.action === "create_goal") - Number(a.action === "create_goal"),
+      );
+      for (const proposal of ordered) {
+        setBusyProposal(proposal.id);
+        const resp = await api.confirm(messageId, proposal.id);
+        freshState = resp?.state || freshState;
+        confirmedIds.push(proposal.id);
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id !== messageId
+              ? message
+              : {
+                  ...message,
+                  proposals: message.proposals.map((item) =>
+                    item.id === proposal.id ? { ...item, status: "confirmed" } : item,
+                  ),
+                },
+          ),
+        );
+      }
 
-      const confirmedProposal = messages
-        .find((m) => m.id === messageId)
-        ?.proposals?.find((p) => p.id === proposalId);
-      const createdGoalTitle =
-        confirmedProposal?.args?.title ||
-        confirmedProposal?.args?.goal_title ||
-        confirmedProposal?.title ||
-        "your new goal";
-      const createdGoalId = resp?.state?.goals?.find(
-        (g) => g.title === createdGoalTitle && g.status === "active",
+      const createdProposal = plan.find((proposal) => proposal.action === "create_goal");
+      const createdGoalTitle = createdProposal?.args?.title || "your new goal";
+      const createdGoalId = freshState?.goals?.find(
+        (goal) => goal.title === createdGoalTitle && goal.status === "active",
       )?.id;
-
       setMessages((prev) => [
-        ...prev.map((m) =>
-          m.id === messageId
-            ? { ...m, proposals: m.proposals.map((p) => (p.id === proposalId ? { ...p, status: "confirmed" } : p)) }
-            : m,
-        ),
-        // Success divider inline in the stream (spec §10.5) — the
-        // visible messages are NOT cleared on confirm.
+        ...prev,
         {
           id: `success_${Date.now()}`,
           role: "success",
-          content: `Created "${createdGoalTitle}"`,
+          content: `Created "${createdGoalTitle}" and confirmed ${confirmedIds.length} plan item${confirmedIds.length === 1 ? "" : "s"}`,
           goalId: createdGoalId,
           goalTitle: createdGoalTitle,
           createdAt: new Date().toISOString(),
         },
       ]);
-      // Tell the parent to re-fetch state so the new goal shows up
-      // immediately in the dashboard (the dialog's internal messages
-      // don't know about the parent's /api/state shape).
       onGoalConfirmed?.(proposalId);
       setTimeout(() => onClose?.(), 700);
-    } catch {
-      toast.error("Couldn't confirm that proposal. Try again.");
+    } catch (e) {
+      if (confirmedIds.length > 0) onGoalConfirmed?.(proposalId);
+      toast.error(typeof e?.message === "string" ? e.message : "Couldn't confirm the full plan. Retry to finish it.");
     } finally {
+      setSending(false);
       setBusyProposal(null);
     }
   };
@@ -596,6 +700,15 @@ export default function AddGoalDialog({
         };
       }
 
+      if (pending.length > 0) {
+        return {
+          messageId: m.id,
+          proposalId: null,
+          label: `Confirm remaining plan items (${pending.length})`,
+          variant: "confirm_all",
+        };
+      }
+
       // No pending create_goal — everything was rejected / refined away,
       // or the plan is milestones-only. Offer a redefine from scratch.
       return {
@@ -632,7 +745,7 @@ export default function AddGoalDialog({
       return;
     }
 
-    if (pinnedAction.variant === "confirm") {
+    if (pinnedAction.variant === "confirm" || pinnedAction.variant === "confirm_all") {
       confirm(pinnedAction.messageId, pinnedAction.proposalId);
       return;
     }
@@ -755,7 +868,7 @@ export default function AddGoalDialog({
               showSources={false} hides the attach / link buttons —
               sources don't apply to a goal-add chat, and the no-op
               stubs were surfacing as a confusing dead UI. */}
-          <div className="flex-1 min-h-0 sm:flex-none sm:h-[62vh] -mx-5 sm:mx-0 border-t border-[var(--border)] flex flex-col">
+          <div className="flex-1 min-h-0 -mx-5 sm:mx-0 border-t border-[var(--border)] flex flex-col">
             <ChatConsole
               key={focusToken}
               messages={messages}
@@ -811,12 +924,12 @@ export default function AddGoalDialog({
                   onClick={onPinnedAction}
                   disabled={sending || (pinnedAction.proposalId != null && busyProposal === pinnedAction.proposalId)}
                   className={`w-full h-12 rounded-full inline-flex items-center justify-center gap-2 text-[15px] font-semibold transition-opacity disabled:opacity-40 hover:opacity-90 active:scale-[0.99] ${
-                    pinnedAction.variant === "confirm" || pinnedAction.variant === "refine"
+                    pinnedAction.variant === "confirm" || pinnedAction.variant === "confirm_all" || pinnedAction.variant === "refine"
                       ? "bg-[var(--accent)] text-[var(--bg-primary)]"
                       : "bg-[var(--bg-tertiary)] text-[var(--text-primary)]"
                   }`}
                 >
-                  {pinnedAction.variant === "confirm" ? (
+                  {pinnedAction.variant === "confirm" || pinnedAction.variant === "confirm_all" ? (
                     <Check className="w-4 h-4" aria-hidden="true" />
                   ) : pinnedAction.variant === "refine" ? (
                     <Pencil className="w-4 h-4" aria-hidden="true" />
@@ -828,6 +941,14 @@ export default function AddGoalDialog({
               </div>
             )}
           </div>
+          <RenegotiationDialog
+            open={!!renegotiation}
+            onClose={closeRenegotiation}
+            headroom={renegotiation?.headroom}
+            options={renegotiation?.options || []}
+            busyOption={busyChoice}
+            onChoose={onRenegotiationChoice}
+          />
           <RefineModal
             open={!!refiningProposal}
             onClose={() => setRefiningProposal(null)}

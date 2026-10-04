@@ -17,6 +17,8 @@ import {
   Inbox,
   Sparkles,
   ChevronDown,
+  Plus,
+  Pencil,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -35,6 +37,7 @@ import {
 } from "./ui/select";
 import { Popover, PopoverTrigger, PopoverContent } from "./ui/popover";
 import DayPlanner from "./DayPlanner";
+import CenteredDialog from "./CenteredDialog";
 import useMediaQuery from "../hooks/useMediaQuery";
 
 /* ---------------------------------------------------------------------------
@@ -169,26 +172,34 @@ function barPaint(item, surface, stripePx = 3) {
    CalendarDayItem and the quarter bars — the year view needs it too, and
    one source of truth keeps the chat modal titles consistent. */
 const SCOPE_MAP = {
-  goal: { scope: "goal", kind: "general" },
-  milestone: { scope: "milestone", kind: "plan_day" },
+  goal: { scope: "goal", kind: "edit_goal" },
+  milestone: { scope: "milestone", kind: "edit_goal" },
   commitment: { scope: "commitment", kind: "plan_day" },
   blocker: { scope: "blocker", kind: "plan_day" },
 };
 const SCOPE_HELPER = {
-  goal: "What do you want to work on for this goal?",
-  milestone: "Where are you on this milestone?",
+  goal: "Tell the coach what should change in this goal.",
+  milestone: "Tell the coach what should change about this milestone.",
   commitment: "What's the next step on this commitment?",
   blocker: "What's the smallest unblock?",
 };
 function scopeForItem(item) {
   const m = SCOPE_MAP[item?.kind];
   if (!m) return null;
+  const goalTitle = item.goalTitle || item.goal_title;
+  const date = item.target_date || item.due || (item.date instanceof Date ? fmtIso(item.date) : "");
+  const detail = [
+    goalTitle ? `Goal: ${goalTitle}.` : "",
+    item.phase ? `Phase: ${item.phase}.` : "",
+    date ? `Date: ${date}.` : "",
+    item.start_date && item.end_date ? `Blocker window: ${item.start_date}–${item.end_date}.` : "",
+  ].filter(Boolean).join(" ");
   return {
     scope: m.scope,
     kind: m.kind,
     refId: item.id,
     title: item.title,
-    helperText: SCOPE_HELPER[item.kind],
+    helperText: [SCOPE_HELPER[item.kind], detail].filter(Boolean).join(" "),
   };
 }
 
@@ -380,6 +391,8 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
   // The editable day planner (timetable blocks / blockers / commitments)
   // opens when a day is clicked in the calendar view.
   const [selectedDay, setSelectedDay] = useState(null);
+  const [quickAddType, setQuickAddType] = useState(null);
+  const [selectedTimelineItem, setSelectedTimelineItem] = useState(null);
   const dayPlannerRef = useRef(null);
   // The planner renders below the (tall) month grid, so scroll it into
   // view on open — otherwise clicking a day near the bottom looks like a
@@ -409,6 +422,11 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
     },
     [onOpenChatWith, onOpenChat, onPrefill],
   );
+
+  const openQuickAdd = (type) => {
+    setSelectedDay(startOfDay(new Date()));
+    setQuickAddType(type);
+  };
 
   /* ---------- collect & normalize data from state ---------- */
 
@@ -508,6 +526,7 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
           id: c.id,
           title: c.text,
           goalTitle: c.goal_title,
+          goalId: c.goal_id,
           status: c.status,
         });
     });
@@ -519,6 +538,7 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
         end: b.end || b.start,
         id: b.id,
         title: b.title,
+        note: b.note,
       });
     });
     return out.sort((a, b) => a.date - b.date);
@@ -626,10 +646,6 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
 
   /* ---------- empty state ---------- */
 
-  if (isEmpty) {
-    return <EmptyState onPrefill={onPrefill} onOpenChatWith={onOpenChatWith} />;
-  }
-
   return (
     <div data-testid="timeline-view" className="p-3 sm:p-5 md:p-6 space-y-4">
       <HeaderStrip
@@ -645,9 +661,12 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
         calAnchor={calAnchor}
         setCalAnchor={setCalAnchor}
         today={today}
+        onQuickAdd={openQuickAdd}
       />
 
-      {viewType === "drill" && (
+      {isEmpty ? (
+        <EmptyState onPrefill={onPrefill} onOpenChatWith={onOpenChatWith} />
+      ) : viewType === "drill" ? (
         <DrillView
           buckets={buckets}
           itemsIn={itemsIn}
@@ -657,13 +676,9 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
           drill={drill}
           stats={statsData}
         />
-      )}
-
-      {viewType === "strip" && (
-        <StripView state={state} goals={goals} today={today} openChat={openChat} onPrefill={onPrefill} />
-      )}
-
-      {viewType === "calendar" && (
+      ) : viewType === "strip" ? (
+        <StripView state={state} goals={goals} today={today} openChat={openChat} onSelectItem={setSelectedTimelineItem} onPrefill={onPrefill} />
+      ) : (
         <CalendarView
           allItems={allItems}
           goals={goals}
@@ -676,21 +691,33 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
           anchor={calAnchor}
           setAnchor={setCalAnchor}
           openChat={openChat}
+          onSelectItem={setSelectedTimelineItem}
           onPrefill={onPrefill}
           onSelectDay={setSelectedDay}
         />
       )}
 
-      {viewType === "calendar" && selectedDay && (
+      {selectedDay && (
         <div ref={dayPlannerRef}>
           <DayPlanner
             day={selectedDay}
             state={state}
             onChange={onChange}
             onClose={() => setSelectedDay(null)}
+            initialAddType={quickAddType}
+            onInitialAddTypeHandled={() => setQuickAddType(null)}
           />
         </div>
       )}
+      <TimelineItemDetailsDialog
+        item={selectedTimelineItem}
+        state={state}
+        onClose={() => setSelectedTimelineItem(null)}
+        onEdit={() => {
+          if (selectedTimelineItem) openChat("", scopeForItem(selectedTimelineItem));
+          setSelectedTimelineItem(null);
+        }}
+      />
     </div>
   );
 }
@@ -712,9 +739,13 @@ function HeaderStrip({
   calAnchor,
   setCalAnchor,
   today,
+  onQuickAdd,
 }) {
   const activeView = VIEW_TYPES.find((v) => v.key === viewType) || VIEW_TYPES[0];
   const ActiveIcon = activeView.Icon;
+  // Below `sm` the header stacks, so the Add control gets its own
+  // right-aligned row under the orientation line instead of the nav row.
+  const isNarrow = !useMediaQuery("(min-width: 640px)");
 
   return (
     <div className="space-y-2.5">
@@ -822,14 +853,22 @@ function HeaderStrip({
           </div>
         )}
 
-        {viewType === "calendar" && (
+        {/* Narrow screens get the Add control on its own right-aligned row
+            below the orientation line — packed into the nav row it squeezes
+            Today against the month label. Wider screens keep it beside the
+            nav so it sits next to Today. */}
+        {viewType === "calendar" ? (
           <CalendarNav
             span={calSpan}
             setSpan={setCalSpan}
             anchor={calAnchor}
             setAnchor={setCalAnchor}
             today={today}
-          />
+          >
+            {isNarrow ? null : <TimelineAddMenu onAdd={onQuickAdd} />}
+          </CalendarNav>
+        ) : isNarrow ? null : (
+          <TimelineAddMenu onAdd={onQuickAdd} />
         )}
 
         <div
@@ -882,7 +921,67 @@ function HeaderStrip({
         Your goals and the commitments &amp; milestones that move them, laid out
         across the days they're due.
       </p>
+      {isNarrow && (
+        <div className="flex justify-end items-center gap-2">
+          {viewType === "calendar" && (
+            <TimelineTodayButton onClick={() => setCalAnchor(startOfDay(new Date()))} />
+          )}
+          <TimelineAddMenu onAdd={onQuickAdd} />
+        </div>
+      )}
     </div>
+  );
+}
+
+/**
+ * Today — one control, two placements: beside the month label in the nav row
+ * on wide screens, or immediately left of the Add button on narrow screens
+ * where the header stacks. Kept as a component so the label/styling/ARIA stay
+ * identical in both spots; only one instance is ever in the DOM.
+ */
+function TimelineTodayButton({ onClick }) {
+  return (
+    <button
+      type="button"
+      data-testid="timeline-today-button"
+      onClick={onClick}
+      className="font-medium h-11 sm:h-9 px-2.5 rounded text-xs border border-[var(--border)] hover:border-[var(--border-accent)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+      style={{ background: "var(--bg-secondary)" }}
+      title="Jump to today in this view"
+    >
+      Today
+    </button>
+  );
+}
+
+function TimelineAddMenu({ onAdd }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          data-testid="timeline-add-trigger"
+          aria-label="Add to timeline"
+          className="font-medium inline-flex items-center gap-1.5 h-11 sm:h-9 px-2.5 rounded text-xs border border-[var(--border)] hover:border-[var(--border-accent)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+          style={{ background: "var(--bg-secondary)" }}
+        >
+          <Plus className="h-3.5 w-3.5" aria-hidden="true" /> Add
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-48">
+        <DropdownMenuLabel>Add to today</DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem data-testid="timeline-add-block" onSelect={() => onAdd?.("block")}>
+          <Clock className="mr-2 h-4 w-4" aria-hidden="true" /> Time block
+        </DropdownMenuItem>
+        <DropdownMenuItem data-testid="timeline-add-commitment" onSelect={() => onAdd?.("commitment")}>
+          <Flag className="mr-2 h-4 w-4" aria-hidden="true" /> Commitment
+        </DropdownMenuItem>
+        <DropdownMenuItem data-testid="timeline-add-blocker" onSelect={() => onAdd?.("blocker")}>
+          <AlertOctagon className="mr-2 h-4 w-4" aria-hidden="true" /> Blocker
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -890,14 +989,15 @@ function HeaderStrip({
  * CalendarNav — span chips + prev/next/today for the Calendar view.
  * ========================================================================= */
 
-function CalendarNav({ span, setSpan, anchor, setAnchor, today }) {
+function CalendarNav({ span, setSpan, anchor, setAnchor, today, children }) {
   const preset = CAL_SPANS.find((s) => s.key === span) || CAL_SPANS[2];
   const stepDays = preset.days;
-  // Mobile-first (Wave B decision #5): the span pills are a contextual
-  // option set, so below sm they render as a select-options button —
-  // never a wrapping/scrolling pill row. From sm up the original
-  // tablist chips stay, visually unchanged.
-  const showSpanSelect = !useMediaQuery("(min-width: 640px)");
+  // Mobile-first (Wave B decision #5): below sm the span pills render as a
+  // select-options button — never a wrapping/scrolling pill row — and the
+  // Today control moves down to sit left of Add so both share one row.
+  // From sm up the original tablist chips and Today stay here, unchanged.
+  const isNarrow = !useMediaQuery("(min-width: 640px)");
+  const showSpanSelect = isNarrow;
 
   // Date picker opened from the month label — jump straight to a day
   // instead of clicking prev/next across months.
@@ -1099,18 +1199,10 @@ function CalendarNav({ span, setSpan, anchor, setAnchor, today }) {
         >
           <ChevronRight className="w-3.5 h-3.5" aria-hidden="true" />
         </button>
-        <button
-          type="button"
-          data-testid="timeline-today-button"
-          onClick={() => {
-            setAnchor(startOfDay(new Date()));
-          }}
-          className="font-medium h-11 sm:h-9 px-2.5 rounded text-xs border border-[var(--border)] hover:border-[var(--border-accent)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
-          style={{ background: "var(--bg-secondary)" }}
-          title="Jump to today in this view"
-        >
-          Today
-        </button>
+        {!isNarrow && (
+          <TimelineTodayButton onClick={() => setAnchor(startOfDay(new Date()))} />
+        )}
+        {children}
       </div>
     </div>
   );
@@ -1145,7 +1237,7 @@ function EmptyState({ onPrefill, onOpenChatWith }) {
   };
 
   return (
-    <div data-testid="timeline-view" className="px-4 sm:px-6 py-5 sm:py-6 max-w-[900px] mx-auto w-full">
+    <div data-testid="timeline-empty-state" className="px-4 sm:px-6 py-5 sm:py-6 max-w-[900px] mx-auto w-full">
       <div className="relative overflow-hidden rounded-2xl bg-[var(--bg-secondary)] px-6 py-10 sm:py-14 text-center">
         <svg
           aria-hidden="true"
@@ -1362,7 +1454,7 @@ const HORIZON_PILL = {
   long: { bg: "var(--success)", fg: "var(--bg-primary)", label: "LONG" },
 };
 
-function StripView({ state, today, openChat, onPrefill }) {
+function StripView({ state, today, openChat, onSelectItem, onPrefill }) {
   const buckets = useMemo(() => {
     const out = Object.fromEntries(HORIZONS.map((h) => [h.key, []]));
     const push = (kind, item, date) => {
@@ -1410,11 +1502,11 @@ function StripView({ state, today, openChat, onPrefill }) {
   const handlers = {
     // Scoped openers — empty input, entity pinned in the conversation
     // (same pattern as CalendarTile). No canned "Let's focus on…" prefills.
-    goal: (g) => openChat("", scopeForItem({ ...g, kind: "goal" })),
+    goal: (g) => onSelectItem?.({ ...g, kind: "goal" }),
     commitment: (c) =>
-      openChat("", scopeForItem({ ...c, kind: "commitment", title: c.text || c.title })),
-    milestone: (m) => openChat("", scopeForItem({ ...m, kind: "milestone" })),
-    blocker: (b) => openChat("", scopeForItem({ ...b, kind: "blocker" })),
+      onSelectItem?.({ ...c, kind: "commitment", title: c.text || c.title }),
+    milestone: (m) => onSelectItem?.({ ...m, kind: "milestone" }),
+    blocker: (b) => onSelectItem?.({ ...b, kind: "blocker" }),
     // Horizon cards have no entity — open a scoped "plan" chat instead of
     // passing the horizon object as a prefill value (it used to render as
     // an object React child).
@@ -1557,7 +1649,7 @@ function StripView({ state, today, openChat, onPrefill }) {
 function StripEmptyState({ onAsk }) {
   return (
     <div
-      data-testid="timeline-view"
+      data-testid="timeline-strip-empty-state"
       className="gc-fade-in flex flex-col items-center justify-center text-center gap-4 py-16 px-6 rounded-2xl bg-[var(--bg-secondary)]"
       role="region"
       aria-label="Timeline empty state"
@@ -1727,7 +1819,7 @@ function GoalCard({ goal, today, onActivate }) {
     <StripCardBase
       tone={tone}
       testId={`timeline-b-goal-${goal.id}`}
-      label={`Open chat about goal ${goal.title}`}
+      label={`Show details for goal ${goal.title}`}
       onActivate={() => onActivate(goal)}
     >
       <div className="flex items-center justify-between gap-2">
@@ -1769,7 +1861,7 @@ function CommitmentCard({ c, today, onActivate }) {
     <StripCardBase
       tone={tone}
       testId={`timeline-b-commitment-${c.id}`}
-      label={`Open chat about commitment ${c.text}`}
+      label={`Show details for commitment ${c.text}`}
       onActivate={() => onActivate(c)}
     >
       <div className="flex items-center justify-between gap-2">
@@ -1811,7 +1903,7 @@ function MilestoneCard({ m, today, onActivate }) {
     <StripCardBase
       tone={tone}
       testId={`timeline-b-milestone-${m.id}`}
-      label={`Open chat about milestone ${m.title}`}
+      label={`Show details for milestone ${m.title}`}
       onActivate={() => onActivate(m)}
     >
       <div className="flex items-center justify-between gap-2">
@@ -1844,7 +1936,7 @@ function BlockerCard({ b, onActivate }) {
     <StripCardBase
       tone="color-mix(in srgb, var(--danger) 8%, var(--bg-secondary))"
       testId={`timeline-b-blocker-${b.id}`}
-      label={`Open chat about blocker ${b.title}`}
+      label={`Show details for blocker ${b.title}`}
       onActivate={() => onActivate(b)}
     >
       <div className="flex items-center justify-between gap-2">
@@ -1908,6 +2000,7 @@ function CalendarView({
   anchor,
   setAnchor,
   openChat,
+  onSelectItem,
   onPrefill,
   onSelectDay,
 }) {
@@ -2146,13 +2239,12 @@ function CalendarView({
                                   (segEnd.getTime() - segStart.getTime() + DAY_MS) / (7 * DAY_MS),
                                 );
                                 const paint = barPaint(it, "var(--bg-primary)");
-                                const scoped = scopeForItem(it);
                                 return (
                                   <button
                                     key={`${it.kind}-${it.id}`}
                                     type="button"
                                     data-testid={`timeline-cal-year-bar-${it.kind}-${it.id}`}
-                                    onClick={() => openChat("", scoped)}
+                                     onClick={() => onSelectItem?.(it)}
                                     title={it.title}
                                     aria-label={`${it.kind}: ${it.title}`}
                                     className="group block min-h-11 rounded-[2px] text-left text-xs px-1 truncate hover:brightness-110 transition-[filter] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
@@ -2306,13 +2398,12 @@ function CalendarView({
                             (segEnd.getTime() - segStart.getTime() + 86400000) / (7 * 86400000),
                           );
                           const paint = barPaint(it, "var(--bg-primary)");
-                          const scoped = scopeForItem(it);
                           return (
                             <button
                               key={`${it.kind}-${it.id}`}
                               type="button"
                               data-testid={`timeline-cal-quarter-bar-${it.kind}-${it.id}`}
-                              onClick={() => openChat("", scoped)}
+                              onClick={() => onSelectItem?.(it)}
                               title={it.title}
                               aria-label={`${it.kind}: ${it.title}`}
                               className="group block min-h-11 rounded-[3px] text-left text-[12px] px-2 truncate hover:brightness-110 transition-[filter] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
@@ -2401,7 +2492,7 @@ function CalendarView({
               <div className="text-[12px] text-[var(--text-muted)] italic">nothing scheduled</div>
             )}
             {its.map((it) => (
-              <CalendarDayItem key={`${it.kind}-${it.id}`} item={it} today={today} openChat={openChat} />
+              <CalendarDayItem key={`${it.kind}-${it.id}`} item={it} today={today} onSelectItem={onSelectItem} />
             ))}
           </div>
         </div>
@@ -2517,7 +2608,7 @@ function CalendarView({
                       zIndex: 1,
                     }}
                   >
-                    {t.item && <CalendarTile item={t.item} today={today} openChat={openChat} />}
+                    {t.item && <CalendarTile item={t.item} today={today} onSelectItem={onSelectItem} />}
                   </div>
                 ))}
               </div>
@@ -2549,14 +2640,14 @@ function CalendarView({
             <span aria-hidden="true" className="text-[var(--warning)]">◆</span>
             <span>milestones</span>
           </span>
-          <span>— click a tile to chat with the coach</span>
+          <span>— click a tile for details, then edit with the coach</span>
         </span>
       </div>
     </div>
   );
 }
 
-function CalendarTile({ item, today, openChat }) {
+function CalendarTile({ item, today, onSelectItem }) {
   if (!item) return null;
   // Iteration 5 — color is now status-driven (green/red/yellow/grey)
   // so the calendar reads as on-track vs overdue at a glance.
@@ -2590,7 +2681,7 @@ function CalendarTile({ item, today, openChat }) {
   // hardcoded "Let's work on my goal: …" prefills; the user types
   // their own intent in an empty chat that already has the entity's
   // title + kind + id pinned in the conversation.
-  const onActivate = () => openChat("", scopeForItem(item));
+  const onActivate = () => onSelectItem?.(item);
 
   // Iteration 7 (consistency fix) — Month/Week now use the same
   // barPaint() recipe as 3-Months/Year. Previously CalendarTile
@@ -2693,12 +2784,12 @@ function CalendarMiniItem({ item, today }) {
   );
 }
 
-function CalendarDayItem({ item, today, openChat }) {
+function CalendarDayItem({ item, today, onSelectItem }) {
   // Iteration 5 (Issue 2-3) — status color
   const color = statusColor(item);
 
   // Iteration 5 (Issue 7+8) — scoped chat, no hardcoded prefill
-  const onActivate = () => openChat("", scopeForItem(item));
+  const onActivate = () => onSelectItem?.(item);
 
   return (
     <button
@@ -2716,10 +2807,104 @@ function CalendarDayItem({ item, today, openChat }) {
   );
 }
 
+function TimelineItemDetailsDialog({ item, state, onClose, onEdit }) {
+  if (!item) return null;
+  const goalId = item.kind === "goal" ? item.id : item.goal_id || item.goalId;
+  const goal = (state?.goals || []).find((candidate) => candidate.id === goalId)
+    || (state?.goals || []).find((candidate) => candidate.title === (item.goal_title || item.goalTitle));
+  const milestones = (state?.milestones || []).filter(
+    (milestone) => goal && (milestone.goal_id === goal.id || milestone.goal_title === goal.title),
+  );
+  const commitments = (state?.commitments || []).filter(
+    (commitment) => goal && (commitment.goal_id === goal.id || commitment.goal_title === goal.title),
+  );
+  const phases = Object.entries(goal?.phase_objectives || {});
+  const dateLabel = (value) => {
+    const date = value instanceof Date ? value : parse(String(value || ""));
+    return date ? date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "";
+  };
+  const dateRange = item.kind === "goal"
+    ? [dateLabel(item.start), dateLabel(item.end)].filter(Boolean).join(" – ")
+    : item.kind === "blocker"
+    ? [dateLabel(item.start), dateLabel(item.end)].filter(Boolean).join(" – ")
+    : dateLabel(item.date || item.target_date || item.due);
+
+  return (
+    <CenteredDialog
+      open={!!item}
+      onClose={onClose}
+      icon={Target}
+      title={item.title || item.text || "Timeline item"}
+      subtitle={`${item.kind}${item.goalTitle || item.goal_title ? ` · ${item.goalTitle || item.goal_title}` : ""}`}
+      maxWidth="max-w-lg"
+      testId="timeline-item-details"
+    >
+      <div className="max-h-[55vh] space-y-4 overflow-y-auto pr-1">
+        {dateRange && <p className="text-xs font-mono text-[var(--text-muted)]">{dateRange}</p>}
+        {goal?.why && <p className="text-sm leading-relaxed text-[var(--text-secondary)]">{goal.why}</p>}
+        {goal?.next_action && (
+          <p className="rounded-lg bg-[var(--bg-secondary)] p-3 text-sm text-[var(--text-primary)]">
+            <span className="block text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]">Next action</span>
+            {goal.next_action}
+          </p>
+        )}
+        {item.kind === "milestone" && item.phase && (
+          <p className="text-xs text-[var(--text-secondary)]">Phase: <span className="text-[var(--text-primary)]">{item.phase}</span></p>
+        )}
+        {item.kind === "commitment" && item.phase && (
+          <p className="text-xs text-[var(--text-secondary)]">Phase: <span className="text-[var(--text-primary)]">{item.phase}</span></p>
+        )}
+        {item.kind === "blocker" && item.note && <p className="text-sm text-[var(--text-secondary)]">{item.note}</p>}
+        {phases.length > 0 && (
+          <section className="space-y-2">
+            <h3 className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]">Phases</h3>
+            {phases.map(([name, objective]) => (
+              <div key={name} className="rounded-lg border border-[var(--border)] px-3 py-2">
+                <div className="text-xs font-semibold text-[var(--text-primary)]">{name}</div>
+                <div className="mt-1 text-xs leading-relaxed text-[var(--text-secondary)]">{objective}</div>
+              </div>
+            ))}
+          </section>
+        )}
+        {item.kind === "goal" && milestones.length > 0 && (
+          <section className="space-y-2">
+            <h3 className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]">Milestones</h3>
+            {milestones.map((milestone) => (
+              <div key={milestone.id} className="flex items-baseline justify-between gap-3 text-xs">
+                <span className="text-[var(--text-primary)]">{milestone.title}</span>
+                <span className="shrink-0 text-[var(--text-muted)]">{milestone.phase || ""}{milestone.target_date ? ` · ${milestone.target_date}` : ""}</span>
+              </div>
+            ))}
+          </section>
+        )}
+        {item.kind === "goal" && commitments.length > 0 && (
+          <section className="space-y-2">
+            <h3 className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]">Commitments</h3>
+            {commitments.map((commitment) => (
+              <div key={commitment.id} className="flex items-baseline justify-between gap-3 text-xs">
+                <span className="text-[var(--text-primary)]">{commitment.text}</span>
+                <span className="shrink-0 text-[var(--text-muted)]">{commitment.due || "No date"}</span>
+              </div>
+            ))}
+          </section>
+        )}
+        <button
+          type="button"
+          data-testid="timeline-item-edit-with-coach"
+          onClick={onEdit}
+          className="min-h-11 w-full inline-flex items-center justify-center gap-2 rounded-xl bg-[var(--accent)] px-4 text-sm font-semibold text-[var(--bg-primary)] hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+        >
+          <Pencil className="h-4 w-4" aria-hidden="true" /> Edit with coach
+        </button>
+      </div>
+    </CenteredDialog>
+  );
+}
+
 function CalendarEmptyState({ onAsk }) {
   return (
     <div
-      data-testid="timeline-view"
+      data-testid="timeline-calendar-empty-state"
       className="flex flex-col items-center justify-center text-center px-6 py-16 rounded-2xl bg-[var(--bg-secondary)]"
     >
       <div

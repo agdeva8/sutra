@@ -8,8 +8,7 @@ import TodayTimetable from "./TodayTimetable";
  *   1. A greeting strip with the date + the section's CTA row (which used
  *      to live on the TrackerCard and is now duplicated here so the tab
  *      stands on its own).
- *   2. The wake/sleep day-band + the items list (TodayTimetable rendered
- *      with `fullTimetable=true`).
+ *   2. The dated items list (TodayTimetable rendered with `fullTimetable=true`).
  *   3. **ONE** section-level free-text input at the bottom — "Tell the
  *      coach anything about today" — that opens the chat with whatever
  *      the user typed. Per-item note + per-item chat input were

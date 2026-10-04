@@ -17,75 +17,9 @@ export default {
   },
 };
 
-export const Tiles = {
-  render: (args) => {
-    const { component } = args;
-    return component({ ...args, open: true });
-  },
-};
+export const Tiles = {};
 
-export const ChatStepNoMilestones = {
-  render: (args) => {
-    const { component } = args;
-    return component({
-      ...args,
-      messages: [
-        {
-          id: `stream_1`,
-          role: "assistant",
-          content: "I see you want a health goal. I propose: Add a health goal with 3 milestones and 2 weekly commitments.",
-          proposals: [
-            {
-              id: "prop_001",
-              action: "create_goal",
-              args: { title: "Health goal", horizon: "short", why: "Be healthier", first_action: "Walk 10 min daily", target_date: "2026-12-01" },
-              status: "pending",
-            },
-          ],
-          streaming: false,
-        },
-      ],
-      pendingClarifications: null,
-      onGoalConfirmed: fn(),
-    });
-  },
-};
-
-export const ChatStepWithMilestones = {
-  render: (args) => {
-    const { component } = args;
-    return component({
-      ...args,
-      messages: [
-        {
-          id: `stream_2`,
-          role: "assistant",
-          content: "I see you want a health goal. I propose: Add a health goal with 3 milestones and 2 weekly commitments.",
-          proposals: [
-            {
-              id: "prop_002",
-              action: "create_goal",
-              args: {
-                title: "Health goal",
-                horizon: "short",
-                why: "Be healthier",
-                first_action: "Walk 10 min daily",
-                target_date: "2026-12-01",
-              },
-              status: "pending",
-            },
-            {
-              id: "prop_003",
-              action: "add_milestone",
-              args: { title: "Walk 10 min daily", target_date: "2026-11-01" },
-              status: "pending",
-            },
-          ],
-          streaming: false,
-        },
-      ],
-      pendingClarifications: null,
-      onGoalConfirmed: fn(),
-    });
-  },
-};
+// The former `ChatStep*` stories passed a `messages` prop the dialog never
+// read (its chat state is internal) and used a `render` shim that called a
+// non-existent `args.component`, so they threw on render. The chat + proposal
+// + clarification surfaces are covered by the `ChatConsole` stories instead.

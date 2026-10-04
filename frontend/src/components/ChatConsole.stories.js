@@ -1,6 +1,11 @@
 import { fn } from "storybook/test";
 import ChatConsole from "./ChatConsole";
 
+/**
+ * ChatConsole is the shared chat surface behind the global chat modal, the Add
+ * Goal dialog, and focused-task chats. It fills its parent (`h-full`), so every
+ * story wraps it in a 100vh box — otherwise the log collapses to zero height.
+ */
 export default {
   title: "Components/ChatConsole",
   component: ChatConsole,
@@ -8,6 +13,9 @@ export default {
   parameters: { layout: "fullscreen" },
   args: {
     messages: [],
+    input: "",
+    setInput: fn(),
+    sending: false,
     onSend: fn(),
     onConfirm: fn(),
     onReject: fn(),
@@ -15,7 +23,7 @@ export default {
     onOpenRefine: fn(),
     onOpenReject: fn(),
     busyProposal: null,
-    autoAnswer: true,
+    autoAnswer: false,
     setAutoAnswer: fn(),
     grillMe: false,
     setGrillMe: fn(),
@@ -28,71 +36,98 @@ export default {
     onAnswerClarification: fn(),
     onDismissClarifications: fn(),
     showSources: true,
-    focusOnMount: true,
+    focusOnMount: false,
     scopeLabel: "",
     scopeIntent: "",
     onViewGoal: null,
   },
+  decorators: [
+    (Story) => (
+      <div style={{ height: "100vh" }}>
+        <Story />
+      </div>
+    ),
+  ],
 };
 
-export const Empty = {
-  render: (args) => {
-    const { component } = args;
-    return component({ ...args, messages: [] });
-  },
-};
+export const Empty = {};
 
 export const WithMessage = {
-  render: (args) => {
-    const { component } = args;
-    return component({
-      ...args,
-      messages: [
+  args: {
+    messages: [
+      { id: "u1", role: "user", content: "I want to set a health goal", proposals: [], streaming: false },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "I propose a health goal with three milestones and two weekly commitments.",
+        proposals: [
+          {
+            id: "prop_1",
+            action: "create_goal",
+            args: {
+              title: "Health goal",
+              horizon: "short",
+              why: "Be healthier",
+              first_action: "Walk 10 min daily",
+              target_date: "2026-12-01",
+            },
+            status: "pending",
+          },
+        ],
+        streaming: false,
+      },
+    ],
+  },
+};
+
+/**
+ * The grill/ask clarification turn: the card sits at the END of the transcript
+ * (so the reply and the questions scroll together, composer pinned), options
+ * are select-then-submit, and unanswered questions fall to the free-text box.
+ */
+export const WithClarifications = {
+  args: {
+    messages: [
+      { id: "u1", role: "user", content: "I want to switch jobs in 3 months", proposals: [], streaming: false },
+      {
+        id: "a1",
+        role: "assistant",
+        content:
+          "Before I plan this, I need three things — they change the shape of the plan more than the deadline does.",
+        proposals: [],
+        streaming: false,
+      },
+    ],
+    pendingClarifications: {
+      messageId: "a1",
+      prompt: "Job switch in 3 months with no stated readiness, application status, or weekly hours.",
+      questions: [
         {
-          id: "msg_1",
-          role: "user",
-          content: "I want to set a health goal",
-          proposals: [],
-          streaming: false,
+          question: "What is your current interview readiness for the roles you're targeting?",
+          options: [
+            "DSA/data structures not started",
+            "DSA rusty, needs practice",
+            "DSA solid, system design weak",
+            "System design solid, behavioral weak",
+            "All three need work",
+          ],
         },
         {
-          id: "msg_2",
-          role: "assistant",
-          content: "I propose: Add a health goal with 3 milestones and 2 weekly commitments.",
-          proposals: [
-            {
-              id: "prop_1",
-              action: "create_goal",
-              args: { title: "Health goal", horizon: "short", why: "Be healthier", first_action: "Walk 10 min daily", target_date: "2026-12-01" },
-              status: "pending",
-            },
+          question: "Which parts of the process should the plan cover?",
+          multi: true,
+          options: [
+            "DSA / algorithms refresher",
+            "System design",
+            "Behavioral / LP stories",
+            "Applications + referrals",
+            "Mock interviews",
           ],
-          streaming: false,
+        },
+        {
+          question: "How many hours per week can you realistically dedicate to this?",
+          options: ["Under 5h", "5–10h", "10–15h", "15h+"],
         },
       ],
-    });
-  },
-};
-
-export const WithChipPreFill = {
-  render: (args) => {
-    const { component } = args;
-    // Simulate tapping a refine chip which pre-fills the textarea.
-    const { onOpenRefine } = args;
-    if (onOpenRefine) {
-      onOpenRefine(args.messages[1].proposals[0]);
-    }
-    return component({ ...args });
-  },
-};
-
-export const WithRejectChip = {
-  render: (args) => {
-    const { component } = args;
-    const { onOpenReject } = args;
-    if (onOpenReject) {
-      onOpenReject(args.messages[1].proposals[0]);
-    }
-    return component({ ...args });
+    },
   },
 };

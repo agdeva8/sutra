@@ -12,6 +12,7 @@ import { applyProposal } from '../proposal-executor'
  */
 const mocks = vi.hoisted(() => {
   const captured: Array<{ table: unknown; values: any }> = []
+  const updated: Array<{ table: unknown; values: any }> = []
   const goalRow = {
     id: 'goal_1',
     title: 'T',
@@ -19,7 +20,12 @@ const mocks = vi.hoisted(() => {
     weeklyHours: 6,
   }
   const tx = {
-    update: () => ({ set: () => ({ where: async () => undefined }) }),
+    update: (table: unknown) => ({
+      set: (values: any) => {
+        updated.push({ table, values })
+        return { where: async () => undefined }
+      },
+    }),
     delete: () => ({ where: async () => undefined }),
     insert: (table: unknown) => ({
       values: async (values: any) => {
@@ -36,7 +42,7 @@ const mocks = vi.hoisted(() => {
     select: () => chain,
     transaction: async (cb: (t: unknown) => Promise<unknown>) => cb(tx),
   }
-  return { captured, db }
+  return { captured, updated, db }
 })
 
 vi.mock('@/lib/db', () => ({ db: mocks.db }))
@@ -48,6 +54,7 @@ function insertedFor(table: unknown): any {
 describe('applyProposal — Goal Planner field persistence (Iteration 10)', () => {
   beforeEach(() => {
     mocks.captured.length = 0
+    mocks.updated.length = 0
   })
 
   it('create_goal persists weekly_hours, phase_objectives, life_area', async () => {
@@ -81,6 +88,22 @@ describe('applyProposal — Goal Planner field persistence (Iteration 10)', () =
     expect(goal.lifeArea).toBe('')
   })
 
+  it('attaches temporary source ids to the confirmed goal', async () => {
+    await applyProposal('u1', {
+      id: 'p-source-goal',
+      action: 'create_goal',
+      args: {
+        title: 'Source-grounded goal',
+        horizon: 'short',
+        source_ids: ['src_1'],
+      },
+    })
+    expect(mocks.updated).toContainEqual({
+      table: schema.sources,
+      values: { goalId: expect.any(String), goalTitle: 'Source-grounded goal', expiresAt: null },
+    })
+  })
+
   it('add_milestone persists phase', async () => {
     const res = await applyProposal('u1', {
       id: 'p3',
@@ -100,6 +123,48 @@ describe('applyProposal — Goal Planner field persistence (Iteration 10)', () =
     })
     expect(res.success).toBe(true)
     expect(insertedFor(schema.commitments).phase).toBe('Mocks')
+  })
+
+  it('add_block creates a plan-sourced timetable block and resolves its goal', async () => {
+    const res = await applyProposal('u1', {
+      id: 'p-block',
+      action: 'add_block',
+      args: {
+        block_date: '2026-10-05',
+        start_time: '09:00',
+        end_time: '10:30',
+        label: 'System design practice',
+        kind: 'focus',
+        goal_title: 'T',
+      },
+    })
+    expect(res.success).toBe(true)
+    expect(insertedFor(schema.timetableBlocks)).toMatchObject({
+      userId: 'u1',
+      blockDate: '2026-10-05',
+      startTime: '09:00',
+      endTime: '10:30',
+      label: 'System design practice',
+      kind: 'focus',
+      source: 'plan',
+      goalId: 'goal_1',
+    })
+  })
+
+  it('rejects an invalid timetable range without writing', async () => {
+    const res = await applyProposal('u1', {
+      id: 'p-bad-block',
+      action: 'add_block',
+      args: {
+        block_date: '2026-10-05',
+        start_time: '10:30',
+        end_time: '09:00',
+        label: 'Invalid block',
+        kind: 'focus',
+      },
+    })
+    expect(res.success).toBe(false)
+    expect(mocks.captured.some((row) => row.table === schema.timetableBlocks)).toBe(false)
   })
 
   it('pause_goal audits the capacity freed for the opt-in re-plan suggestion', async () => {
