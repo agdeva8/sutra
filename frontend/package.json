@@ -33,6 +33,7 @@
     "@radix-ui/react-tooltip": "1.2.4",
     "@tanstack/react-query": "5.56.2",
     "@vercel/analytics": "^2.0.1",
+    "@vercel/speed-insights": "^2.0.0",
     "ajv": "^6.15.0",
     "ajv-keywords": "^3.5.2",
     "axios": "1.18.0",
