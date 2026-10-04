@@ -4,8 +4,8 @@ Read [`AGENTS.md`](../AGENTS.md) and [`memory/AGENT_BUILDER.md`](../memory/AGENT
 
 ## Agent hierarchy (who does what)
 
-- **Main agent — `MiniMax-M3`**: the only agent that fixes bugs or implements features. Owns the operating loop in `memory/AGENT_BUILDER.md`.
-- **Small agents — `MiniMax-M2.x` family**: never change code. They commit, run tests (lint/type-check/vitest/security), and drive browser-level verification at 1920×800 + 390×844, then report results back.
+- **Main agent — `DeepSeek V4.1 Flash`**: the only agent that fixes bugs or implements features. Owns the operating loop in `memory/AGENT_BUILDER.md`.
+- **Small agents — `GPT-6 Luna` family**: never change code. They commit, run tests (lint/type-check/vitest/security), and drive browser-level verification at 1920×800 + 390×844, then report results back.
 - All small agents report results back to the main agent (or the user). The main agent decides fix / revert / ship.
 
 ## Hard pointers
