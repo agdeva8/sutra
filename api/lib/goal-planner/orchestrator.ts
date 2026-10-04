@@ -210,6 +210,36 @@ export function messageMentionsBlocker(message: string): boolean {
   return BLOCKER_CUE.test(message)
 }
 
+/**
+ * Intents opened to perform a concrete action on an existing goal/day.
+ * These skip the conversational early-return so the turn always reaches the
+ * plan stage and lands on a verdict + a confirmable action. `add_goal` is not
+ * here because its `over_committed` shape must flow through headroom, and
+ * `drop_goal` is covered by the route's deterministic forced-drop net.
+ */
+const SCOPED_ACTION_INTENTS = new Set<Intent>([
+  'review_progress',
+  'edit_goal',
+  'plan_day',
+])
+
+/**
+ * True when a plan carries nothing the user can confirm: no goal and no
+ * milestones / blockers / commitments / blocks. `PlanSchema` allows this
+ * (only `prose` is required), so the graph must reject it explicitly for the
+ * scoped action intents — otherwise an observation-only turn reaches emit,
+ * which either fails to ground a tool or fabricates one.
+ */
+function isEmptyPlan(plan: Plan): boolean {
+  return (
+    !plan.goal &&
+    plan.milestones.length === 0 &&
+    plan.blockers.length === 0 &&
+    plan.commitments.length === 0 &&
+    plan.blocks.length === 0
+  )
+}
+
 /* -------------------------------------------------------------------------- */
 /* Graph builder                                                              */
 /* -------------------------------------------------------------------------- */
@@ -288,11 +318,18 @@ function buildPlannerGraph({ config: pArgs, complete, checkpointer }: BuildGraph
 
       // Pure conversational shapes early-return; `over_committed` only for
       // non-add_goal (add_goal must flow through headroom to make room).
-      if (
+      //
+      // Scoped action intents are exempt: those conversations exist to decide
+      // something concrete (shift dates / reduce scope / accept the slip, edit
+      // a goal, plan a day). The `early` shape carries only a one-line framing
+      // and skips plan → emit, which left the user staring at an observation
+      // with no verdict and nothing to confirm. They always reach the plan
+      // stage.
+      const conversationalShape =
         intake.shape === 'meta_question' ||
         (intake.shape === 'routine_return' && pArgs.intent !== 'plan_day' && pArgs.resume === undefined) ||
         (intake.shape === 'over_committed' && pArgs.intent !== 'add_goal')
-      ) {
+      if (conversationalShape && !SCOPED_ACTION_INTENTS.has(pArgs.intent)) {
         updates.result = {
           kind: 'early',
           shape: intake.shape,
@@ -334,20 +371,18 @@ function buildPlannerGraph({ config: pArgs, complete, checkpointer }: BuildGraph
 
   /* Stage 3 — Plan ------------------------------------------------------ */
   const planNode = async (): Promise<PlanUpdate> => {
+    const planArgs = {
+      intent: pArgs.intent,
+      mode: pArgs.mode ?? 'ask',
+      message: pArgs.message,
+      context: pArgs.context,
+      today: pArgs.today,
+      renegotiation: pArgs.renegotiation,
+    }
     let plan: Plan
     let mode: CompleteJsonMeta['mode']
     try {
-      const res = await call(
-        PlanSchema,
-        planPrompt({
-          intent: pArgs.intent,
-          mode: pArgs.mode ?? 'ask',
-          message: pArgs.message,
-          context: pArgs.context,
-          today: pArgs.today,
-          renegotiation: pArgs.renegotiation,
-        }),
-      )
+      const res = await call(PlanSchema, planPrompt(planArgs))
       plan = res.object
       mode = res.mode
     } catch (e) {
@@ -392,6 +427,47 @@ function buildPlannerGraph({ config: pArgs, complete, checkpointer }: BuildGraph
           prose: plan.prose || 'I did not get a concrete goal out of that.',
           rejects: [],
         },
+      }
+    }
+
+    // A scoped action intent (re-plan / edit / day plan) must land on
+    // something the user can confirm. `PlanSchema` permits an empty plan, so
+    // re-ask Stage 3 once with a correction before degrading. This is the
+    // structural guarantee behind "precise answer with an action" — the
+    // prompt asks for it, this enforces it.
+    if (SCOPED_ACTION_INTENTS.has(pArgs.intent) && isEmptyPlan(plan)) {
+      const emptyFirst = plan
+      const retrySuffix =
+        `\n\n=== PLAN CARRIED NO ACTION — FIX AND RE-EMIT ===\n` +
+        `A ${pArgs.intent} turn must land on something the user can confirm: a ` +
+        `changed goal / date / scope, a commitment naming the next step, or ` +
+        `day blocks. Return the same JSON shape with at least one concrete ` +
+        `action, and make the prose open with the verdict.`
+      try {
+        const retry = await call(PlanSchema, planPrompt(planArgs) + retrySuffix)
+        if (!isEmptyPlan(retry.object)) {
+          plan = retry.object
+          mode = retry.mode
+          rejects.push(
+            reject('plan', `${pArgs.intent} plan carried no action on first pass`, { plan: emptyFirst }, null, true),
+          )
+        } else {
+          const rec = reject('plan', `${pArgs.intent} plan carried no action after retry`, { plan }, null)
+          return {
+            plan,
+            modes: [mode],
+            rejects: [...rejects, rec],
+            result: { kind: 'no_change', reason: rec.reason, prose: plan.prose, rejects: [] },
+          }
+        }
+      } catch (e) {
+        const rec = reject('plan', `plan retry failed: ${errMsg(e)}`, { plan }, null)
+        return {
+          plan,
+          modes: [mode],
+          rejects: [...rejects, rec],
+          result: { kind: 'no_change', reason: rec.reason, prose: plan.prose, rejects: [] },
+        }
       }
     }
 

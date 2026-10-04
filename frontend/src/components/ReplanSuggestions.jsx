@@ -22,7 +22,7 @@ const TRIGGER_ICON = {
   infeasible_edit: AlertTriangle,
 };
 
-export default function ReplanSuggestions({ suggestions = [], onReplan, active = true }) {
+export default function ReplanSuggestions({ suggestions = [], onReplan, active = true, engine }) {
   const [dismissed, setDismissed] = useState(() => new Set());
   const visible = suggestions.filter((s) => !dismissed.has(s.id));
   if (!active || visible.length === 0) return null;
@@ -40,6 +40,14 @@ export default function ReplanSuggestions({ suggestions = [], onReplan, active =
       aria-label="Re-plan suggestions"
       className="space-y-2"
     >
+      {engine && (
+        <div
+          data-testid="replan-engine"
+          className="px-1 font-mono text-[10px] uppercase tracking-widest text-[var(--text-muted)]"
+        >
+          Replan engine: {engine}
+        </div>
+      )}
       {visible.map((s) => {
         const Icon = TRIGGER_ICON[s.trigger] || RefreshCw;
         return (

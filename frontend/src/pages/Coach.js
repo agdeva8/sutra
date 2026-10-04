@@ -590,6 +590,7 @@ export default function Coach() {
           <div className="mb-4">
             <ReplanSuggestions
               suggestions={state?.replan_suggestions || []}
+              engine={state?.replan_engine}
               active={["state", "today", "timeline"].includes(panelView)}
               onReplan={openReplanSuggestion}
             />

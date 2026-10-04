@@ -64,3 +64,31 @@ export const Account = {
     expect(canvas.getByText("Session")).toBeInTheDocument();
   },
 };
+
+/**
+ * Developer tab — visible because the story's user email is on the dev
+ * allowlist (see DEV_EMAILS in Settings.jsx). Lists the persona quick-swap.
+ */
+export const Developer = {
+  parameters: {
+    api: {
+      "auth/me": {
+        user_id: "user_story01",
+        name: "Devanshu U. Agarwal",
+        email: "agarwaldevanshu8@gmail.com",
+        model_provider: "gemini",
+      },
+      "auth/personas": {
+        personas: [
+          { user_id: "user_persona_founder", name: "Dev User", created_at: "2026-09-01", persona_key: "founder" },
+          { user_id: "user_persona_starter", name: "Priya Nair", created_at: "2026-09-01", persona_key: "starter" },
+        ],
+      },
+    },
+  },
+  play: async ({ canvas, userEvent }) => {
+    await userEvent.click(canvas.getByRole("tab", { name: "Developer" }));
+    expect(await canvas.findByTestId("dev-users-list")).toBeInTheDocument();
+    expect(canvas.getByTestId("dev-user-new")).toBeInTheDocument();
+  },
+};

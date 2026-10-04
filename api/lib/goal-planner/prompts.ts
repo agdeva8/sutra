@@ -197,6 +197,23 @@ Rules:
   load-bearing constraint that, if it breaks, breaks the plan.
 - If intent is drop_goal / review_progress and no new goal is warranted, goal
   may be null and milestones may be empty.
+- For intent "review_progress" you are RE-PLANNING around a named change (a
+  blocker collision, drift, freed capacity, or a finished milestone). The user
+  asked a direct question — answer it. The prose MUST OPEN with the verdict in
+  plain words: state whether the plan changes ("No date change needed") or how
+  ("Shift the target to <date>"), then name why in one clause. Never return
+  observations only.
+- A review_progress plan MUST carry at least one concrete action so the user
+  has something to confirm even when no date moves:
+  * if dates or scope move, put the change on the goal (set_goal_dates, or
+    update_goal with the new target_date / weekly_hours / next_action);
+  * if nothing changes, still satisfy the intent with ONE add_commitment naming
+    the single next action that protects the plan (for example "Re-check
+    interview scheduling after the <blocking event> ends") or an update_goal
+    with a concrete next_action. "Accept the slip" is a real answer — pair it
+    with that action rather than prose alone.
+  * Reference existing goal titles exactly as they appear in LIVE STATE, and
+    never invent a blocker.
 
 ${reneg}
 
@@ -226,6 +243,10 @@ Allowed actions for intent "${args.intent}":
 - review_progress: update_goal, set_goal_dates, add_commitment,
   complete_commitment, add_blocker, pause_goal, drop_goal
 
+For intent "review_progress", always emit the plan's concrete action(s) — the
+date/scope change and/or its commitment(s) — even when no date moves. Return
+at least one tool; the plan always carries one.
+
 Renegotiation note (add_goal): when the RENEGOTIATION constraint block above
 requires shifting an existing goal (choice shift_existing_target), ALSO emit a
 set_goal_dates tool for the existing goal being pushed — goal_title must be an
@@ -235,7 +256,9 @@ goal exactly as planned.
 Every add_milestone.add_goal reference and add_commitment.goal_title must match
 the plan goal title (or an existing goal's exact title). Every
 add_milestone.target_date / add_commitment.due must come from the plan. Every
-phase must be a phase_objectives key.
+phase must be a phase_objectives key — except when the plan has no goal (a
+review_progress turn), where "phase" is just a short non-empty label (e.g.
+"Active").
 
 Use these EXACT arg keys — do not rename or omit them:
 - create_goal: { title, horizon, why, first_action, start_date, target_date,

@@ -14,8 +14,14 @@ import { api } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import HonestyAuditView from "../components/HonestyAuditView";
 import DevDiagnostics from "../components/DevDiagnostics";
+import DevUserSwitcher from "../components/DevUserSwitcher";
 import { isDebugMode, setDebugMode } from "../lib/debug";
 import pkg from "../../package.json";
+
+// Developer accounts — the Developer tab is always visible for these
+// emails, regardless of the ?debug=1 / 7-tap gate. Add more here as
+// needed; kept as a literal list so it's obvious and greppable.
+const DEV_EMAILS = new Set(["agarwaldevanshu8@gmail.com"]);
 
 // Text size — 5 options, with the 3rd as the product default (16px,
 // the platform browser default). The CSS variable `--sutra-font-scale`
@@ -77,6 +83,7 @@ export default function Settings() {
   const location = useLocation();
   const { user, setUser, logout } = useAuth();
   const isGuest = !user || user.is_guest;
+  const isDeveloper = !!(user?.email && DEV_EMAILS.has(user.email.toLowerCase()));
 
   // Leaving Settings is a *back* action (header back arrow, guest
   // sign-in shortcuts all return to the coach), so pop real history
@@ -112,6 +119,9 @@ export default function Settings() {
   // state (not just a module read) so the tab can be revealed live, but
   // enabling always reloads so eruda attaches at boot.
   const [debugOn, setDebugOn] = useState(isDebugMode);
+  // Developer tab visibility: always on for a developer account, otherwise
+  // only when debug mode is on.
+  const showDeveloper = debugOn || isDeveloper;
   const tapCount = useRef(0);
   const tapTimer = useRef(null);
 
@@ -271,7 +281,7 @@ export default function Settings() {
               <TabsTrigger value="audit" className={SECTION_TAB_TRIGGER}>
                 Audit
               </TabsTrigger>
-              {debugOn && (
+              {showDeveloper && (
                 <TabsTrigger value="developer" className={SECTION_TAB_TRIGGER}>
                   Developer
                 </TabsTrigger>
@@ -415,10 +425,14 @@ export default function Settings() {
               </button>
             </TabsContent>
 
-            {/* Developer tab — only mounted when debug mode is on. */}
-            {debugOn && (
-              <TabsContent value="developer">
-                <DevDiagnostics user={user} onDisable={disableDebug} />
+            {/* Developer tab — always mounted for a developer account;
+                otherwise only when debug mode is on. DevUserSwitcher is
+                the persona quick-swap; DevDiagnostics is the debug-only
+                diagnostics surface (it needs debug mode for the log). */}
+            {showDeveloper && (
+              <TabsContent value="developer" className="space-y-7">
+                <DevUserSwitcher currentUserId={user?.user_id} />
+                {debugOn && <DevDiagnostics user={user} onDisable={disableDebug} />}
               </TabsContent>
             )}
           </Tabs>

@@ -42,6 +42,15 @@ export interface ReplanSuggestion {
   prefill: string
 }
 
+/** Trigger → the planner intent that resolves it through the new engine. */
+export const REPLAN_INTENT: Record<ReplanTrigger, string> = {
+  capacity_freed: 'review_progress',
+  drift: 'review_progress',
+  blocker_collision: 'review_progress',
+  timetable_collision: 'review_progress',
+  infeasible_edit: 'review_progress',
+}
+
 export interface ReplanGoalInput {
   id: string
   title: string
