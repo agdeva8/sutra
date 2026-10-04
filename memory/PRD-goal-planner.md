@@ -306,7 +306,7 @@ The pipeline has 5 stages. The user sees Stage 4 outputs as proposal cards; Stag
 - **C1.** LLM is the only writer to goals / milestones / commitments. Blockers and timetable blocks remain direct CRUD.
 - **C2.** Chat is the surface; dashboard + timeline are the readable view of the same state.
 - **C3.** Voice is precise/curious, never warm/validating.
-- **C4.** Main agent (`MiniMax-M3`) is the only one that edits code / schema / prompts.
+- **C4.** Main agent (`DeepSeek V4.1 Flash`) is the only one that edits code / schema / prompts.
 
 ---
 
