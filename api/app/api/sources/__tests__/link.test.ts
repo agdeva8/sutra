@@ -139,6 +139,15 @@ describe('POST /api/sources/link', () => {
     expect((await res.json()).original_filename).toBe('https://example.com/page')
   })
 
+  it('stores pasted/curated text as the excerpt instead of re-fetching (Iteration 11)', async () => {
+    const res = await POST(
+      makePostRequest({ url: 'https://example.com/gated', text: 'Design Uber. Design a rate limiter.' }, SESSION_TOKEN),
+    )
+    expect(res.status).toBe(200)
+    // Curated text supplied → the raw network fetch must NOT fire.
+    expect(mockFetchLinkText).not.toHaveBeenCalled()
+  })
+
   it('rejects goal_id that does not belong to the caller', async () => {
     // The mock for `db.select(...).from(goals)` returns [] by default
     // (see vi.mock above), so the goal lookup fails and the route

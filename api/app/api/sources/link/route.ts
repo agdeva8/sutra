@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ detail: 'Not authenticated' }, { status: 401 })
   }
 
-  let body: { url?: string; goal_id?: string; title?: string; temporary?: boolean }
+  let body: { url?: string; goal_id?: string; title?: string; temporary?: boolean; text?: string }
   try {
     body = await req.json()
   } catch {
@@ -74,8 +74,12 @@ export async function POST(req: NextRequest) {
     goalTitle = goalRow.title
   }
 
-  // Fetch and extract link text
-  const textExcerpt = await fetchLinkText(url)
+  // Fetch and extract link text. Iteration 11 — a curated `text` body
+  // (pasted gated-page content, or the exact excerpt the user confirmed in
+  // the LinkPreviewDialog) overrides the server-side fetch, so AskPlanner
+  // reads the *chosen* document rather than a 401/empty raw fetch.
+  const pastedText = body.text?.trim() ?? ''
+  const textExcerpt = pastedText ? pastedText.slice(0, 8000) : await fetchLinkText(url)
 
   const id = `src_${randomUUID().replace(/-/g, '').slice(0, 12)}`
   const originalFilename = body.title?.trim() || url

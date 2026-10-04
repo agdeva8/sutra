@@ -346,7 +346,12 @@ export default function Coach() {
     if (!url) return null;
     try {
       const prevState = state;
-      const source = await api.addLink({ url, goal_id: goalId, temporary: options.temporary === true });
+      const source = await api.addLink({
+        url,
+        goal_id: goalId,
+        temporary: options.temporary === true,
+        ...(typeof options.text === "string" && options.text.trim() ? { text: options.text } : {}),
+      });
       await refreshState();
       if (goalId && prevState?.goals) {
         const goal = prevState.goals.find((g) => g.id === goalId);

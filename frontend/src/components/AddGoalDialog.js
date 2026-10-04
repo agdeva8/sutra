@@ -464,9 +464,9 @@ export default function AddGoalDialog({
     } catch {}
   };
 
-  const handleAddLink = async (url) => {
+  const handleAddLink = async (url, goalId = "", options = {}) => {
     try {
-      const created = await onAddLink(url, "", { temporary: true });
+      const created = await onAddLink(url, "", { temporary: true, ...options });
       if (!created?.id) return;
       setSources((prev) => [
         ...prev,
@@ -905,6 +905,7 @@ export default function AddGoalDialog({
               onDismissClarifications={() => setPendingClarifications(null)}
               showSources={true}
               focusOnMount={true}
+              goalContext={activeCategory ? `Adding a "${activeCategory}" goal` : "Adding a new goal"}
               // AddGoalDialog uses its own pinned Confirm button; suppress
               // the per-item Confirm so there aren't two confirm paths.
               showConfirm={false}

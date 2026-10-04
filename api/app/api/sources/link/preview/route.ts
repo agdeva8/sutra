@@ -33,6 +33,7 @@
 import { type NextRequest, NextResponse } from 'next/server'
 
 import { fetchLinkText } from '@/lib/sources'
+import { isBlockedHost } from '@/lib/link-preview'
 import { resolveRequestUser } from '@/lib/request-user'
 
 export const runtime = 'nodejs'
@@ -54,7 +55,29 @@ interface PreviewResult {
   snippet?: string
   content_type?: string | null
   status?: number | null
+  /** Can this site be embedded in an iframe in the dialog (no X-Frame-Options / CSP frame-ancestors blocking)? */
+  embeddable?: boolean
   error: string | null
+}
+
+/**
+ * Detect whether a site refuses to render inside the app's iframe.
+ * Reads `X-Frame-Options` and CSP `frame-ancestors` from the LIVE response
+ * headers so the dialog can offer "Browse it here" honestly — a blank iframe
+ * would be a dead end for users.
+ */
+export function isEmbeddable(headers: Headers): boolean {
+  const xFrame = headers.get('x-frame-options')
+  if (xFrame && /deny|sameorigin|allow-from/i.test(xFrame)) return false
+  const csp = headers.get('content-security-policy') ?? ''
+  const match = /frame-ancestors\s+(.+?)(?:;|$)/i.exec(csp)
+  if (match) {
+    const sources = match[1].trim()
+    if (!sources || sources === "'none'") return false
+    // Any explicit allowlist other than '*' or 'self' could exclude our origin.
+    if (!sources.includes('*') && sources !== "'self'") return false
+  }
+  return true
 }
 
 function hostOf(u: string): string | null {
@@ -66,57 +89,10 @@ function hostOf(u: string): string | null {
 }
 
 /**
- * SSRF guard — rejects hosts that resolve to private / loopback /
- * link-local IP space. Uses Node's built-in `dns.lookup` so a CNAME
- * that ultimately resolves to an internal IP (e.g. an attacker DNS
- * pointing to 169.254.169.254) is caught, not just literal IPs in
- * the URL string.
+ * SSRF guard — shared implementation in `lib/link-preview.ts` (imported
+ * above) so preview / extract / ask all use ONE guard and the blocklist
+ * can't drift between them.
  */
-async function isBlockedHost(host: string): Promise<boolean> {
-  if (!host) return true
-  // Literal loopback / link-local short-circuit.
-  if (
-    host === 'localhost' ||
-    host === '0.0.0.0' ||
-    host.endsWith('.localhost') ||
-    host.endsWith('.local')
-  ) {
-    return true
-  }
-  // Numeric IPv4 — block obvious RFC1918, link-local, loopback.
-  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host)
-  if (ipv4) {
-    const [, a, b] = ipv4.map(Number)
-    if (a === 10) return true
-    if (a === 127) return true
-    if (a === 0) return true
-    if (a === 169 && b === 254) return true
-    if (a === 172 && b >= 16 && b <= 31) return true
-    if (a === 192 && b === 168) return true
-  }
-  // DNS resolve and check the actual IP.
-  try {
-    const dns = await import('node:dns/promises')
-    const records = await dns.lookup(host, { all: true })
-    for (const r of records) {
-      const ip = r.address
-      const parts = ip.split('.').map(Number)
-      if (parts.length === 4) {
-        const [a, b] = parts
-        if (a === 10 || a === 127 || a === 0) return true
-        if (a === 169 && b === 254) return true
-        if (a === 172 && b >= 16 && b <= 31) return true
-        if (a === 192 && b === 168) return true
-      }
-      // IPv6 — block loopback (::1) and link-local (fe80::/10).
-      if (ip === '::1' || ip.startsWith('fe80:')) return true
-    }
-  } catch {
-    // DNS failure — refuse rather than fall through.
-    return true
-  }
-  return false
-}
 
 function decodeEntities(s: string): string {
   return s
@@ -482,6 +458,7 @@ export async function POST(req: NextRequest) {
       description,
       image,
       favicon,
+      embeddable: isEmbeddable(response.headers),
       snippet,
       content_type: contentType,
       status,
