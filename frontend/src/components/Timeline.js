@@ -17,8 +17,9 @@ import {
   Inbox,
   Sparkles,
   ChevronDown,
-  Plus,
   Pencil,
+  Trash2,
+  Loader2,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -26,7 +27,6 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuSeparator,
 } from "./ui/dropdown-menu";
 import {
   Select,
@@ -38,7 +38,9 @@ import {
 import { Popover, PopoverTrigger, PopoverContent } from "./ui/popover";
 import DayPlanner from "./DayPlanner";
 import CenteredDialog from "./CenteredDialog";
-import { CardsGrid, WeekdayHeader, TargetGrid, WeekGrid, MonthGrid } from "./CalendarCards";
+import { showReplanNudge } from "./ReplanToast";
+import { CardsGrid, WeekGrid, MonthGrid } from "./CalendarCards";
+import CalendarMonthGrid from "./CalendarMonthGrid";
 import { HourGrid } from "./CalendarHourGrid";
 import { api } from "../lib/api";
 import { toast } from "sonner";
@@ -411,8 +413,8 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
   // The editable day planner (timetable blocks / blockers / commitments)
   // opens when a day is clicked in the calendar view.
   const [selectedDay, setSelectedDay] = useState(null);
-  const [quickAddType, setQuickAddType] = useState(null);
   const [selectedTimelineItem, setSelectedTimelineItem] = useState(null);
+  const [removing, setRemoving] = useState(false);
   // Option B — a gentle re-plan offer surfaced after a milestone's tasks all
   // complete. Never auto-fires; the user chooses.
   const [replanOffer, setReplanOffer] = useState(null);
@@ -454,11 +456,6 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
     },
     [onOpenChatWith, onOpenChat, onPrefill],
   );
-
-  const openQuickAdd = (type) => {
-    setSelectedDay(startOfDay(new Date()));
-    setQuickAddType(type);
-  };
 
   /* ---------- collect & normalize data from state ---------- */
 
@@ -777,7 +774,6 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
         calAnchor={calAnchor}
         setCalAnchor={setCalAnchor}
         today={today}
-        onQuickAdd={openQuickAdd}
       />
 
       {isEmpty ? (
@@ -798,6 +794,7 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
         <CalendarView
           allItems={allItems}
           cards={calendarCards}
+          monthCards={calendarCards}
           planItems={state?.plan_items || []}
           goals={goals}
           milestones={milestones}
@@ -813,19 +810,16 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
           onPrefill={onPrefill}
           onSelectDay={setSelectedDay}
           blocks={timetableBlocks}
-          onSelectSlot={(d) => {
-            if (d) setSelectedDay(startOfDay(d));
-            setQuickAddType("block");
-          }}
+          onSelectSlot={(d) => { if (d) setSelectedDay(startOfDay(d)); }}
         />
       )}
 
       {selectedDay && (
         <CenteredDialog
           open
-          onClose={() => { setSelectedDay(null); setQuickAddType(null); }}
-          title={`Add to ${selectedDay.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" })}`}
-          subtitle="Commitments, blockers, and time blocks for this day."
+          onClose={() => setSelectedDay(null)}
+          title={selectedDay.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" })}
+          subtitle="Everything planned for this day. Add commitments, time blocks, or unavailability."
           maxWidth="max-w-lg"
           testId="day-add-dialog"
         >
@@ -834,9 +828,7 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
               day={selectedDay}
               state={state}
               onChange={onChange}
-              onClose={() => { setSelectedDay(null); setQuickAddType(null); }}
-              initialAddType={quickAddType}
-              onInitialAddTypeHandled={() => setQuickAddType(null)}
+              onClose={() => setSelectedDay(null)}
               embedded
             />
           </div>
@@ -845,25 +837,39 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
       <TimelineItemDetailsDialog
         item={selectedTimelineItem}
         state={state}
+        removing={removing}
         onClose={() => setSelectedTimelineItem(null)}
         onEdit={() => {
           if (selectedTimelineItem) openChat("", scopeForItem(selectedTimelineItem));
           setSelectedTimelineItem(null);
         }}
-        onAddBlocker={() => {
-          const d = selectedTimelineItem?.date;
-          setSelectedTimelineItem(null);
-          if (d) {
-            setSelectedDay(startOfDay(d));
-            setQuickAddType("blocker");
-          }
-        }}
-        onAddCommitment={() => {
-          const d = selectedTimelineItem?.date;
-          setSelectedTimelineItem(null);
-          if (d) {
-            setSelectedDay(startOfDay(d));
-            setQuickAddType("commitment");
+        onRemove={async (it) => {
+          setRemoving(true);
+          try {
+            await api.deleteBlocker(it.id);
+            setSelectedTimelineItem(null);
+            await onChange();
+            // Removing a constraint frees time — offer a re-plan right away
+            // (same nudge the drift/collision suggestions use).
+            showReplanNudge({
+              message: `Removed the blocker “${it.title}”. Want the coach to re-plan around the freed time?`,
+              onReplan: () =>
+                openChat(
+                  `I removed the blocker "${it.title}". Re-plan my schedule around the freed time.`,
+                  {
+                    scope: "review_progress",
+                    kind: "review_progress",
+                    title: "Re-planning",
+                    helperText: `Removed the blocker “${it.title}”.`,
+                    autoSend: true,
+                  },
+                ),
+            });
+          } catch (e) {
+            console.error(e);
+            toast.error("Couldn't remove that — try again.");
+          } finally {
+            setRemoving(false);
           }
         }}
         onToggle={async (it) => {
@@ -954,7 +960,6 @@ function HeaderStrip({
   calAnchor,
   setCalAnchor,
   today,
-  onQuickAdd,
 }) {
   const activeView = VIEW_TYPES.find((v) => v.key === viewType) || VIEW_TYPES[0];
   const ActiveIcon = activeView.Icon;
@@ -1159,37 +1164,6 @@ function TimelineTodayButton({ onClick }) {
     >
       Today
     </button>
-  );
-}
-
-function TimelineAddMenu({ onAdd }) {
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          data-testid="timeline-add-trigger"
-          aria-label="Add to timeline"
-          className="font-medium inline-flex items-center gap-1.5 h-11 sm:h-9 px-2.5 rounded text-xs border border-[var(--border)] hover:border-[var(--border-accent)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
-          style={{ background: "var(--bg-secondary)" }}
-        >
-          <Plus className="h-3.5 w-3.5" aria-hidden="true" /> Add
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-48">
-        <DropdownMenuLabel>Add to today</DropdownMenuLabel>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem data-testid="timeline-add-block" onSelect={() => onAdd?.("block")}>
-          <Clock className="mr-2 h-4 w-4" aria-hidden="true" /> Time block
-        </DropdownMenuItem>
-        <DropdownMenuItem data-testid="timeline-add-commitment" onSelect={() => onAdd?.("commitment")}>
-          <Flag className="mr-2 h-4 w-4" aria-hidden="true" /> Commitment
-        </DropdownMenuItem>
-        <DropdownMenuItem data-testid="timeline-add-blocker" onSelect={() => onAdd?.("blocker")}>
-          <AlertOctagon className="mr-2 h-4 w-4" aria-hidden="true" /> Blocker
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
   );
 }
 
@@ -2262,6 +2236,7 @@ function WeekColumns({ days, items, goals, onSelectDay, onSelectItem }) {
 function CalendarView({
   allItems,
   cards,
+  monthCards = [],
   planItems = [],
   blocks = [],
   goals,
@@ -2479,25 +2454,17 @@ function CalendarView({
     );
   }
 
-  // Month span → Google-Calendar month: a weekday header + one 7-day card row
-  // per week (the `weeks` memo already pads to whole Mon–Sun rows).
+  // Month span — one grid: single-day items are cards, any item with a date
+  // range draws a single spanning bar across the days it covers.
   if (span === "month") {
     return (
-      <div className="space-y-2">
-        <WeekdayHeader />
-        <div className="space-y-px">
-          {weeks.map((week, i) => (
-            <CardsGrid
-              key={i}
-              days={week.map((c) => c.date)}
-              cards={cards || []}
-              onSelectDay={onSelectDay}
-              onSelectItem={onSelectItem}
-              minHeight={120}
-            />
-          ))}
-        </div>
-      </div>
+      <CalendarMonthGrid
+        anchor={anchor}
+        cards={monthCards}
+        today={today}
+        onSelectItem={onSelectItem}
+        onSelectDay={onSelectDay}
+      />
     );
   }
 
@@ -3171,7 +3138,7 @@ function CalendarDayItem({ item, today, onSelectItem }) {
   );
 }
 
-function TimelineItemDetailsDialog({ item, state, onClose, onEdit, onAddBlocker, onAddCommitment, onToggle }) {
+function TimelineItemDetailsDialog({ item, state, onClose, onEdit, onRemove, onToggle, removing = false }) {
   if (!item) return null;
   const goalId = item.kind === "goal" ? item.id : item.goal_id || item.goalId;
   const goal = (state?.goals || []).find((candidate) => candidate.id === goalId)
@@ -3196,13 +3163,29 @@ function TimelineItemDetailsDialog({ item, state, onClose, onEdit, onAddBlocker,
   const isTask = item.kind === "task" || item.kind === "plan";
   const done = (item.status || "").toLowerCase() === "done";
   const doneLabel = item.kind === "commitment" ? "commitment" : isTask ? "task" : "item";
-  // For a task the middle of the hierarchy is the commitment it advances;
-  // for a commitment the middle is itself.
-  const commitmentTitle = isTask
-    ? (item.commitment || (item.note || "").replace(/^Fulfils\s*/, "").split("·")[0].replace(/[“”"]/g, "").trim())
-    : item.kind === "commitment"
-    ? item.title || item.text
-    : "";
+  const kindLabel =
+    item.kind === "goal"
+      ? "Goal"
+      : item.kind === "commitment"
+      ? "Commitment"
+      : item.kind === "milestone"
+      ? "Milestone"
+      : item.kind === "blocker"
+      ? "Blocker"
+      : isTask
+      ? "Task"
+      : "Item";
+  const kindGlyph =
+    item.kind === "commitment" ? "⚑" : item.kind === "milestone" ? "◆" : item.kind === "blocker" ? "▲" : "○";
+  // The commitment a task/milestone advances is a REAL commitment of the
+  // goal (matched by phase) — not the "Fulfils …" outcome parsed from the
+  // note, which used to be mislabelled as the commitment.
+  const commitmentNode = (() => {
+    if (!isTask && item.kind !== "milestone") return null;
+    const open = commitments.filter((c) => c.status !== "done");
+    const cand = open.find((c) => (c.phase || "") === (item.phase || "")) || open[0];
+    return cand ? { text: cand.text || cand.title, due: cand.due } : null;
+  })();
   const fulfils = isTask
     ? (item.note || "").replace(/^Fulfils\s*/, "").split("·")[0].replace(/[“”"]/g, "").trim()
     : "";
@@ -3215,6 +3198,8 @@ function TimelineItemDetailsDialog({ item, state, onClose, onEdit, onAddBlocker,
     }
     return "";
   })();
+  const goalTitle = goal?.title || item.goalTitle || item.goal_title || "";
+  const goalDate = goal?.target_date || "";
 
   return (
     <CenteredDialog
@@ -3225,30 +3210,43 @@ function TimelineItemDetailsDialog({ item, state, onClose, onEdit, onAddBlocker,
       testId="timeline-item-details"
     >
       <div className="max-h-[55vh] space-y-4 overflow-y-auto pr-1">
-        {/* hierarchy — what this is, the commitment it advances, the goal */}
+        {/* hierarchy — task ▸ commitment (due) ▸ goal (target) ▸ phases */}
         <div className="space-y-1.5">
-          <div className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
-            <span aria-hidden="true" className="text-[var(--accent)]">
-              {item.kind === "commitment" ? "⚑" : item.kind === "milestone" ? "◆" : item.kind === "blocker" ? "▲" : "○"}
+          <div className="flex items-baseline gap-2 text-sm">
+            <span className="w-4 shrink-0 text-center text-[var(--accent)]" aria-hidden="true">
+              {kindGlyph}
             </span>
-            {isTask ? "Task" : item.kind === "commitment" ? "Commitment" : item.kind === "milestone" ? "Milestone" : item.kind === "blocker" ? "Blocker" : "Item"}
+            <span className="shrink-0 font-semibold text-[var(--text-primary)]">{kindLabel}</span>
+            <span className="min-w-0 flex-1 truncate text-[var(--text-primary)]">
+              {item.title || item.text || ""}
+            </span>
+            {dateRange && <span className="shrink-0 font-mono text-[11px] text-[var(--text-muted)]">{dateRange}</span>}
           </div>
-          {commitmentTitle && item.kind !== "commitment" && (
-            <div className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
-              <span aria-hidden="true" className="text-[var(--accent)]">⚑</span>
-              Commitment: <span className="text-[var(--text-primary)]">{commitmentTitle}</span>
+          {commitmentNode && (
+            <div className="flex items-baseline gap-2 text-sm">
+              <span className="w-4 shrink-0 text-center text-[var(--accent)]" aria-hidden="true">⚑</span>
+              <span className="shrink-0 text-[var(--text-secondary)]">Commitment</span>
+              <span className="min-w-0 flex-1 truncate text-[var(--text-primary)]">{commitmentNode.text}</span>
+              {commitmentNode.due && (
+                <span className="shrink-0 font-mono text-[11px] text-[var(--text-muted)]">{dateLabel(commitmentNode.due)}</span>
+              )}
             </div>
           )}
-          {(goal?.title || item.goalTitle || item.goal_title) && (
-            <div className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
-              <span aria-hidden="true" className="text-[var(--success)]">◉</span>
-              Goal: <span className="text-[var(--text-primary)]">{goal?.title || item.goalTitle || item.goal_title}</span>
+          {fulfils && (
+            <p className="pl-6 text-[11px] text-[var(--text-muted)]">
+              Fulfils &ldquo;{fulfils}&rdquo;{hours ? ` · ${hours}` : ""}
+            </p>
+          )}
+          {goalTitle && (
+            <div className="flex items-baseline gap-2 text-sm">
+              <span className="w-4 shrink-0 text-center text-[var(--success)]" aria-hidden="true">◉</span>
+              <span className="shrink-0 text-[var(--text-secondary)]">Goal</span>
+              <span className="min-w-0 flex-1 truncate text-[var(--text-primary)]">{goalTitle}</span>
+              {goalDate && (
+                <span className="shrink-0 font-mono text-[11px] text-[var(--text-muted)]">{dateLabel(goalDate)}</span>
+              )}
             </div>
           )}
-          {fulfils && fulfils !== commitmentTitle && (
-            <p className="text-[11px] text-[var(--text-muted)]">Achieves &ldquo;{fulfils}&rdquo;{hours ? ` · ${hours}` : ""}</p>
-          )}
-          {dateRange && <p className="text-xs font-mono text-[var(--text-muted)]">{dateRange}</p>}
         </div>
 
         {/* done checkbox — logs the item done */}
@@ -3323,29 +3321,24 @@ function TimelineItemDetailsDialog({ item, state, onClose, onEdit, onAddBlocker,
         >
           <Pencil className="h-4 w-4" aria-hidden="true" /> Edit with coach
         </button>
-        {(onAddBlocker || onAddCommitment) && (
-          <div className="flex gap-2">
-            {onAddCommitment && (
-              <button
-                type="button"
-                data-testid="timeline-item-add-commitment"
-                onClick={onAddCommitment}
-                className="min-h-11 flex-1 rounded-xl bg-[var(--bg-tertiary)] px-3 text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-              >
-                Add commitment
-              </button>
+        {item.kind === "blocker" && onRemove && (
+          <button
+            type="button"
+            data-testid="timeline-item-remove"
+            onClick={() => onRemove(item)}
+            disabled={removing}
+            className="min-h-11 w-full inline-flex items-center justify-center gap-2 rounded-xl border border-[color-mix(in_srgb,var(--danger)_40%,transparent)] px-4 text-sm font-medium text-[var(--danger)] hover:bg-[color-mix(in_srgb,var(--danger)_10%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--danger)] disabled:opacity-60"
+          >
+            {removing ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> Removing…
+              </>
+            ) : (
+              <>
+                <Trash2 className="h-4 w-4" aria-hidden="true" /> Remove
+              </>
             )}
-            {onAddBlocker && (
-              <button
-                type="button"
-                data-testid="timeline-item-add-blocker"
-                onClick={onAddBlocker}
-                className="min-h-11 flex-1 rounded-xl bg-[var(--bg-tertiary)] px-3 text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-              >
-                Add blocker
-              </button>
-            )}
-          </div>
+          </button>
         )}
       </div>
     </CenteredDialog>

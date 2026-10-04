@@ -312,6 +312,7 @@ export default function Coach() {
         kind: "review_progress",
         title: "Re-plan my remaining goals",
         helperText: `You freed ${freed}h/week by dropping "${goalTitle}". The coach will propose changes for you to confirm.`,
+        autoSend: true,
       },
     );
   };
@@ -324,6 +325,7 @@ export default function Coach() {
         ? `Re-plan: ${suggestion.goal_title}`
         : "Re-plan my goals",
       helperText: suggestion.message,
+      autoSend: true,
     });
   };
 
@@ -671,6 +673,7 @@ export default function Coach() {
         onOpenSignIn={openSignIn}
         isGuest={isGuest}
         prefillMessage={chatPrefill}
+        autoSend={chatScope?.autoSend || false}
         scope={chatScope?.scope}
         refId={chatScope?.refId}
         kind={chatScope?.kind}

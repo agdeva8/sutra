@@ -48,6 +48,9 @@ export default function ChatModal({
   onOpenSignIn,
   isGuest,
   prefillMessage = "",
+  // When true, the prefill is sent immediately on open (fresh buckets only)
+  // instead of waiting for the user to hit Enter — used by the re-plan flow.
+  autoSend = false,
   // Iteration 5 — scoped chat context. When the modal opens from a
   // Timeline tile / Today timetable item / milestone, the caller passes
   // these so the title bar can read "About: <subject>" and the server
@@ -67,6 +70,9 @@ export default function ChatModal({
   const [showDraftPrompt, setShowDraftPrompt] = useState(false);
   // True while this open's history is being fetched — drives the shimmer.
   const [loadingHistory, setLoadingHistory] = useState(false);
+  // True once this open's history has resolved — gates auto-send so we never
+  // fire the prefill before we know whether the bucket already has content.
+  const [historyLoaded, setHistoryLoaded] = useState(false);
   // Iteration 9 — refine / reject modal state. The modal owns the
   // input; the dialog owns the lifecycle and the proposal lookup.
   const [refiningProposal, setRefiningProposal] = useState(null);
@@ -80,6 +86,11 @@ export default function ChatModal({
   // delete, so a dismissed attachment quietly stayed on the server.
   const [sources, setSources] = useState([]);
   const streamIdRef = useRef(0);
+  const autoSentRef = useRef(false);
+  // Synchronous "history for THIS open has resolved" flag — unlike the
+  // historyLoaded state it is reset before the effects of a reopen run, so
+  // auto-send can't fire against a stale readiness from the previous open.
+  const historyReadyRef = useRef(false);
   // Iteration 10 — renegotiation dialog state (planner headroom).
   const [renegotiation, setRenegotiation] = useState(null);
   const [busyChoice, setBusyChoice] = useState(null);
@@ -169,8 +180,10 @@ export default function ChatModal({
     if (!open || !user) return undefined;
     let cancelled = false;
     // Fresh per-open state.
+    historyReadyRef.current = false;
     setMessages([]);
     setLoadingHistory(true);
+    setHistoryLoaded(false);
     setSending(false);
     setBusyProposal(null);
     setPendingClarifications(null);
@@ -196,7 +209,13 @@ export default function ChatModal({
       .catch(() => {
         toast.error("Couldn't load chat history. Starting fresh — new messages still send.");
       })
-      .finally(() => { if (!cancelled) setLoadingHistory(false); });
+      .finally(() => {
+        if (!cancelled) {
+          historyReadyRef.current = true;
+          setLoadingHistory(false);
+          setHistoryLoaded(true);
+        }
+      });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, user?.user_id, refId, kind, scope]);
@@ -412,6 +431,22 @@ export default function ChatModal({
     },
     [autoAnswer, grillMe, scope, kind, title, helperText, sources, tryPlan],
   );
+
+  // Auto-send the prefill on open (re-plan flow): only for a FRESH bucket
+  // (empty history) and only once per open, so reopening an existing
+  // conversation never re-fires it.
+  useEffect(() => {
+    if (!open) {
+      autoSentRef.current = false;
+      historyReadyRef.current = false;
+      return;
+    }
+    if (!autoSend || autoSentRef.current || !historyReadyRef.current || !historyLoaded) return;
+    autoSentRef.current = true;
+    const text = (prefillMessage || "").trim();
+    if (!text || messages.length > 0 || sending) return;
+    send(text);
+  }, [open, autoSend, historyLoaded, prefillMessage, messages.length, sending, send]);
 
   useEffect(() => {
     const switchedToAuto = autoAnswer && !previousAutoAnswerRef.current;
