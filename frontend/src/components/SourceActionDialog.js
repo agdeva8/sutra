@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Paperclip, Link2, Trash2, Send, ExternalLink, RefreshCw, AlertTriangle, Loader2, Camera, Image as ImageIcon } from "lucide-react";
 import CenteredDialog from "./CenteredDialog";
 import { API } from "../lib/api";
+import { usePersistentState } from "../hooks/useDraftPersistence";
 import { canAutofocus } from "../lib/utils";
 
 /**
@@ -38,7 +39,7 @@ export default function SourceActionDialog({
   const [progress, setProgress] = useState(null) // {name, status: 'uploading'|'done'|'error', msg?}
 
   // ----- link-mode local state -----
-  const [url, setUrl] = useState("")
+  const [url, setUrl] = usePersistentState("source:link:url", "")
   const [preview, setPreview] = useState(null) // null | { ok, title, description, ... }
   const [previewing, setPreviewing] = useState(false)
   const [previewError, setPreviewError] = useState("")
@@ -47,7 +48,6 @@ export default function SourceActionDialog({
 
   useEffect(() => {
     if (!open) {
-      setUrl("")
       setPreview(null)
       setPreviewError("")
       setSubmitting(false)
@@ -105,6 +105,7 @@ export default function SourceActionDialog({
     setSubmitError("")
     try {
       await onAddLink(trimmed, goalId)
+      setUrl("")
       onClose?.()
     } catch (e) {
       setSubmitError(typeof e?.message === 'string' ? e.message : "Could not add link")

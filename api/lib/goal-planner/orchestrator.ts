@@ -46,7 +46,7 @@ import type { z } from 'zod'
 import type { ProviderId } from '@/lib/emergent/model-registry'
 
 import { clearPlanThread, ensurePlanCheckpointerSetup, getPlanCheckpointer, isPlanPersistenceEnabled } from './checkpointer'
-import { MAX_RENEGOTIATION_ROUNDS } from './config'
+import { MAX_CLARIFYING_ROUNDS, MAX_RENEGOTIATION_ROUNDS } from './config'
 import { crossValidate } from './cross-validator'
 import { checkHeadroom, type HeadroomResult } from './headroom'
 import { completeJsonWithMeta } from './llm'
@@ -58,6 +58,7 @@ import {
   planPrompt,
   RENEGOTIATION_OPTIONS,
 } from './prompts'
+import { buildLattice, type PlanItemRow } from './scheduler'
 import {
   EmitSchema,
   IntakeSchema,
@@ -140,6 +141,8 @@ export type PlanPipelineResult =
       headroom: HeadroomResult
       options: RenegotiationOption[]
       plan: Plan
+      /** Multi-horizon lattice (id-less plan_items rows). */
+      planItems: PlanItemRow[]
       rejects: PlanRejectRecord[]
     }
   | {
@@ -148,6 +151,8 @@ export type PlanPipelineResult =
       tools: EmittedTool[]
       plan: Plan
       headroom: HeadroomResult | null
+      /** Multi-horizon lattice (id-less plan_items rows). */
+      planItems: PlanItemRow[]
       modes: CompleteJsonMeta['mode'][]
       rejects: PlanRejectRecord[]
     }
@@ -158,7 +163,14 @@ export type PlanPipelineResult =
 
 const PlannerState = Annotation.Root({
   intake: Annotation<Intake | null>({ reducer: (_a, b) => b, default: () => null }),
+  /** Completed HITL clarification rounds — caps the ask/gill loop. */
+  clarifyRounds: Annotation<number>({ reducer: (_a, b) => b, default: () => 0 }),
   plan: Annotation<Plan | null>({ reducer: (_a, b) => b, default: () => null }),
+  /** Multi-horizon execution lattice computed by the deterministic scheduler. */
+  planItems: Annotation<PlanItemRow[]>({
+    reducer: (_a, b) => b,
+    default: () => [],
+  }),
   headroom: Annotation<HeadroomResult | null>({ reducer: (_a, b) => b, default: () => null }),
   emit: Annotation<Emit | null>({ reducer: (_a, b) => b, default: () => null }),
   cvErrors: Annotation<string[]>({ reducer: (_a, b) => b, default: () => [] }),
@@ -243,7 +255,17 @@ function buildPlannerGraph({ config: pArgs, complete, checkpointer }: BuildGraph
   }
 
   /* Stage 1 — Intake ---------------------------------------------------- */
-  const intakeNode = async (): Promise<PlanUpdate> => {
+  const intakeNode = async (s: PlanState): Promise<PlanUpdate> => {
+    const round = s.clarifyRounds ?? 0
+    // Hard cap: once the round budget is spent, never ask again — proceed and
+    // let the plan state assumptions. This is what stops the ask/gill loop.
+    const roundsExhausted = round >= MAX_CLARIFYING_ROUNDS
+    // The questions we asked last round are persisted on the checkpointed
+    // intake. Feed them back so the model recognises its own prior questions
+    // (and their answers) instead of re-asking reworded duplicates.
+    const priorQuestions = (s.intake?.clarifying_questions ?? [])
+      .map((q) => (typeof q === 'string' ? q : q.question))
+      .filter((q): q is string => typeof q === 'string' && q.length > 0)
     try {
       const { object: parsedIntake, mode } = await call(
         IntakeSchema,
@@ -253,9 +275,13 @@ function buildPlannerGraph({ config: pArgs, complete, checkpointer }: BuildGraph
           message: pArgs.message,
           context: pArgs.context,
           today: pArgs.today,
+          round,
+          maxRounds: MAX_CLARIFYING_ROUNDS,
+          priorQuestions,
         }),
       )
-      const intake: Intake = pArgs.mode === 'auto'
+      const forceProceed = pArgs.mode === 'auto' || roundsExhausted
+      const intake: Intake = forceProceed
         ? { ...parsedIntake, needs_clarification: false, clarifying_questions: [] }
         : parsedIntake
       const updates: PlanUpdate = { intake, modes: [mode] }
@@ -294,7 +320,8 @@ function buildPlannerGraph({ config: pArgs, complete, checkpointer }: BuildGraph
   const clarifyNode = async (s: PlanState): Promise<PlanUpdate> => {
     // Pauses here; the checkpointer persists state. On resume, `interrupt`
     // returns the user's answer and the graph continues to `plan` (the
-    // resumed request's `message` is already the answer).
+    // resumed request's `message` is already the answer). Count the round so
+    // the next intake knows its remaining budget.
     interrupt({
       kind: 'clarify',
       prompt:
@@ -302,7 +329,7 @@ function buildPlannerGraph({ config: pArgs, complete, checkpointer }: BuildGraph
         'A couple of details would change the plan meaningfully:',
       questions: s.intake?.clarifying_questions ?? [],
     })
-    return {}
+    return { clarifyRounds: (s.clarifyRounds ?? 0) + 1 }
   }
 
   /* Stage 3 — Plan ------------------------------------------------------ */
@@ -368,7 +395,55 @@ function buildPlannerGraph({ config: pArgs, complete, checkpointer }: BuildGraph
       }
     }
 
-    return { plan, modes: [mode], rejects }
+    // Deterministic scheduling — the scheduler owns EVERY date. It lays the
+    // plan out as a multi-horizon lattice (yearly -> quarterly phases ->
+    // monthly milestones -> weekly checkpoints -> daily commitments) with a
+    // 20% per-horizon timeline buffer, and overwrites the model's rough
+    // milestone dates. Everything downstream (headroom, emit, cross-validate,
+    // executor) then sees the scheduled plan.
+    let planItems: PlanItemRow[] = []
+    if (
+      plan.goal &&
+      plan.milestones.length > 0 &&
+      Object.keys(plan.goal.phase_objectives).length >= 2
+    ) {
+      try {
+        const scheduled = buildLattice({
+          today: pArgs.today,
+          goal_title: plan.goal.title,
+          start_date: plan.goal.start_date,
+          target_date: plan.goal.target_date,
+          weekly_hours: plan.goal.weekly_hours,
+          phases: Object.entries(plan.goal.phase_objectives).map(([name, objective]) => ({
+            name,
+            objective,
+          })),
+          milestones: plan.milestones.map((m) => ({
+            title: m.title,
+            phase: m.phase,
+            rationale: m.rationale,
+          })),
+          commitments: plan.commitments.map((c) => ({
+            text: c.text,
+            due: c.due,
+            phase: c.phase,
+          })),
+        })
+        plan = {
+          ...plan,
+          milestones: scheduled.milestones.map((m, i) => ({
+            ...(plan.milestones[i] ?? m),
+            target_date: m.target_date,
+          })),
+        }
+        planItems = scheduled.items
+      } catch (e) {
+        // Scheduling is pure arithmetic; a failure must not sink the plan.
+        rejects.push(reject('plan', `scheduler failed: ${errMsg(e)}`, { plan }, null, true))
+      }
+    }
+
+    return { plan, planItems, modes: [mode], rejects }
   }
 
   /* Stage 3.5 — Headroom (programmatic) -------------------------------- */
@@ -405,6 +480,7 @@ function buildPlannerGraph({ config: pArgs, complete, checkpointer }: BuildGraph
           headroom,
           options: [...RENEGOTIATION_OPTIONS],
           plan,
+          planItems: s.planItems ?? [],
           rejects: [],
         },
       }
@@ -476,6 +552,7 @@ function buildPlannerGraph({ config: pArgs, complete, checkpointer }: BuildGraph
           tools: s.emit.tools,
           plan: s.plan,
           headroom: s.headroom,
+          planItems: s.planItems ?? [],
           modes: [],
           rejects: [],
         },

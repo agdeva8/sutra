@@ -171,6 +171,49 @@ export const milestones = pgTable('milestones', {
     .defaultNow(),
 })
 
+/**
+ * Iteration 10.2 (multi-horizon execution) — the canonical persisted plan.
+ *
+ * One row per horizon item across all five levels:
+ *   yearly    -> the goal span itself
+ *   quarterly -> phase spans (2-4, computed by the scheduler)
+ *   monthly   -> milestones (each dated by the scheduler)
+ *   weekly    -> derived checkpoints inside each phase's effective window
+ *   daily     -> commitments (the smallest next actions)
+ *
+ * The scheduler (`lib/goal-planner/scheduler.ts`) computes these rows with a
+ * 20% per-horizon timeline buffer; the proposal executor writes them on
+ * confirm, keyed to the goal. Rows carry `status` so the execution dashboard
+ * and per-horizon drift can read open/done state. CASCADE (not SET NULL like
+ * milestones) because a plan is meaningless without its goal.
+ */
+export const planItems = pgTable('plan_items', {
+  id: text('id').primaryKey(),
+  userId: text('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  goalId: text('goal_id').references(() => goals.id, { onDelete: 'cascade' }),
+  horizon: text('horizon', {
+    enum: ['daily', 'weekly', 'monthly', 'quarterly', 'yearly'],
+  }).notNull(),
+  phase: text('phase').notNull().default(''),
+  title: text('title').notNull(),
+  note: text('note').notNull().default(''),
+  startDate: date('start_date'),
+  endDate: date('end_date'),
+  dueDate: date('due_date'),
+  weeklyHours: integer('weekly_hours'),
+  status: text('status', { enum: ['open', 'done'] })
+    .notNull()
+    .default('open'),
+  createdAt: timestamp('created_at', { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+}, (t) => [
+  index('plan_items_user_horizon_idx').on(t.userId, t.horizon, t.startDate),
+  index('plan_items_goal_idx').on(t.goalId),
+])
+
 export const blockers = pgTable('blockers', {
   id: text('id').primaryKey(),
   userId: text('user_id')

@@ -12,6 +12,7 @@ import {
   Check,
   RefreshCw,
   Pencil,
+  Loader2,
 } from "lucide-react";
 import CenteredDialog from "./CenteredDialog";
 import ChatConsole from "./ChatConsole";
@@ -22,6 +23,7 @@ import { useDialogBack } from "../hooks/useDialogBack";
 import { usePlanSend, renegotiationChoiceLabel, clearRenegotiation } from "../hooks/use-plan-send";
 import { toast } from "sonner";
 import { api, API } from "../lib/api";
+import { readDraftBucket, writeDraftBucket } from "../hooks/useDraftPersistence";
 
 /**
  * CATEGORIES — hero cards for picking a goal area.
@@ -132,6 +134,7 @@ export default function AddGoalDialog({
   const [pendingClarifications, setPendingClarifications] = useState(null);
   const [renegotiation, setRenegotiation] = useState(null);
   const [busyChoice, setBusyChoice] = useState(null);
+  const [showDraftPrompt, setShowDraftPrompt] = useState(false);
   const streamIdRef = useRef(0);
   // Operation-scoped context (spec §10) — the current conversation
   // bucket. Minted fresh on every dialog open; swapped only on
@@ -188,38 +191,69 @@ export default function AddGoalDialog({
   // once it's created — shown as chips above the chat textarea).
   const [sources, setSources] = useState([]);
   const autoResumePendingRef = useRef(false);
+  const reusedDraftRef = useRef(false);
   const previousModeRef = useRef({ autoAnswer: initialAutoAnswer, grillMe: initialGrillMe });
   const sendRef = useRef(null);
 
   useEffect(() => {
-    if (open) {
-      // Hard reset on every open — founder feedback (Iteration 9+):
-      // if the user opened refine / reject, closed the dialog via the
-      // back button without dismissing those, and re-opened, state
-      // was leaking (chat step was preserved, category was preserved).
-      // Reset EVERYTHING that could carry across opens.
+    if (!open) return undefined;
+    let cancelled = false;
+    // Reset the OPEN-SCOPED transient state only. A resumable draft (below)
+    // deliberately survives an accidental Escape / back-nav / reload.
+    setInput("");
+    setSending(false);
+    setBusyProposal(null);
+    setPendingClarifications(null);
+    setRenegotiation(null);
+    setBusyChoice(null);
+    clearRenegotiation();
+    setFocusToken(0);
+    setSources([]);
+    autoResumePendingRef.current = false;
+    previousModeRef.current = { autoAnswer: initialAutoAnswer, grillMe: initialGrillMe };
+    setRefiningProposal(null);
+    setRejectingProposal(null);
+    setAutoAnswer(initialAutoAnswer);
+    setGrillMe(initialGrillMe);
+
+    const saved = readDraftBucket("add_goal");
+    if (saved) {
+      // Resume the draft minted earlier this app session: reuse its bucket and
+      // restore the transcript + proposal cards from history.
+      refIdRef.current = saved;
+      reusedDraftRef.current = true;
+      setShowDraftPrompt(false);
+      api
+        .history({ refId: saved, kind: "add_goal", scope: "goal" })
+        .then((m) => {
+          if (cancelled) return;
+          const list = m || [];
+          if (list.length > 0) {
+            setMessages(list);
+            setStep("chat");
+            setShowDraftPrompt(true);
+          } else {
+            setMessages([]);
+            setActiveCategory(null);
+            setStep("tiles");
+          }
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setMessages([]);
+          setActiveCategory(null);
+          setStep("tiles");
+        });
+    } else {
+      // Fresh draft — mint a bucket and remember it for the session.
       setMessages([]);
-      setInput("");
-      setSending(false);
-      setBusyProposal(null);
-      setPendingClarifications(null);
-      setRenegotiation(null);
-      setBusyChoice(null);
-      clearRenegotiation();
       setActiveCategory(null);
       setStep("tiles");
-      setFocusToken(0);
-      setSources([]);
-      autoResumePendingRef.current = false;
-      previousModeRef.current = { autoAnswer: initialAutoAnswer, grillMe: initialGrillMe };
-      setRefiningProposal(null);
-      setRejectingProposal(null);
-      setAutoAnswer(initialAutoAnswer);
-      setGrillMe(initialGrillMe);
-      // Fresh conversation bucket per open — the previous (possibly
-      // unfinalized) goal's history must not leak into this session.
+      reusedDraftRef.current = false;
       refIdRef.current = `new_goal_${crypto.randomUUID()}`;
+      writeDraftBucket("add_goal", refIdRef.current);
     }
+    return () => { cancelled = true; };
   }, [open, initialAutoAnswer, initialGrillMe]);
 
   const applyPlan = useCallback((result, { streamId }) => {
@@ -761,6 +795,17 @@ export default function AddGoalDialog({
     );
   };
 
+  const startNewDraft = useCallback(() => {
+    refIdRef.current = `new_goal_${crypto.randomUUID()}`;
+    writeDraftBucket("add_goal", refIdRef.current);
+    reusedDraftRef.current = false;
+    setMessages([]);
+    setPendingClarifications(null);
+    setActiveCategory(null);
+    setStep("tiles");
+    setShowDraftPrompt(false);
+  }, []);
+
   const activeCat = CATEGORIES.find((c) => c.id === activeCategory);
 
   return (
@@ -789,6 +834,33 @@ export default function AddGoalDialog({
           ChatConsole. The same tiles collapse into a chip strip at the
           top of the chat — keeps the category visible without giving
           it a whole grid. */}
+      {showDraftPrompt && (
+        <div
+          data-testid="draft-continue-prompt"
+          className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2.5"
+        >
+          <span className="min-w-0 flex-1 text-[12px] leading-snug text-[var(--text-secondary)]">
+            You have an unfinished plan from earlier.
+          </span>
+          <button
+            type="button"
+            data-testid="draft-continue"
+            onClick={() => setShowDraftPrompt(false)}
+            className="min-h-9 rounded-md border border-[var(--border)] px-3 text-[12px] font-medium text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+          >
+            Continue
+          </button>
+          <button
+            type="button"
+            data-testid="draft-start-new"
+            onClick={startNewDraft}
+            className="min-h-9 rounded-md bg-[var(--accent)] px-3 text-[12px] font-medium text-[var(--bg-primary)] hover:opacity-90"
+          >
+            Start new
+          </button>
+        </div>
+      )}
+
       {step === "tiles" ? (
         <div
           data-testid="add-goal-categories"
@@ -919,25 +991,46 @@ export default function AddGoalDialog({
                 data-testid={`pinned-action-${pinnedAction.variant}`}
                 className="shrink-0 px-4 sm:px-5 pt-1 pb-2 bg-[var(--bg-primary)]"
               >
-                <button
-                  data-testid="pinned-action-button"
-                  onClick={onPinnedAction}
-                  disabled={sending || (pinnedAction.proposalId != null && busyProposal === pinnedAction.proposalId)}
-                  className={`w-full h-12 rounded-full inline-flex items-center justify-center gap-2 text-[15px] font-semibold transition-opacity disabled:opacity-40 hover:opacity-90 active:scale-[0.99] ${
-                    pinnedAction.variant === "confirm" || pinnedAction.variant === "confirm_all" || pinnedAction.variant === "refine"
-                      ? "bg-[var(--accent)] text-[var(--bg-primary)]"
-                      : "bg-[var(--bg-tertiary)] text-[var(--text-primary)]"
-                  }`}
-                >
-                  {pinnedAction.variant === "confirm" || pinnedAction.variant === "confirm_all" ? (
-                    <Check className="w-4 h-4" aria-hidden="true" />
-                  ) : pinnedAction.variant === "refine" ? (
-                    <Pencil className="w-4 h-4" aria-hidden="true" />
-                  ) : (
-                    <RefreshCw className="w-4 h-4" aria-hidden="true" />
-                  )}
-                  {pinnedAction.label}
-                </button>
+                {(() => {
+                  const busy =
+                    sending ||
+                    (pinnedAction.proposalId != null && busyProposal === pinnedAction.proposalId);
+                  return (
+                    <button
+                      data-testid="pinned-action-button"
+                      onClick={onPinnedAction}
+                      disabled={busy}
+                      aria-busy={busy}
+                      className={`w-full h-12 rounded-full inline-flex items-center justify-center gap-2 text-[15px] font-semibold transition-opacity disabled:opacity-60 hover:opacity-90 active:scale-[0.99] ${
+                        pinnedAction.variant === "confirm" || pinnedAction.variant === "confirm_all" || pinnedAction.variant === "refine"
+                          ? "bg-[var(--accent)] text-[var(--bg-primary)]"
+                          : "bg-[var(--bg-tertiary)] text-[var(--text-primary)]"
+                      }`}
+                    >
+                      {busy ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                          {pinnedAction.variant === "refine" ? "Refining…" : "Confirming…"}
+                        </>
+                      ) : pinnedAction.variant === "confirm" || pinnedAction.variant === "confirm_all" ? (
+                        <>
+                          <Check className="w-4 h-4" aria-hidden="true" />
+                          {pinnedAction.label}
+                        </>
+                      ) : pinnedAction.variant === "refine" ? (
+                        <>
+                          <Pencil className="w-4 h-4" aria-hidden="true" />
+                          {pinnedAction.label}
+                        </>
+                      ) : (
+                        <>
+                          <RefreshCw className="w-4 h-4" aria-hidden="true" />
+                          {pinnedAction.label}
+                        </>
+                      )}
+                    </button>
+                  );
+                })()}
               </div>
             )}
           </div>

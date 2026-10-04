@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { runPlanPipeline, type CompleteFn, type PlanPipelineArgs } from '../orchestrator'
 import { EmitSchema, IntakeSchema, PlanSchema } from '../schemas'
 import type { Emit, Intake, Plan } from '../schemas'
+import { buildLattice } from '../scheduler'
 
 const TITLE = 'Land a senior SDE offer'
 
@@ -42,6 +43,28 @@ const plan: Plan = {
   prose: 'The daily slot is the load-bearing constraint.',
 }
 
+// Iteration 10.2: the scheduler owns milestone dates. The emit fixtures must
+// carry the SCHEDULED dates or cross-validation (target_date must be in the
+// plan's milestone dates) rejects them.
+const schedMilestones = buildLattice({
+  today: '2026-10-01',
+  goal_title: TITLE,
+  start_date: plan.goal!.start_date,
+  target_date: plan.goal!.target_date,
+  weekly_hours: plan.goal!.weekly_hours,
+  phases: Object.entries(plan.goal!.phase_objectives).map(([name, objective]) => ({
+    name,
+    objective,
+  })),
+  milestones: plan.milestones.map((m) => ({
+    title: m.title,
+    phase: m.phase,
+    rationale: m.rationale,
+  })),
+  commitments: plan.commitments.map((c) => ({ text: c.text, due: c.due, phase: c.phase })),
+}).milestones
+const MILE_DATE = new Map(schedMilestones.map((m) => [m.title, m.target_date]))
+
 const emitOk: Emit = {
   tools: [
     {
@@ -50,7 +73,7 @@ const emitOk: Emit = {
     },
     {
       action: 'add_milestone',
-      args: { goal_title: TITLE, title: 'SD fundamentals', target_date: '2026-11-05', phase: 'Foundations' },
+      args: { goal_title: TITLE, title: 'SD fundamentals', target_date: MILE_DATE.get('SD fundamentals')!, phase: 'Foundations' },
     },
     {
       action: 'add_commitment',
@@ -343,5 +366,30 @@ describe('runPlanPipeline', () => {
       base({ threadId, mode: 'auto', message: 'Use reasonable assumptions.', resume: 'Use reasonable assumptions.', deps: { complete } }),
     )
     expect(resumed.kind).toBe('ok')
+  })
+})
+
+describe('clarification round cap', () => {
+  it('stops asking after MAX_CLARIFYING_ROUNDS and proceeds to a plan', async () => {
+    // Intake ALWAYS wants to clarify; only the round cap should stop it.
+    const alwaysAsk = {
+      ...intakeOk,
+      needs_clarification: true,
+      clarifying_questions: [{ question: 'Which level?' }],
+    }
+    const threadId = `thread-cap-${Date.now()}`
+    const complete = fakeComplete({ intake: alwaysAsk, plan, emits: [emitOk] })
+    const args = base({ mode: 'ask', threadId, deps: { complete } })
+
+    const r1 = await runPlanPipeline(args)
+    expect(r1.kind).toBe('clarify')
+
+    // Round 1 answered -> may ask once more (budget = 2).
+    const r2 = await runPlanPipeline({ ...args, resume: 'a1' })
+    expect(r2.kind).toBe('clarify')
+
+    // Round 2 answered -> budget spent -> forced to plan, no more asking.
+    const r3 = await runPlanPipeline({ ...args, resume: 'a2' })
+    expect(r3.kind).toBe('ok')
   })
 })

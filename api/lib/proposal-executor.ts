@@ -100,6 +100,50 @@ function todayIso(): string {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Plan items (multi-horizon execution lattice)                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Write the schedule of record for a goal. Called inside the creator/editor
+ * transaction with the resolved goal id so plan_items rows are keyed to the
+ * goal the user just confirmed. `items` are id-less rows produced by
+ * `lib/goal-planner/scheduler.ts` and carried on the plan proposal's args
+ * (`plan_items`). Every row starts `open`.
+ */
+async function writePlanItems(
+  tx: any,
+  schema: any,
+  args: { userId: string; goalId: string; items: unknown },
+): Promise<number> {
+  const items = Array.isArray(args.items) ? args.items : []
+  if (items.length === 0) return 0
+  const HORIZONS = ['daily', 'weekly', 'monthly', 'quarterly', 'yearly']
+  const rows: any[] = []
+  for (const it of items) {
+    if (!it || typeof it !== 'object') continue
+    const horizon = (it as any).horizon
+    if (typeof horizon !== 'string' || !HORIZONS.includes(horizon)) continue
+    rows.push({
+      id: newId('pi'),
+      userId: args.userId,
+      goalId: args.goalId,
+      horizon,
+      phase: typeof (it as any).phase === 'string' ? (it as any).phase : '',
+      title: typeof (it as any).title === 'string' ? (it as any).title : '',
+      note: typeof (it as any).note === 'string' ? (it as any).note : '',
+      startDate: typeof (it as any).start_date === 'string' ? (it as any).start_date : null,
+      endDate: typeof (it as any).end_date === 'string' ? (it as any).end_date : null,
+      dueDate: typeof (it as any).due_date === 'string' ? (it as any).due_date : null,
+      weeklyHours:
+        typeof (it as any).weekly_hours === 'number' ? (it as any).weekly_hours : null,
+      status: 'open',
+    })
+  }
+  if (rows.length > 0) await tx.insert(schema.planItems).values(rows)
+  return rows.length
+}
+
+/* -------------------------------------------------------------------------- */
 /* Goal reference resolver                                                    */
 /*                                                                             */
 /* The system prompt (`lib/llm/prompts.ts`) advertises the goal reference     */
@@ -268,6 +312,7 @@ async function applyCreateGoal(
       summary: `Created goal '${title}' (${horizon})`,
       payload: { proposal_id: proposal.id, args },
     })
+    await writePlanItems(tx, schema, { userId, goalId, items: args.plan_items })
   })
 
   return {
@@ -556,6 +601,7 @@ async function applyAddMilestone(
       summary: `Milestone '${title}' -> ${ref.goalTitle}`,
       payload: { proposal_id: proposal.id, args },
     })
+    await writePlanItems(tx, schema, { userId, goalId: ref.goalId, items: args.plan_items })
   })
 
   return {
@@ -705,6 +751,7 @@ async function applyAddCommitment(
       summary: `Committed: ${text}${goalTitle ? ` -> ${goalTitle}` : ''}`,
       payload: { proposal_id: proposal.id, args },
     })
+    if (goalId) await writePlanItems(tx, schema, { userId, goalId, items: args.plan_items })
   })
 
   return {

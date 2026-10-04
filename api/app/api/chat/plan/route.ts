@@ -289,6 +289,21 @@ export async function POST(req: NextRequest) {
           }))
       : []
 
+  // Persist-on-confirm: carry the multi-horizon lattice on the plan-bearing
+  // proposal so the executor writes `plan_items` in the same transaction as the
+  // goal/milestones when the user confirms. The extra arg key is inert for the
+  // confirm UI (it only reads known fields).
+  if (result.kind === 'ok' && result.planItems && result.planItems.length > 0) {
+    const carrier =
+      proposals.find((p) => p.action === 'create_goal') ??
+      proposals.find(
+        (p) => p.action === 'add_milestone' || p.action === 'add_commitment',
+      )
+    if (carrier) {
+      carrier.args = { ...carrier.args, plan_items: result.planItems }
+    }
+  }
+
   // Deterministic drop guarantee. Stage 4 legitimately returns zero tools
   // for a drop_goal turn — e.g. the user answered the coach's "pause or
   // drop?" ask with "Drop it for good", which carries the decision but not
@@ -415,6 +430,7 @@ export async function POST(req: NextRequest) {
         headroom: result.headroom,
         options: result.options,
         plan: result.plan,
+        plan_items: result.planItems,
       })
     case 'ok':
       return NextResponse.json({
@@ -424,6 +440,7 @@ export async function POST(req: NextRequest) {
         proposals: proposals.map((p) => ({ ...p, status: 'pending' })),
         headroom: result.headroom,
         plan: result.plan,
+        plan_items: result.planItems,
       })
     default:
       return NextResponse.json({ status: 'no_change', ...base, prose: '' })

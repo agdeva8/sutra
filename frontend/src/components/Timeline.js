@@ -38,6 +38,10 @@ import {
 import { Popover, PopoverTrigger, PopoverContent } from "./ui/popover";
 import DayPlanner from "./DayPlanner";
 import CenteredDialog from "./CenteredDialog";
+import { CardsGrid, WeekdayHeader, TargetGrid, WeekGrid, MonthGrid } from "./CalendarCards";
+import { HourGrid } from "./CalendarHourGrid";
+import { api } from "../lib/api";
+import { toast } from "sonner";
 import useMediaQuery from "../hooks/useMediaQuery";
 
 /* ---------------------------------------------------------------------------
@@ -77,6 +81,9 @@ const HORIZON_COLOR = {
   long: "var(--success)",
 };
 const HORIZON_LABEL = { weekly: "WK", short: "SHORT", medium: "MED", long: "LONG" };
+
+/** Per-goal stripe colours for the calendar cards (deterministic by goal id). */
+const GOAL_PALETTE = ["#0A84FF", "#34C759", "#FF9F0A", "#BF5AF2", "#FF375F", "#5AC8FA"];
 
 /* Status → color token. Issue 2/3 (Iteration 5) — tile color is now
    driven by status, not horizon, so on-track / overdue / in-progress /
@@ -156,7 +163,12 @@ function barPaint(item, surface, stripePx = 3) {
     return {
       background: hue,
       stripe: null,
-      color: "var(--bg-primary)", // dark ink on a saturated fill
+      // Amber/green fills need dark ink (white fails contrast); blue/red keep
+      // the theme-inverse. `--on-warning` stays dark in both themes.
+      color:
+        hue.includes("warning") || hue.includes("success")
+          ? "var(--on-warning)"
+          : "var(--bg-primary)",
     };
   }
   return {
@@ -176,6 +188,7 @@ const SCOPE_MAP = {
   milestone: { scope: "milestone", kind: "edit_goal" },
   commitment: { scope: "commitment", kind: "plan_day" },
   blocker: { scope: "blocker", kind: "plan_day" },
+  task: { scope: "goal", kind: "edit_goal" },
 };
 const SCOPE_HELPER = {
   goal: "Tell the coach what should change in this goal.",
@@ -191,13 +204,16 @@ function scopeForItem(item) {
   const detail = [
     goalTitle ? `Goal: ${goalTitle}.` : "",
     item.phase ? `Phase: ${item.phase}.` : "",
+    item.note ? `${item.note}.` : "",
     date ? `Date: ${date}.` : "",
     item.start_date && item.end_date ? `Blocker window: ${item.start_date}–${item.end_date}.` : "",
   ].filter(Boolean).join(" ");
   return {
     scope: m.scope,
     kind: m.kind,
-    refId: item.id,
+    // A task is scoped to its GOAL (the chat edits the goal/plan), not the
+    // task row itself.
+    refId: item.kind === "task" ? item.goalId || item.goal_id || item.id : item.id,
     title: item.title,
     helperText: [SCOPE_HELPER[item.kind], detail].filter(Boolean).join(" "),
   };
@@ -253,6 +269,10 @@ const parse = (s) => {
   const d = new Date(s + "T00:00:00");
   return isNaN(d.getTime()) ? null : d;
 };
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+const startOfMonth = (d) => new Date(d.getFullYear(), d.getMonth(), 1);
+
 const startOfDay = (d) => {
   const x = new Date(d);
   x.setHours(0, 0, 0, 0);
@@ -393,6 +413,18 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
   const [selectedDay, setSelectedDay] = useState(null);
   const [quickAddType, setQuickAddType] = useState(null);
   const [selectedTimelineItem, setSelectedTimelineItem] = useState(null);
+  // Option B — a gentle re-plan offer surfaced after a milestone's tasks all
+  // complete. Never auto-fires; the user chooses.
+  const [replanOffer, setReplanOffer] = useState(null);
+  // Timetable blocks — fetched separately (they aren't part of /api/state).
+  // Drives the Google-Calendar hour grid on the Day/Week spans.
+  const [timetableBlocks, setTimetableBlocks] = useState([]);
+  useEffect(() => {
+    api
+      .timetable()
+      .then((r) => setTimetableBlocks(r?.blocks || []))
+      .catch(() => {});
+  }, [state]);
   const dayPlannerRef = useRef(null);
   // The planner renders below the (tall) month grid, so scroll it into
   // view on open — otherwise clicking a day near the bottom looks like a
@@ -465,6 +497,16 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
 
   const openCommitments = useMemo(
     () => (state?.commitments || []).filter((c) => c.status === "open"),
+    [state],
+  );
+
+  // Per-day plan tasks from the multi-horizon lattice (plan_items). Marked by a
+  // "Fulfils …" note; commitment-derived daily rows are the others.
+  const planTasks = useMemo(
+    () =>
+      (state?.plan_items || []).filter(
+        (p) => p.horizon === "daily" && (p.note || "").startsWith("Fulfils"),
+      ),
     [state],
   );
 
@@ -541,8 +583,82 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
         note: b.note,
       });
     });
+    planTasks.forEach((p) => {
+      const d = parse(p.due_date);
+      if (!d) return;
+      out.push({
+        kind: "task",
+        date: d,
+        start: d,
+        end: d,
+        id: p.id,
+        title: p.title,
+        note: p.note,
+        phase: p.phase,
+        goalId: p.goal_id,
+        status: p.status,
+      });
+    });
     return out.sort((a, b) => a.date - b.date);
-  }, [goals, milestones, openCommitments, blockers, today]);
+  }, [goals, milestones, openCommitments, blockers, planTasks, today]);
+
+  // Option C calendar cards — one 3-line breadcrumb card per item, enriched
+  // with the goal (title + colour), the commitment a task advances, and the
+  // milestone it fulfils. Goals become the stripe/context, not cards.
+  const calendarCards = useMemo(() => {
+    const colorByGoal = new Map(goals.map((g, i) => [g.id, GOAL_PALETTE[i % GOAL_PALETTE.length]]));
+    const openCommitsByGoal = new Map();
+    (state?.commitments || [])
+      .filter((c) => c.status !== "done")
+      .forEach((c) => {
+        const key = c.goal_id || c.goal_title || "";
+        const arr = openCommitsByGoal.get(key) || [];
+        arr.push(c);
+        openCommitsByGoal.set(key, arr);
+      });
+    const out = [];
+    for (const it of allItems) {
+      if (it.kind === "goal") continue;
+      const goalId = it.goalId || it.goal_id || "";
+      const goal =
+        goals.find((g) => g.id === goalId) ||
+        goals.find((g) => g.title === (it.goalTitle || it.goal_title));
+      const color =
+        it.kind === "blocker"
+          ? "var(--danger)"
+          : colorByGoal.get(goal?.id) || GOAL_PALETTE[0];
+      let commitment = "";
+      let fulfils = "";
+      let hours = "";
+      if (it.kind === "task") {
+        const body = (it.note || "").replace(/^Fulfils\s*/, "");
+        const [fPart, hPart] = body.split("·");
+        fulfils = (fPart || "").replace(/[“”"]/g, "").trim();
+        hours = hPart ? hPart.trim() : "";
+        const cands =
+          openCommitsByGoal.get(goalId) ||
+          openCommitsByGoal.get(it.goalTitle || it.goal_title || "") ||
+          [];
+        const samePhase = cands.filter((c) => (c.phase || "") === (it.phase || ""));
+        commitment = (samePhase[0] || cands[0])?.text || "";
+      }
+      out.push({
+        id: it.id,
+        item: it,
+        date: it.date,
+        glyph:
+          it.kind === "commitment" ? "⚑" : it.kind === "milestone" ? "◆" : it.kind === "blocker" ? "▲" : "○",
+        title: it.title,
+        goalTitle: goal?.title || it.goalTitle || it.goal_title || "",
+        color,
+        commitment,
+        fulfils,
+        hours,
+        status: it.status,
+      });
+    }
+    return out;
+  }, [allItems, goals, state]);
 
   const isEmpty = allItems.length === 0 && goals.length === 0;
 
@@ -681,6 +797,8 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
       ) : (
         <CalendarView
           allItems={allItems}
+          cards={calendarCards}
+          planItems={state?.plan_items || []}
           goals={goals}
           milestones={milestones}
           commitments={openCommitments}
@@ -694,20 +812,35 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
           onSelectItem={setSelectedTimelineItem}
           onPrefill={onPrefill}
           onSelectDay={setSelectedDay}
+          blocks={timetableBlocks}
+          onSelectSlot={(d) => {
+            if (d) setSelectedDay(startOfDay(d));
+            setQuickAddType("block");
+          }}
         />
       )}
 
       {selectedDay && (
-        <div ref={dayPlannerRef}>
-          <DayPlanner
-            day={selectedDay}
-            state={state}
-            onChange={onChange}
-            onClose={() => setSelectedDay(null)}
-            initialAddType={quickAddType}
-            onInitialAddTypeHandled={() => setQuickAddType(null)}
-          />
-        </div>
+        <CenteredDialog
+          open
+          onClose={() => { setSelectedDay(null); setQuickAddType(null); }}
+          title={`Add to ${selectedDay.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" })}`}
+          subtitle="Commitments, blockers, and time blocks for this day."
+          maxWidth="max-w-lg"
+          testId="day-add-dialog"
+        >
+          <div ref={dayPlannerRef}>
+            <DayPlanner
+              day={selectedDay}
+              state={state}
+              onChange={onChange}
+              onClose={() => { setSelectedDay(null); setQuickAddType(null); }}
+              initialAddType={quickAddType}
+              onInitialAddTypeHandled={() => setQuickAddType(null)}
+              embedded
+            />
+          </div>
+        </CenteredDialog>
       )}
       <TimelineItemDetailsDialog
         item={selectedTimelineItem}
@@ -717,7 +850,89 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
           if (selectedTimelineItem) openChat("", scopeForItem(selectedTimelineItem));
           setSelectedTimelineItem(null);
         }}
+        onAddBlocker={() => {
+          const d = selectedTimelineItem?.date;
+          setSelectedTimelineItem(null);
+          if (d) {
+            setSelectedDay(startOfDay(d));
+            setQuickAddType("blocker");
+          }
+        }}
+        onAddCommitment={() => {
+          const d = selectedTimelineItem?.date;
+          setSelectedTimelineItem(null);
+          if (d) {
+            setSelectedDay(startOfDay(d));
+            setQuickAddType("commitment");
+          }
+        }}
+        onToggle={async (it) => {
+          const next = (it.status || "").toLowerCase() === "done" ? "open" : "done";
+          try {
+            if (it.kind === "commitment") {
+              await api.updateCommitment(it.id, { status: next });
+            } else {
+              await api.updatePlanItem(it.id, { status: next });
+            }
+            onChange();
+            // Option B — on completion, offer (never auto-fire) a re-plan when
+            // the day's/week's work is actually finished, or the milestone is
+            // now met. A gentle inline prompt, not a chat turn.
+            if (next === "done") {
+              const planItems = state?.plan_items || [];
+              const targetTitle = (it.note || "").replace(/^Fulfils\s*/, "").split("·")[0].replace(/[“”"]/g, "").trim();
+              const sameFulfil = planItems.filter(
+                (p) =>
+                  p.horizon === "daily" &&
+                  (p.note || "").startsWith("Fulfils") &&
+                  (p.note || "").replace(/^Fulfils\s*/, "").split("·")[0].replace(/[“”"]/g, "").trim() === targetTitle &&
+                  p.id !== it.id,
+              );
+              const remaining = sameFulfil.filter((p) => (p.status || "open") !== "done");
+              if (targetTitle && remaining.length === 0) {
+                setReplanOffer({ goalId: it.goal_id || it.goalId, milestone: targetTitle });
+              }
+            }
+            setSelectedTimelineItem(null);
+          } catch (e) {
+            toast.error("Couldn't update — try again.");
+          }
+        }}
       />
+
+      {/* Option B — gentle re-plan offer (never auto-fires). */}
+      {replanOffer && (
+        <div
+          data-testid="replan-offer"
+          className="fixed inset-x-0 bottom-[calc(1.5rem+env(safe-area-inset-bottom))] z-40 mx-auto flex max-w-md flex-wrap items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2.5 shadow-lg"
+        >
+          <span className="min-w-0 flex-1 text-[12px] leading-snug text-[var(--text-secondary)]">
+            You finished &ldquo;{replanOffer.milestone}&rdquo;. Want the coach to re-plan what&rsquo;s next?
+          </span>
+          <button
+            type="button"
+            data-testid="replan-offer-replan"
+            onClick={() => {
+              openChat(
+                `I completed "${replanOffer.milestone}". Re-plan what's next for this goal.`,
+                { scope: "goal", kind: "review_progress", refId: replanOffer.goalId, title: "Re-plan", helperText: "The milestone's work is done — propose the next step." },
+              );
+              setReplanOffer(null);
+            }}
+            className="min-h-9 rounded-md bg-[var(--accent)] px-3 text-[12px] font-medium text-[var(--bg-primary)] hover:opacity-90"
+          >
+            Re-plan
+          </button>
+          <button
+            type="button"
+            data-testid="replan-offer-dismiss"
+            onClick={() => setReplanOffer(null)}
+            className="min-h-9 rounded-md border border-[var(--border)] px-3 text-[12px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+          >
+            Not now
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -864,12 +1079,8 @@ function HeaderStrip({
             anchor={calAnchor}
             setAnchor={setCalAnchor}
             today={today}
-          >
-            {isNarrow ? null : <TimelineAddMenu onAdd={onQuickAdd} />}
-          </CalendarNav>
-        ) : isNarrow ? null : (
-          <TimelineAddMenu onAdd={onQuickAdd} />
-        )}
+          />
+        ) : null}
 
         <div
           className="ml-auto flex items-center gap-x-3 sm:gap-x-4 gap-y-1 tabular-nums text-xs text-[var(--text-muted)] flex-wrap"
@@ -921,12 +1132,9 @@ function HeaderStrip({
         Your goals and the commitments &amp; milestones that move them, laid out
         across the days they're due.
       </p>
-      {isNarrow && (
+      {isNarrow && viewType === "calendar" && (
         <div className="flex justify-end items-center gap-2">
-          {viewType === "calendar" && (
-            <TimelineTodayButton onClick={() => setCalAnchor(startOfDay(new Date()))} />
-          )}
-          <TimelineAddMenu onAdd={onQuickAdd} />
+          <TimelineTodayButton onClick={() => setCalAnchor(startOfDay(new Date()))} />
         </div>
       )}
     </div>
@@ -1449,7 +1657,7 @@ function bucketFromDate(d, today) {
 
 const HORIZON_PILL = {
   weekly: { bg: "var(--accent)", fg: "var(--bg-primary)", label: "WK" },
-  short: { bg: "var(--warning)", fg: "var(--bg-primary)", label: "SHORT" },
+  short: { bg: "var(--warning)", fg: "var(--on-warning)", label: "SHORT" },
   medium: { bg: "var(--accent)", fg: "var(--bg-primary)", label: "MED" },
   long: { bg: "var(--success)", fg: "var(--bg-primary)", label: "LONG" },
 };
@@ -1988,8 +2196,74 @@ function BarLegendSwatch({ hue, label }) {
  * CalendarView — multi-day spanning tiles across all item kinds.
  * ========================================================================= */
 
+function WeekColumns({ days, items, goals, onSelectDay, onSelectItem }) {
+  const goalById = new Map((goals || []).map((g) => [g.id, g]));
+  const tasksByDay = new Map();
+  for (const it of items) {
+    if (it.kind !== "task" || !it.date) continue;
+    const k = fmtIso(startOfDay(it.date));
+    const arr = tasksByDay.get(k) || [];
+    arr.push(it);
+    tasksByDay.set(k, arr);
+  }
+  return (
+    <div data-testid="week-columns" className="grid grid-cols-1 sm:grid-cols-7 gap-2">
+      {(days || []).map((d) => {
+        const k = fmtIso(startOfDay(d));
+        const tasks = tasksByDay.get(k) || [];
+        return (
+          <div
+            key={k}
+            className="rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] p-2 min-h-[140px] flex flex-col"
+          >
+            <button type="button" onClick={() => onSelectDay?.(d)} className="mb-2 text-left">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-[var(--text-muted)]">
+                {WEEKDAYS[d.getDay()]}
+              </span>
+              <span className="ml-1.5 text-[13px] font-semibold tabular-nums text-[var(--text-primary)]">
+                {d.getDate()}
+              </span>
+            </button>
+            <div className="space-y-1 flex-1">
+              {tasks.map((t) => {
+                const g = goalById.get(t.goalId);
+                const fulfils = (t.note || "")
+                  .replace(/^Fulfils\s*/, "")
+                  .split("·")[0]
+                  .replace(/[“”"]/g, "")
+                  .trim();
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    data-testid={`week-task-${t.id}`}
+                    onClick={() => onSelectItem?.(t)}
+                    className="w-full text-left rounded-md bg-[var(--bg-tertiary)] px-2 py-1 transition-colors hover:bg-[color-mix(in_srgb,var(--accent)_12%,var(--bg-tertiary))] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+                  >
+                    <div className={`text-[11px] leading-snug truncate ${t.status === "done" ? "line-through text-[var(--text-muted)]" : "text-[var(--text-primary)]"}`}>
+                      {t.title}
+                    </div>
+                    <div className="text-[10px] leading-snug text-[var(--text-muted)] truncate">
+                      {g ? g.title : ""}
+                      {fulfils ? ` › ${fulfils}` : ""}
+                    </div>
+                  </button>
+                );
+              })}
+              {tasks.length === 0 && <div className="text-[10px] text-[var(--text-muted)]">—</div>}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function CalendarView({
   allItems,
+  cards,
+  planItems = [],
+  blocks = [],
   goals,
   milestones,
   commitments,
@@ -2003,12 +2277,18 @@ function CalendarView({
   onSelectItem,
   onPrefill,
   onSelectDay,
+  onSelectSlot,
 }) {
   const preset = CAL_SPANS.find((s) => s.key === span) || CAL_SPANS[2];
   const days = preset.days;
 
   const { days: dayList, cells, itemsByDay } = useMemo(() => {
-    const start = span === "week" ? startOfWeek(anchor) : anchor;
+    const start =
+      span === "week"
+        ? startOfWeek(anchor)
+        : span === "month"
+        ? startOfMonth(anchor)
+        : anchor;
     const daysArr = [];
     for (let i = 0; i < days; i++) daysArr.push(addDays(start, i));
     const end = addDays(start, days);
@@ -2057,6 +2337,42 @@ function CalendarView({
     for (let i = 0; i < cells.length; i += 7) w.push(cells.slice(i, i + 7));
     return w;
   }, [cells]);
+
+  // The plan's own targets for the zoomed-out spans: WEEKLY for the 3-month
+  // view, MONTHLY (milestones) for the year view — not an aggregation of the
+  // daily tasks.
+  const planTargets = useMemo(() => {
+    const colorByGoal = new Map((goals || []).map((g, i) => [g.id, GOAL_PALETTE[i % GOAL_PALETTE.length]]));
+    const mk = (p, glyph) => {
+      const goal = (goals || []).find((g) => g.id === p.goal_id);
+      const when =
+        p.horizon === "monthly"
+          ? p.due_date || ""
+          : p.start_date && p.end_date
+          ? `${p.start_date} – ${p.end_date}`
+          : p.due_date || "";
+      return {
+        id: p.id,
+        item: { ...p, kind: "plan", title: p.title },
+        title: p.title,
+        glyph,
+        goalTitle: goal?.title || "",
+        color: colorByGoal.get(p.goal_id) || GOAL_PALETTE[0],
+        phase: p.phase || "",
+        hours: p.horizon === "weekly" && p.weekly_hours ? `${p.weekly_hours}h/wk` : "",
+        when,
+        date: p.due_date
+          ? new Date(`${String(p.due_date).slice(0, 10)}T00:00:00`)
+          : p.start_date
+          ? new Date(`${String(p.start_date).slice(0, 10)}T00:00:00`)
+          : null,
+      };
+    };
+    return {
+      weekly: planItems.filter((p) => p.horizon === "weekly").map((p) => mk(p, "▤")),
+      monthly: planItems.filter((p) => p.horizon === "monthly").map((p) => mk(p, "◆")),
+    };
+  }, [planItems, goals]);
 
   const tracksByWeek = useMemo(() => {
     return weeks.map((week) => {
@@ -2124,6 +2440,74 @@ function CalendarView({
   
   if (allItems.length === 0) {
     return <CalendarEmptyState onAsk={openChat || onPrefill} />;
+  }
+
+  // Day span → hour grid when the user has a timetable, else the default day.
+  if (span === "day" && blocks.length > 0) {
+    return (
+      <HourGrid
+        days={[startOfDay(anchor)]}
+        blocks={blocks}
+        cards={cards || []}
+        onSelectItem={onSelectItem}
+        onSelectSlot={onSelectSlot}
+      />
+    );
+  }
+
+  // Week span → hour grid when the timetable is planned, else 7 day columns.
+  if (span === "week") {
+    if (blocks.length > 0) {
+      return (
+        <HourGrid
+          days={dayList}
+          blocks={blocks}
+          cards={cards || []}
+          onSelectItem={onSelectItem}
+          onSelectSlot={onSelectSlot}
+        />
+      );
+    }
+    return (
+      <CardsGrid
+        days={dayList}
+        cards={cards || []}
+        onSelectDay={onSelectDay}
+        onSelectItem={onSelectItem}
+        minHeight={200}
+      />
+    );
+  }
+
+  // Month span → Google-Calendar month: a weekday header + one 7-day card row
+  // per week (the `weeks` memo already pads to whole Mon–Sun rows).
+  if (span === "month") {
+    return (
+      <div className="space-y-2">
+        <WeekdayHeader />
+        <div className="space-y-px">
+          {weeks.map((week, i) => (
+            <CardsGrid
+              key={i}
+              days={week.map((c) => c.date)}
+              cards={cards || []}
+              onSelectDay={onSelectDay}
+              onSelectItem={onSelectItem}
+              minHeight={120}
+            />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // 3-month span → a proper grid of week cells (Week 1 … N).
+  if (span === "quarter") {
+    return <WeekGrid items={planTargets.weekly} onSelectItem={onSelectItem} />;
+  }
+  // Year span → a Jan … Dec grid; each month cell lists its milestones.
+  if (span === "year") {
+    return <MonthGrid year={anchor.getFullYear()} cards={planTargets.monthly} onSelectItem={onSelectItem} />;
   }
 
   /* === Year view (Iteration 7 — Ask 3) ===
@@ -2469,36 +2853,16 @@ function CalendarView({
 
   /* === Day view === */
   if (span === "day") {
-    const key = fmtIso(anchor);
-    const its = itemsByDay[key] || [];
     return (
-      <div className="space-y-3">
-        <div className="border border-[var(--border-accent)] rounded p-4" style={{ background: "var(--bg-secondary)" }}>
-          <div className="flex items-baseline justify-between mb-3">
-            <h3 className="font-display text-[16px] font-semibold text-[var(--text-primary)]">
-              {anchor.toLocaleDateString(undefined, {
-                weekday: "long",
-                month: "long",
-                day: "numeric",
-                year: "numeric",
-              })}
-            </h3>
-            <span className="tabular-nums text-xs text-[var(--text-muted)]">
-              {its.length} item{its.length === 1 ? "" : "s"}
-            </span>
-          </div>
-          <div className="space-y-2">
-            {its.length === 0 && (
-              <div className="text-[12px] text-[var(--text-muted)] italic">nothing scheduled</div>
-            )}
-            {its.map((it) => (
-              <CalendarDayItem key={`${it.kind}-${it.id}`} item={it} today={today} onSelectItem={onSelectItem} />
-            ))}
-          </div>
-        </div>
-        <div className="text-xs text-[var(--text-muted)]">
-          ← → day, T today, 1–5 change span
-        </div>
+      <div className="mx-auto max-w-md">
+        <CardsGrid
+          days={[anchor]}
+          cards={cards || []}
+          onSelectDay={onSelectDay}
+          onSelectItem={onSelectItem}
+          minHeight={180}
+          columns={1}
+        />
       </div>
     );
   }
@@ -2807,7 +3171,7 @@ function CalendarDayItem({ item, today, onSelectItem }) {
   );
 }
 
-function TimelineItemDetailsDialog({ item, state, onClose, onEdit }) {
+function TimelineItemDetailsDialog({ item, state, onClose, onEdit, onAddBlocker, onAddCommitment, onToggle }) {
   if (!item) return null;
   const goalId = item.kind === "goal" ? item.id : item.goal_id || item.goalId;
   const goal = (state?.goals || []).find((candidate) => candidate.id === goalId)
@@ -2829,18 +3193,84 @@ function TimelineItemDetailsDialog({ item, state, onClose, onEdit }) {
     ? [dateLabel(item.start), dateLabel(item.end)].filter(Boolean).join(" – ")
     : dateLabel(item.date || item.target_date || item.due);
 
+  const isTask = item.kind === "task" || item.kind === "plan";
+  const done = (item.status || "").toLowerCase() === "done";
+  const doneLabel = item.kind === "commitment" ? "commitment" : isTask ? "task" : "item";
+  // For a task the middle of the hierarchy is the commitment it advances;
+  // for a commitment the middle is itself.
+  const commitmentTitle = isTask
+    ? (item.commitment || (item.note || "").replace(/^Fulfils\s*/, "").split("·")[0].replace(/[“”"]/g, "").trim())
+    : item.kind === "commitment"
+    ? item.title || item.text
+    : "";
+  const fulfils = isTask
+    ? (item.note || "").replace(/^Fulfils\s*/, "").split("·")[0].replace(/[“”"]/g, "").trim()
+    : "";
+  const hours = (() => {
+    const m = (item.note || "").match(/([\d.]+)h/);
+    if (m) return `${m[1]}h`;
+    if (item.kind === "task" && item.start && item.end && item.start !== item.end) {
+      const h = (startOfDay(item.end) - startOfDay(item.start)) / DAY_MS;
+      return h > 0 ? `${h}d` : "";
+    }
+    return "";
+  })();
+
   return (
     <CenteredDialog
       open={!!item}
       onClose={onClose}
-      icon={Target}
       title={item.title || item.text || "Timeline item"}
-      subtitle={`${item.kind}${item.goalTitle || item.goal_title ? ` · ${item.goalTitle || item.goal_title}` : ""}`}
       maxWidth="max-w-lg"
       testId="timeline-item-details"
     >
       <div className="max-h-[55vh] space-y-4 overflow-y-auto pr-1">
-        {dateRange && <p className="text-xs font-mono text-[var(--text-muted)]">{dateRange}</p>}
+        {/* hierarchy — what this is, the commitment it advances, the goal */}
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
+            <span aria-hidden="true" className="text-[var(--accent)]">
+              {item.kind === "commitment" ? "⚑" : item.kind === "milestone" ? "◆" : item.kind === "blocker" ? "▲" : "○"}
+            </span>
+            {isTask ? "Task" : item.kind === "commitment" ? "Commitment" : item.kind === "milestone" ? "Milestone" : item.kind === "blocker" ? "Blocker" : "Item"}
+          </div>
+          {commitmentTitle && item.kind !== "commitment" && (
+            <div className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
+              <span aria-hidden="true" className="text-[var(--accent)]">⚑</span>
+              Commitment: <span className="text-[var(--text-primary)]">{commitmentTitle}</span>
+            </div>
+          )}
+          {(goal?.title || item.goalTitle || item.goal_title) && (
+            <div className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
+              <span aria-hidden="true" className="text-[var(--success)]">◉</span>
+              Goal: <span className="text-[var(--text-primary)]">{goal?.title || item.goalTitle || item.goal_title}</span>
+            </div>
+          )}
+          {fulfils && fulfils !== commitmentTitle && (
+            <p className="text-[11px] text-[var(--text-muted)]">Achieves &ldquo;{fulfils}&rdquo;{hours ? ` · ${hours}` : ""}</p>
+          )}
+          {dateRange && <p className="text-xs font-mono text-[var(--text-muted)]">{dateRange}</p>}
+        </div>
+
+        {/* done checkbox — logs the item done */}
+        {onToggle && (isTask || item.kind === "commitment" || item.kind === "milestone") && (
+          <button
+            type="button"
+            data-testid="timeline-item-toggle-done"
+            onClick={() => onToggle(item)}
+            aria-pressed={done}
+            className="flex w-full items-center gap-2.5 rounded-xl border border-[var(--border)] px-3 py-2.5 text-left text-sm hover:bg-[var(--bg-tertiary)]"
+          >
+            {done ? (
+              <CheckCircle2 className="h-5 w-5 shrink-0 text-[var(--success)]" aria-hidden="true" />
+            ) : (
+              <Circle className="h-5 w-5 shrink-0 text-[var(--text-muted)]" aria-hidden="true" />
+            )}
+            <span className={done ? "text-[var(--text-muted)] line-through" : "text-[var(--text-primary)]"}>
+              Mark this {doneLabel} as done
+            </span>
+          </button>
+        )}
+
         {goal?.why && <p className="text-sm leading-relaxed text-[var(--text-secondary)]">{goal.why}</p>}
         {goal?.next_action && (
           <p className="rounded-lg bg-[var(--bg-secondary)] p-3 text-sm text-[var(--text-primary)]">
@@ -2848,10 +3278,7 @@ function TimelineItemDetailsDialog({ item, state, onClose, onEdit }) {
             {goal.next_action}
           </p>
         )}
-        {item.kind === "milestone" && item.phase && (
-          <p className="text-xs text-[var(--text-secondary)]">Phase: <span className="text-[var(--text-primary)]">{item.phase}</span></p>
-        )}
-        {item.kind === "commitment" && item.phase && (
+        {(item.phase) && (
           <p className="text-xs text-[var(--text-secondary)]">Phase: <span className="text-[var(--text-primary)]">{item.phase}</span></p>
         )}
         {item.kind === "blocker" && item.note && <p className="text-sm text-[var(--text-secondary)]">{item.note}</p>}
@@ -2896,6 +3323,30 @@ function TimelineItemDetailsDialog({ item, state, onClose, onEdit }) {
         >
           <Pencil className="h-4 w-4" aria-hidden="true" /> Edit with coach
         </button>
+        {(onAddBlocker || onAddCommitment) && (
+          <div className="flex gap-2">
+            {onAddCommitment && (
+              <button
+                type="button"
+                data-testid="timeline-item-add-commitment"
+                onClick={onAddCommitment}
+                className="min-h-11 flex-1 rounded-xl bg-[var(--bg-tertiary)] px-3 text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+              >
+                Add commitment
+              </button>
+            )}
+            {onAddBlocker && (
+              <button
+                type="button"
+                data-testid="timeline-item-add-blocker"
+                onClick={onAddBlocker}
+                className="min-h-11 flex-1 rounded-xl bg-[var(--bg-tertiary)] px-3 text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+              >
+                Add blocker
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </CenteredDialog>
   );

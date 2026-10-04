@@ -22,7 +22,24 @@ export function intakePrompt(args: {
   message: string
   context: string
   today: string
+  /** Clarification rounds already completed (0 on the first turn). */
+  round?: number
+  /** Hard cap on clarification rounds (ASK/GRILL must terminate). */
+  maxRounds?: number
+  /** Questions asked in prior rounds — must not be repeated. */
+  priorQuestions?: string[]
 }): string {
+  const round = args.round ?? 0
+  const maxRounds = args.maxRounds ?? 2
+  const isFinalRound = round >= maxRounds
+  const prior =
+    args.priorQuestions && args.priorQuestions.length > 0
+      ? `
+
+QUESTIONS YOU ALREADY ASKED (do NOT repeat these or reworded versions — the
+user's latest message is their answers; treat each of these as RESOLVED):
+${args.priorQuestions.map((q) => `- ${q}`).join('\n')}`
+      : ''
   return `${VOICE}
 
 You are stage 1 (Intake) of a planning pipeline. You ONLY classify and decide
@@ -43,18 +60,23 @@ Return a JSON object with:
 
 Read the CURRENT MESSAGE together with RECENT CONVERSATION in LIVE STATE. The
 current message may answer a prior question; retain the original request and
-never ask for information already supplied.
+never ask for information already supplied.${prior}
+
+Clarification budget: this is round ${round + 1} of at most ${maxRounds}.
 
 Mode rules:
 - AUTO: needs_clarification MUST be false. Let the plan state reasonable
   assumptions and proceed.
-- ASK: ask when a missing fact would materially change this user's plan. Ask
-  only those high-impact questions; assume low-impact details. Continue across
-  turns until the important gaps are resolved.
-- GRILL: keep asking until you can tailor a concrete plan to the user's actual
-  situation. Ask every material unanswered detail, not generic intake
-  questions. There is no total-round limit; ask up to 6 useful questions in a
-  turn, then reassess the full conversation after the answers.
+- ASK: ask ONLY when a missing fact would materially change the plan, and ask
+  at most 1-3 high-impact questions in a single turn. Assume low-impact details.
+- GRILL: ask the highest-impact unanswered details, up to 3 per turn.
+- HARD LIMIT: never exceed ${maxRounds} clarification rounds. On the FINAL round
+  (round ${round} >= ${maxRounds}) needs_clarification MUST be false — proceed
+  and let the plan state assumptions for anything still open.
+- NEVER repeat a question already asked or already answered in RECENT
+  CONVERSATION. Before asking anything, re-read the conversation and the
+  current message; if the answer is already there, do not ask it. Do not
+  re-ask a reworded version of a prior question.
 
 For a job-change goal, a timeframe alone does not reveal the user's interview
 strengths, weak areas, application status, weekly availability, or constraints.
@@ -74,6 +96,7 @@ Rules:
   unless ASK/GRILL still needs material information. The pipeline's headroom stage will then
   offer concrete ways to make room. Do NOT ask which goal to drop — that is
   the headroom stage's job, and it presents the choices as buttons.
+- If ${isFinalRound} is true, needs_clarification MUST be false.
 - Never set needs_clarification true for drop_goal or review_progress.
 - framing_line: a single clause, or "". Do not editorialize or explain your
   reasoning here.
