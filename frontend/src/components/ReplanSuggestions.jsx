@@ -46,7 +46,7 @@ export default function ReplanSuggestions({ suggestions = [], onReplan, active =
           <div
             key={s.id}
             data-testid={`replan-suggestion-${s.trigger}`}
-            className="flex flex-wrap items-start gap-3 rounded-xl border border-[var(--border-accent)] bg-[var(--bg-elevated)] p-3"
+            className="flex flex-wrap items-start gap-3 rounded-xl border border-[var(--border-accent)] bg-[var(--bg-secondary)] p-3"
           >
             <Icon
               className="w-4 h-4 mt-0.5 text-[var(--accent)] shrink-0"

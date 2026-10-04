@@ -130,7 +130,7 @@ function DropImpactBlock({ impact }) {
   return (
     <div
       data-testid="drop-impact"
-      className="rounded-xl border border-[var(--border-accent)] bg-[var(--bg-elevated)] p-3"
+      className="rounded-xl border border-[var(--border-accent)] bg-[var(--bg-secondary)] p-3"
     >
       <div className="font-mono text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-2">
         What this changes
