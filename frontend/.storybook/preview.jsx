@@ -113,13 +113,13 @@ const preview = {
         title: "App theme",
         dynamicTitle: true,
         items: [
-          { value: "dark", title: "Dark (app default)" },
-          { value: "light", title: "Light" },
+          { value: "dark", title: "Dark" },
+          { value: "light", title: "Light (app default)" },
         ],
       },
     },
   },
-  initialGlobals: { appTheme: "dark" },
+  initialGlobals: { appTheme: "light" },
   decorators: [
     (Story, context) => {
       // Parent renders before its children, so both assignments below are in

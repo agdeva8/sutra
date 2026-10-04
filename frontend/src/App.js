@@ -22,7 +22,7 @@ function ToasterBridge() {
     mo.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
     return () => mo.disconnect();
   }, []);
-  return <Toaster theme={theme} position="bottom-right" toastOptions={{ style: { fontFamily: "JetBrains Mono, monospace", fontSize: "12px" } }} />;
+  return <Toaster theme={theme} position="bottom-right" toastOptions={{ style: { fontFamily: "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace", fontSize: "12px" } }} />;
 }
 
 function AppRouter() {
