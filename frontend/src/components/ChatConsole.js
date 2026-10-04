@@ -297,12 +297,11 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
 
   const isPicked = (i, option) => (picked[i] || []).includes(option);
 
-  // Picking an option answers by choice; typing answers by hand. They are
-  // mutually exclusive per question — the last interaction wins, so the
-  // submitted line is never ambiguous ("01: DSA solid, <also random text>").
+  // Picking options and typing the free box are ADDITIVE per question: the
+  // user may pick 1+ options, type an answer, both, or neither. Everything
+  // provided goes into the submitted line for that question.
   const togglePick = (i, option, multi) =>
     setPicked((prev) => {
-      setDrafts((d) => (d[i] ? { ...d, [i]: "" } : d));
       const current = prev[i] || [];
       const next = multi
         ? current.includes(option)
@@ -317,16 +316,16 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
       return out;
     });
 
-  const setDraft = (i, value) => {
+  const setDraft = (i, value) =>
     setDrafts((d) => (d[i] === value ? d : { ...d, [i]: value }));
-    if (value.trim()) setPicked((p) => (p[i] ? { ...p, [i]: [] } : p));
-  };
 
   const answerFor = (i) => {
-    const typed = (drafts[i] || "").trim();
-    if (typed) return typed;
+    const parts = [];
     const chosen = picked[i] || [];
-    return chosen.length > 0 ? chosen.join(", ") : "";
+    if (chosen.length > 0) parts.push(chosen.join(", "));
+    const typed = (drafts[i] || "").trim();
+    if (typed) parts.push(typed);
+    return parts.join(", ");
   };
 
   const questionCount = pendingClarifications?.questions?.length || 0;
@@ -866,7 +865,7 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
                               className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] px-2.5 py-2 text-xs text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-[var(--border-accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
                             />
                             <p className="mt-1 text-[10px] leading-relaxed text-[var(--text-muted)]">
-                              Prefer to answer directly? Typing here replaces any option you picked.
+                              Pick one or more above (or none), then add your own here — everything is included.
                             </p>
                           </div>
                         </div>
