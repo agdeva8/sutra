@@ -16,7 +16,7 @@ export default function ImpactPanel({ impact }) {
   return (
     <div
       data-testid="impact-panel"
-      className="mt-3 rounded-lg border border-[var(--border-accent)] bg-[var(--bg-elevated)] p-3 text-sm"
+      className="mt-3 rounded-lg border border-[var(--border-accent)] bg-[var(--bg-secondary)] p-3 text-sm"
     >
       <div className="font-mono text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-2">
         How this changes your plan

@@ -36,7 +36,7 @@ export default function AuthCallback() {
   }, [navigate, setUser]);
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[var(--bg-primary)]" data-testid="auth-callback">
+    <div className="min-h-[100dvh] flex items-center justify-center bg-[var(--bg-primary)]" data-testid="auth-callback">
       <div className="text-center flex flex-col items-center gap-4">
         <Logo className="w-10 h-10 text-[var(--accent)]" />
         {!error && (
