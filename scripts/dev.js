@@ -45,6 +45,7 @@ Usage: node scripts/dev.js [options]
 Options:
   --api <port>       Port for Next.js API server (default: 4000)
   --web <port>       Port for React frontend (default: 3000)
+                     (linked git worktrees auto-advance to the next free pair: 3001/4001, 3002/4002, …)
   -h, --help         Show this help message
 
 Environment variables:
@@ -55,9 +56,69 @@ Environment variables:
   }
 }
 
+/** True when this checkout is a linked git worktree (not the main checkout). */
+function isLinkedWorktree() {
+  try {
+    const run = (a) =>
+      execSync(`git ${a}`, { cwd: rootDir, stdio: ['ignore', 'pipe', 'ignore'] })
+        .toString()
+        .trim();
+    return run('rev-parse --git-dir') !== run('rev-parse --git-common-dir');
+  } catch (_) {
+    return false;
+  }
+}
+
+/** PIDs of processes LISTENING on a port (ignores plain client sockets). */
+function listeners(port) {
+  try {
+    return execSync(`lsof -nP -iTCP:${port} -sTCP:LISTEN -t`, {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .toString()
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+  } catch (_) {
+    return [];
+  }
+}
+
+// Port convention: the main checkout owns 4000 (API) / 3000 (web). A linked
+// git worktree must not steal them, so it auto-advances to the next free PAIR
+// — worktree #1 -> 3001/4001, #2 -> 3002/4002, and so on. Explicit
+// --api/--web (or API_PORT/WEB_PORT) always wins and is honored exactly.
+const explicitApi = args.some((a) => a.startsWith('--api')) || !!process.env.API_PORT;
+const explicitWeb =
+  args.some(
+    (a) =>
+      a === '--web' ||
+      a === '--frontend' ||
+      a.startsWith('--web=') ||
+      a.startsWith('--frontend='),
+  ) || !!process.env.WEB_PORT || !!process.env.PORT;
+if (!explicitApi && !explicitWeb && isLinkedWorktree()) {
+  let chosen = null;
+  for (let k = 1; k <= 20; k++) {
+    if (listeners(4000 + k).length === 0 && listeners(3000 + k).length === 0) {
+      chosen = { api: 4000 + k, web: 3000 + k };
+      break;
+    }
+  }
+  if (!chosen) {
+    console.error('[dev] no free worktree port pair found (tried 4001..4020 / 3001..3020)');
+    process.exit(1);
+  }
+  console.log(
+    `\x1b[36m[worktree]\x1b[0m linked worktree — using ${chosen.web}/${chosen.api} (main checkout owns 3000/4000)`,
+  );
+  apiPort = String(chosen.api);
+  webPort = String(chosen.web);
+}
+
 function freePort(port) {
   try {
-    const pids = execSync(`lsof -ti:${port}`, { stdio: ['ignore', 'pipe', 'ignore'] })
+    const pids = execSync(`lsof -nP -iTCP:${port} -sTCP:LISTEN -t`, { stdio: ['ignore', 'pipe', 'ignore'] })
       .toString()
       .trim();
     if (pids) {
