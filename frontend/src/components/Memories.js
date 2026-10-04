@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { Image as ImageIcon, Link2, Plus, Trash2, X, Loader2, Camera, ChevronLeft, ChevronRight, ExternalLink, RefreshCw, Download } from "lucide-react";
 import { api, API } from "../lib/api";
+import { usePersistentState } from "../hooks/useDraftPersistence";
 import AutoTextarea from "./AutoTextarea";
 
 /**
@@ -38,10 +39,10 @@ export default function Memories({ state, onChange }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [adding, setAdding] = useState(false)
-  const [kind, setKind] = useState("photo")
+  const [kind, setKind] = usePersistentState("memory:new:kind", "photo")
   const [file, setFile] = useState(null)
-  const [url, setUrl] = useState("")
-  const [caption, setCaption] = useState("")
+  const [url, setUrl] = usePersistentState("memory:new:url", "")
+  const [caption, setCaption] = usePersistentState("memory:new:caption", "")
   const [goalId, setGoalId] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState("")

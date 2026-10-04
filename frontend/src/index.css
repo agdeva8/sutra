@@ -30,6 +30,9 @@
   --text-muted:   #98989D;
   --accent:       #0A84FF;
   --warning:      #FF9F0A;
+  /* Dark ink for text on saturated amber/green fills (white fails there).
+   * Stays dark in BOTH themes. */
+  --on-warning:   #0B0B0C;
   --danger:       #FF453A;
   --success:      #30D158;
   --tool-bg:      #1C1C1E;
@@ -54,6 +57,7 @@
   --text-muted:   #86868B;
   --accent:       #007AFF;
   --warning:      #FF9500;
+  --on-warning:   #3A2400;
   --danger:       #FF3B30;
   --success:      #34C759;
   --tool-bg:      #F5F5F7;

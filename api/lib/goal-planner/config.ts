@@ -84,6 +84,13 @@ export const MAX_PLAN_BLOCKS = 8
 export const MAX_TOOLS = 16
 export const MAX_CLARIFYING_QUESTIONS = 6
 
+/**
+ * Hard cap on HITL clarification ROUNDS (one round = the user answers one set
+ * of questions). After this many rounds the pipeline proceeds with assumptions
+ * instead of asking again — ASK/GRILL must terminate. Without this the model
+ * can probe forever. */
+export const MAX_CLARIFYING_ROUNDS = 2
+
 /* -------------------------------------------------------------------------- */
 /* Horizon windows                                                            */
 /* -------------------------------------------------------------------------- */

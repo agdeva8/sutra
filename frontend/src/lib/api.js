@@ -93,6 +93,8 @@ export const api = {
   commitments: () => req("/commitments"),
   createCommitment: (c) => req("/commitments", { method: "POST", body: JSON.stringify(c) }),
   updateCommitment: (id, c) => req(`/commitments/${id}`, { method: "PATCH", body: JSON.stringify(c) }),
+  // Plan items (multi-horizon execution lattice) — tick a task done/open.
+  updatePlanItem: (id, patch) => req(`/plan-items/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   // Sources
   sources: () => req("/sources"),
   getSource: (id) => req(`/sources/${id}`),

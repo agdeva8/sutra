@@ -470,12 +470,22 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
     wasStreamingRef.current = streamingNow;
   }, [streamingNow, messages]);
 
-  // Scroll to bottom whenever messages change OR when sending starts (user sent a
-  // message but the response hasn't arrived yet — we still want to scroll so the
-  // user sees the input area disappear and knows the coach is working).
+  // Scroll to bottom only when the transcript actually GROWS or the coach is
+  // working (sending / streaming). In-place edits — confirming a refine or
+  // reject rewrites an existing proposal — must NOT yank the view to the
+  // bottom (the user is looking at that card).
+  const scrollStateRef = useRef({ lastId: null, len: -1 });
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, sending]);
+    const last = messages[messages.length - 1];
+    const lastId = last?.id ?? null;
+    const len = messages.length;
+    const prev = scrollStateRef.current;
+    const grew = len !== prev.len || lastId !== prev.lastId;
+    scrollStateRef.current = { lastId, len };
+    if (sending || streamingNow || grew) {
+      endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+  }, [messages, sending, streamingNow]);
 
   // When a clarification turn lands, bring the card's HEADER into view rather
   // than the transcript end — the card can be taller than the log, and the
@@ -797,9 +807,10 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
 
                 {!clarificationsCollapsed && (
                   <div id="clarification-body" className="mt-3 space-y-3">
-                    {showModeSelect && !autoAnswer && (
+                    {!autoAnswer && (
                       <p data-testid="auto-mode-escape-hint" className="text-[11px] leading-relaxed text-[var(--text-muted)]">
-                        Answer what you can, then submit — or switch to Auto and I'll assume the rest.
+                        I ask at most a round or two, then plan with assumptions. Answer what you
+                        can and submit — or switch to <span className="text-[var(--accent)]">Auto</span> to plan right now.
                       </p>
                     )}
 
@@ -886,15 +897,6 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
                   </button>
                 )}
               </div>
-              <button
-                onClick={onDismissClarifications}
-                data-testid="clarification-dismiss"
-                title="Dismiss"
-                aria-label="Dismiss suggestions"
-                className="-mr-2 -mt-1 inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
             </div>
           </div>
         )}

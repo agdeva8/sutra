@@ -25,6 +25,7 @@ import {
   commitments,
   goals,
   milestones,
+  planItems,
   sources,
   timetableBlocks,
   users,
@@ -47,6 +48,7 @@ const mocks = vi.hoisted(() => {
     milestones: [] as unknown[],
     blockers: [] as unknown[],
     sources: [] as unknown[],
+    planItems: [] as unknown[],
     audit: [] as unknown[],
     users: [] as unknown[],
     timetableBlocks: [] as unknown[],
@@ -65,6 +67,7 @@ const mocks = vi.hoisted(() => {
         milestones,
         blockers,
         sources,
+        planItems,
         auditLog,
         users,
         timetableBlocks,
@@ -94,6 +97,7 @@ const mocks = vi.hoisted(() => {
     milestones: buildChain('milestones'),
     blockers: buildChain('blockers'),
     sources: buildChain('sources'),
+    planItems: buildChain('planItems'),
     audit: buildChain('audit'),
     users: buildChain('users'),
     timetableBlocks: buildChain('timetableBlocks'),
@@ -111,6 +115,7 @@ const mocks = vi.hoisted(() => {
         if (t === milestones) return chains.milestones
         if (t === blockers) return chains.blockers
         if (t === sources) return chains.sources
+        if (t === planItems) return chains.planItems
         if (t === auditLog) return chains.audit
         if (t === users) return chains.users
         if (t === timetableBlocks) return chains.timetableBlocks
@@ -208,6 +213,7 @@ beforeEach(() => {
   mocks.results.milestones = []
   mocks.results.blockers = []
   mocks.results.sources = []
+  mocks.results.planItems = []
   mocks.results.audit = []
 })
 

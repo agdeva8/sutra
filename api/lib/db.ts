@@ -14,7 +14,19 @@ import * as schema from '@/db/schema'
 export type DbDriver = 'pg'
 
 function buildDb() {
-  const pool = new Pool({ connectionString: env.DATABASE_URL })
+  const pool = new Pool({
+    connectionString: env.DATABASE_URL,
+    // Fail fast instead of queueing on a wedged pool forever. The Supabase
+    // pooler is long-haul from dev machines; a dead connection used to leave
+    // new queries waiting indefinitely (and pool connection errors printed as
+    // uncaughtException). 10s is well above healthy-link query time.
+    connectionTimeoutMillis: 10_000,
+    idleTimeoutMillis: 30_000,
+  })
+  // pg requires a pool-level error handler — without it, a background
+  // connection failure (e.g. EADDRNOTAVAIL after a network flap) surfaces as
+  // an uncaughtException instead of a route error.
+  pool.on('error', () => undefined)
   return { db: drizzle(pool, { schema, casing: 'snake_case' }), driver: 'pg' as const }
 }
 

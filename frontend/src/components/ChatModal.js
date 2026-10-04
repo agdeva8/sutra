@@ -13,6 +13,7 @@ import {
 import { useDialogBack } from "../hooks/useDialogBack";
 import { toast } from "sonner";
 import { api, API } from "../lib/api";
+import { readDraftBucket, writeDraftBucket } from "../hooks/useDraftPersistence";
 
 /**
  * ChatModal — the chat is no longer a persistent panel on the left of
@@ -63,6 +64,7 @@ export default function ChatModal({
   const [sending, setSending] = useState(false);
   const [busyProposal, setBusyProposal] = useState(null);
   const [pendingClarifications, setPendingClarifications] = useState(null);
+  const [showDraftPrompt, setShowDraftPrompt] = useState(false);
   // True while this open's history is being fetched — drives the shimmer.
   const [loadingHistory, setLoadingHistory] = useState(false);
   // Iteration 9 — refine / reject modal state. The modal owns the
@@ -89,6 +91,7 @@ export default function ChatModal({
   const refIdRef = useRef(refId ?? null);
   const previousAutoAnswerRef = useRef(autoAnswer);
   const autoResumePendingRef = useRef(false);
+  const reusedDraftRef = useRef(false);
 
   // Re-seed the bucket whenever the modal reopens or the parent swaps
   // the scoped context. Falls back to a kind-appropriate mint when a
@@ -102,21 +105,44 @@ export default function ChatModal({
       setBusyChoice(null);
     }
     if (!open) return;
+    // Entity-scoped opens always target the passed bucket — never reuse a draft.
     if (refId) {
       refIdRef.current = refId;
-    } else if (kind === "add_goal") {
-      refIdRef.current = `new_goal_${crypto.randomUUID()}`;
-    } else if (kind === "plan_day") {
-      refIdRef.current = `action_${crypto.randomUUID()}`;
-    } else if (kind === "review_progress") {
-      refIdRef.current = `action_${crypto.randomUUID()}`;
-    } else if (scope || title || (kind && kind !== "general")) {
-      refIdRef.current = `action_${crypto.randomUUID()}`;
+      reusedDraftRef.current = false;
+      return;
+    }
+    const draftKey = kind || "general";
+    const isMintedKind =
+      kind === "add_goal" ||
+      kind === "plan_day" ||
+      kind === "review_progress" ||
+      Boolean(scope) ||
+      Boolean(title) ||
+      Boolean(kind && kind !== "general");
+    // Planned / action chats are client-minted. Reuse the draft minted earlier
+    // this app session so an accidental Escape or back-nav does not orphan it.
+    if (isMintedKind) {
+      const saved = readDraftBucket(draftKey);
+      if (saved) {
+        refIdRef.current = saved;
+        reusedDraftRef.current = true;
+        return;
+      }
+    }
+    if (kind === "add_goal" || isMintedKind) {
+      refIdRef.current =
+        kind === "add_goal"
+          ? `new_goal_${crypto.randomUUID()}`
+          : `action_${crypto.randomUUID()}`;
     } else {
       // General / unscoped chat — server falls back to
       // conv_general_<userId>; no client-side bucket.
       refIdRef.current = null;
+      reusedDraftRef.current = false;
+      return;
     }
+    reusedDraftRef.current = false;
+    writeDraftBucket(draftKey, refIdRef.current);
   }, [open, refId, kind, scope, title]);
 
   // Seed the input whenever the modal opens or the opener swaps the
@@ -160,7 +186,13 @@ export default function ChatModal({
     // bucket — no cross-chat leakage.
     api
       .history({ refId: refIdRef.current, kind, scope })
-      .then((m) => { if (!cancelled) setMessages(m || []); })
+      .then((m) => {
+        if (cancelled) return;
+        const list = m || [];
+        setMessages(list);
+        // Reopened a draft that still has content → offer Continue / Start new.
+        setShowDraftPrompt(reusedDraftRef.current && list.length > 0);
+      })
       .catch(() => {
         toast.error("Couldn't load chat history. Starting fresh — new messages still send.");
       })
@@ -697,6 +729,20 @@ export default function ChatModal({
   // requirement that scope AND title both be set meant chat flows
   // like "Build my timeline" — which have a title but no specific
   // entity to anchor on — still rendered the generic header.
+  const startNewDraft = useCallback(() => {
+    const draftKey = kind || "general";
+    const minted =
+      kind === "add_goal"
+        ? `new_goal_${crypto.randomUUID()}`
+        : `action_${crypto.randomUUID()}`;
+    refIdRef.current = minted;
+    writeDraftBucket(draftKey, minted);
+    reusedDraftRef.current = false;
+    setMessages([]);
+    setPendingClarifications(null);
+    setShowDraftPrompt(false);
+  }, [kind]);
+
   const scoped = Boolean(title)
   const headerTitle = scoped ? `About: ${title}` : "Chat with your coach"
   // The general chat is read-only — it answers about your state and routes
@@ -715,6 +761,33 @@ export default function ChatModal({
       maxWidth="max-w-3xl"
       testId="chat-modal"
     >
+      {showDraftPrompt && (
+        <div
+          data-testid="draft-continue-prompt"
+          className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2.5"
+        >
+          <span className="min-w-0 flex-1 text-[12px] leading-snug text-[var(--text-secondary)]">
+            You have an unfinished plan from earlier.
+          </span>
+          <button
+            type="button"
+            data-testid="draft-continue"
+            onClick={() => setShowDraftPrompt(false)}
+            className="min-h-9 rounded-md border border-[var(--border)] px-3 text-[12px] font-medium text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+          >
+            Continue
+          </button>
+          <button
+            type="button"
+            data-testid="draft-start-new"
+            onClick={startNewDraft}
+            className="min-h-9 rounded-md bg-[var(--accent)] px-3 text-[12px] font-medium text-[var(--bg-primary)] hover:opacity-90"
+          >
+            Start new
+          </button>
+        </div>
+      )}
+
       <div className="-mx-5 -mb-4 h-[68vh] min-h-[min(440px,60dvh)] max-h-[760px] border-t border-[var(--border)]">
         <ChatConsole
           messages={messages}

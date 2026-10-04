@@ -42,7 +42,7 @@ const blockerCoversDay = (b, dayStart) => {
  *   onChange  — called after any mutation so the parent re-fetches state
  *   onClose   — close the panel
  */
-export default function DayPlanner({ day, state, onChange = () => {}, onClose, initialAddType = null, onInitialAddTypeHandled }) {
+export default function DayPlanner({ day, state, onChange = () => {}, onClose, initialAddType = null, onInitialAddTypeHandled, embedded = false }) {
   const [blocks, setBlocks] = useState([]);
   const [saving, setSaving] = useState(false);
 
@@ -113,14 +113,27 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, i
   const commitments = state?.commitments || [];
   const blockers = state?.blockers || [];
   const milestones = state?.milestones || [];
-  const dayMilestones = milestones.filter((m) => m.target_date === dateStr);
   const dayCommitments = commitments.filter((c) => c.due === dateStr);
   const dayBlockers = blockers.filter((b) => blockerCoversDay(b, dayStart));
   const dayBlocks = blocks
     .filter((b) => b.block_date === dateStr)
     .sort((a, b) => String(a.start_time || "").localeCompare(String(b.start_time || "")));
 
-  const hasItems = dayMilestones.length + dayCommitments.length + dayBlockers.length + dayBlocks.length > 0;
+  // Plan tasks — per-day rows from the multi-horizon lattice (plan_items).
+  // Marked by a "Fulfils …" note; commitments are the other daily rows.
+  const planItems = state?.plan_items || [];
+  const dayPlanTasks = planItems.filter(
+    (i) => i.horizon === "daily" && (i.note || "").startsWith("Fulfils") && i.due_date === dateStr,
+  );
+  // A milestone due today that is ALREADY shown as a plan task's fulfilment is
+  // not repeated as its own row (that was the duplicate in the day panel).
+  const taskTitles = new Set(dayPlanTasks.map((t) => t.title));
+  const dayMilestones = milestones.filter(
+    (m) => m.target_date === dateStr && !taskTitles.has(m.title),
+  );
+
+  const hasItems =
+    dayPlanTasks.length + dayMilestones.length + dayCommitments.length + dayBlockers.length + dayBlocks.length > 0;
 
   // --- blocks -------------------------------------------------------------
   const openAddBlock = () => {
@@ -207,6 +220,12 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, i
       onChange();
     } catch (e) { console.error(e); }
   };
+  const togglePlanTask = async (t) => {
+    try {
+      await api.updatePlanItem(t.id, { status: t.status === "done" ? "open" : "done" });
+      onChange();
+    } catch (e) { console.error(e); }
+  };
   const addCommitment = async () => {
     if (!commitmentText.trim()) return;
     setSaving(true);
@@ -216,7 +235,8 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, i
 
   return (
     <>
-      <div data-testid={`day-planner-${dateStr}`} className="rounded-2xl bg-[var(--bg-secondary)] p-4 space-y-3">
+      <div data-testid={`day-planner-${dateStr}`} className={embedded ? "space-y-3" : "rounded-2xl bg-[var(--bg-secondary)] p-4 space-y-3"}>
+        {!embedded && (
         <div className="flex items-center justify-between">
           <h3 className="text-[15px] font-semibold text-[var(--text-primary)]">
             {MONTHS[day.getMonth()]} {day.getDate()}, {day.getFullYear()}
@@ -229,6 +249,7 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, i
             <X className="w-4 h-4" />
           </button>
         </div>
+        )}
 
         <div className="space-y-2">
           {!hasItems && <p className="text-[13px] text-[var(--text-muted)]">Nothing on this day yet.</p>}
@@ -261,6 +282,46 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, i
               <span className="text-[11px] opacity-70 shrink-0">{b.start_date}{b.end_date && b.end_date !== b.start_date ? ` – ${b.end_date}` : ""}</span>
             </button>
           ))}
+
+          {dayPlanTasks.length > 0 && (
+            <p className="pt-1 text-[10px] font-mono uppercase tracking-wider text-[var(--text-muted)]">
+              Today&rsquo;s plan
+            </p>
+          )}
+          {dayPlanTasks.map((t) => {
+            const goal = (state?.goals || []).find((g) => g.id === t.goal_id);
+            const fulfils = (t.note || "").replace(/^Fulfils\s*/, "").split("·")[0].trim();
+            const hours = ((t.note || "").match(/([\d.]+)h/) || [])[1];
+            const done = t.status === "done";
+            return (
+              <div key={t.id} className="flex items-start gap-1.5">
+                <button
+                  type="button"
+                  data-testid={`detail-plan-task-toggle-${t.id}`}
+                  onClick={() => togglePlanTask(t)}
+                  aria-pressed={done}
+                  aria-label={done ? "Mark not done" : "Mark done"}
+                  className="shrink-0 inline-flex items-center justify-center h-11 w-11 -ml-3"
+                >
+                  {done ? (
+                    <CheckCircle2 className="w-5 h-5 text-[var(--success)]" />
+                  ) : (
+                    <Circle className="w-5 h-5 text-[var(--accent)]" />
+                  )}
+                </button>
+                <div className="min-w-0 flex-1 pt-2.5">
+                  <div className={done ? "line-through text-[var(--text-muted)] text-[13px] truncate" : "text-[var(--text-primary)] text-[13px] truncate"}>
+                    {t.title}
+                  </div>
+                  <div className="text-[11px] leading-snug text-[var(--text-muted)]">
+                    <span className="text-[var(--text-secondary)]">{goal ? goal.title : "—"}</span>
+                    {fulfils ? <span> › fulfils &ldquo;{fulfils}&rdquo;</span> : null}
+                    {hours ? <span> · {hours}h</span> : null}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
 
           {dayMilestones.map((m) => (
             <div key={m.id} className="flex items-center gap-2 text-[13px] px-1">

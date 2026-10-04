@@ -45,6 +45,7 @@ import {
   goals,
   messages,
   milestones,
+  planItems,
   sources,
   timetableBlocks,
 } from '@/db/schema'
@@ -107,6 +108,21 @@ export interface StateBlocker {
   note?: string | null
 }
 
+/** One `plan_items` row — the multi-horizon execution lattice (Iteration 10.2). */
+export interface StatePlanItem {
+  id: string
+  goal_id: string | null
+  horizon: 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly'
+  phase: string
+  title: string
+  note: string
+  start_date: string | null
+  end_date: string | null
+  due_date: string | null
+  weekly_hours: number | null
+  status: 'open' | 'done'
+}
+
 export interface StateSource {
   id: string
   goal_id: string | null
@@ -125,6 +141,7 @@ export interface CoachState {
   milestones: StateMilestone[]
   blockers: StateBlocker[]
   sources: StateSource[]
+  plan_items: StatePlanItem[]
   over_commitment: OverCommitment
 }
 
@@ -266,7 +283,27 @@ export async function loadStateCore(userId: string): Promise<CoachState> {
     .orderBy(desc(sources.createdAt))
     .limit(500)
 
-  // Join all five: Promise.all resolves them in one wall-clock round trip
+  // Iteration 10.2 — the multi-horizon execution lattice (plan_items).
+  const qPlanItems = db
+    .select({
+      id: planItems.id,
+      goalId: planItems.goalId,
+      horizon: planItems.horizon,
+      phase: planItems.phase,
+      title: planItems.title,
+      note: planItems.note,
+      startDate: planItems.startDate,
+      endDate: planItems.endDate,
+      dueDate: planItems.dueDate,
+      weeklyHours: planItems.weeklyHours,
+      status: planItems.status,
+    })
+    .from(planItems)
+    .where(eq(planItems.userId, userId))
+    .orderBy(asc(planItems.startDate))
+    .limit(2000)
+
+  // Join all six: Promise.all resolves them in one wall-clock round trip
   // instead of five. The query objects are built in the original order
   // above, so table-arrival-order mocks still see
   // goals → commitments → milestones → blockers → sources.
@@ -276,12 +313,14 @@ export async function loadStateCore(userId: string): Promise<CoachState> {
     milestonesRows,
     blockersRows,
     sourcesRows,
+    planItemsRows,
   ] = await Promise.all([
     qGoals,
     qCommitments,
     qMilestones,
     qBlockers,
     qSources,
+    qPlanItems,
   ])
 
   const byGoal = new Map<string, StateSource[]>()
@@ -363,12 +402,29 @@ export async function loadStateCore(userId: string): Promise<CoachState> {
     note: b.note,
   }))
 
+  const planItemsList: StatePlanItem[] = planItemsRows
+    .filter((p: any) => !p.goalId || !droppedGoalIds.has(p.goalId))
+    .map((p: any) => ({
+      id: p.id,
+      goal_id: p.goalId,
+      horizon: p.horizon,
+      phase: p.phase,
+      title: p.title,
+      note: p.note,
+      start_date: p.startDate,
+      end_date: p.endDate,
+      due_date: p.dueDate,
+      weekly_hours: p.weeklyHours,
+      status: p.status,
+    }))
+
   return {
     goals: goalsList,
     commitments: commitmentsList,
     milestones: milestonesList,
     blockers: blockersList,
     sources: sourcesList,
+    plan_items: planItemsList,
     over_commitment: computeOverCommitment(goalsList, commitmentsList),
   }
 }

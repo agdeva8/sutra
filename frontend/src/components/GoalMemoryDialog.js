@@ -4,6 +4,7 @@ import AutoTextarea from "./AutoTextarea";
 import { toast } from "sonner";
 import CenteredDialog from "./CenteredDialog";
 import { api } from "../lib/api";
+import { usePersistentState } from "../hooks/useDraftPersistence";
 
 /**
  * GoalMemoryDialog — add a memory (photo or Instagram URL) attached to
@@ -15,10 +16,11 @@ import { api } from "../lib/api";
  * validation). Saves call `onSaved` so the parent can refresh state.
  */
 export default function GoalMemoryDialog({ open, onClose, goalId, goalTitle, onSaved }) {
-  const [kind, setKind] = useState("photo");
+  const draftKey = goalId ?? "none";
+  const [kind, setKind] = usePersistentState(`goal-memory:${draftKey}:kind`, "photo");
   const [file, setFile] = useState(null);
-  const [url, setUrl] = useState("");
-  const [caption, setCaption] = useState("");
+  const [url, setUrl] = usePersistentState(`goal-memory:${draftKey}:url`, "");
+  const [caption, setCaption] = usePersistentState(`goal-memory:${draftKey}:caption`, "");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const fileRef = useRef(null);
@@ -33,7 +35,12 @@ export default function GoalMemoryDialog({ open, onClose, goalId, goalTitle, onS
     setSubmitError("");
   };
 
+  // Dismissing keeps the draft (url/caption/kind) for the app session; only a
+  // successful save clears it.
   const close = () => {
+    onClose?.();
+  };
+  const finish = () => {
     reset();
     onClose?.();
   };
@@ -54,7 +61,7 @@ export default function GoalMemoryDialog({ open, onClose, goalId, goalTitle, onS
       });
       toast.success("Memory attached to goal");
       onSaved?.();
-      close();
+      finish();
     } catch (e) {
       setSubmitError(e?.message || "Could not save photo memory");
     } finally {
@@ -80,7 +87,7 @@ export default function GoalMemoryDialog({ open, onClose, goalId, goalTitle, onS
       });
       toast.success("Memory attached to goal");
       onSaved?.();
-      close();
+      finish();
     } catch (e) {
       setSubmitError(e?.message || "Could not save Instagram memory");
     } finally {
