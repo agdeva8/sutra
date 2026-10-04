@@ -95,8 +95,16 @@ export const api = {
   updateCommitment: (id, c) => req(`/commitments/${id}`, { method: "PATCH", body: JSON.stringify(c) }),
   // Sources
   sources: () => req("/sources"),
+  getSource: (id) => req(`/sources/${id}`),
+  updateSource: (id, body) => req(`/sources/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   addLink: (body) => req("/sources/link", { method: "POST", body: JSON.stringify(body) }),
   previewLink: (url) => req("/sources/link/preview", { method: "POST", body: JSON.stringify({ url }) }),
+  // Iteration 11 — LLM link exploration. extractLink asks the coach to
+  // read the fetched/pasted document and return a structured preview of
+  // what it can pull out (summary, key points, extractable items,
+  // suggested questions). askLink is the to-and-fro stream helper used by
+  // the LinkPreviewDialog's ask panel.
+  extractLink: (body) => req("/sources/link/extract", { method: "POST", body: JSON.stringify(body) }),
   deleteSource: (id) => req(`/sources/${id}`, { method: "DELETE" }),
   uploadSource: async (file, goalId = "", { temporary = false } = {}) => {
     const fd = new FormData();

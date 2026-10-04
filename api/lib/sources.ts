@@ -12,6 +12,9 @@
 
 const TEXT_EXCERPT_MAX = 8000
 
+/** Shared cap used by sources + link-preview (exported for consumers). */
+export { TEXT_EXCERPT_MAX }
+
 /* -------------------------------------------------------------------------- */
 /* extractText — file content → plain text                                     */
 /* -------------------------------------------------------------------------- */
@@ -163,7 +166,7 @@ export async function fetchLinkText(url: string): Promise<string> {
  * Removes <script>, <style>, comments, and all tags;
  * decodes common named entities; collapses whitespace.
  */
-function stripHtml(html: string): string {
+export function stripHtml(html: string): string {
   return html
     .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
     .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')

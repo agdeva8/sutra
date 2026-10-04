@@ -548,8 +548,62 @@ In production (`DATABASE_URL` set) the planner checkpointer creates `checkpoints
 
 ---
 
+## Iteration 12 (2026-10) — LLM link exploration (extract → ask → browse → reopen), shipped
+
+A pasted link is no longer a silent fetch. The coach reads the page and shows
+**what it can extract for the goal**, answers follow-up questions grounded on
+the document, and — when a site blocks embedding or needs a login — falls back
+to a one-tap paste. Attached link sources can be reopened from the Sources tab,
+edited, and saved back: exactly the content the coach keeps (and what AskPlanner
+reads).
+
+### What shipped
+- **Shared resolver** `api/lib/link-preview.ts`: SSRF-guarded `resolveLinkDocument`
+  (pasted text OR URL fetch with per-redirect re-check). `isBlockedHost` moved
+  out of the preview route so preview/extract/ask share ONE guard.
+- **`POST /api/sources/link/extract`** — one-shot structured extraction
+  (`summary`, `key_points`, `extractable_items`, `suggested_questions`) via the
+  shared `completeJson` (zod). Goal-aware: when a goal is present, the suggested
+  questions are extraction intents for that goal, not page FAQ.
+- **`POST /api/sources/link/ask`** — the to-and-fro. A **LangGraph StateGraph**
+  (`buildLinkAskGraph`, mirroring `ops-graph`) streams answers grounded on the
+  document over AI SDK `streamText`, same `{delta|done|error}` SSE wire format.
+- **`POST /api/sources/link`** accepts an optional `text` excerpt — the curated
+  document the user confirmed — so AskPlanner reads it instead of a raw/401 fetch.
+- **`GET` / `PATCH /api/sources/[id]`** — read one source incl. its stored
+  `text_excerpt`; save edits back to it.
+- **`LinkPreviewDialog`**: preview card + "What the coach will read" extraction
+  card + inline ask panel; **gated** state for sign-in sites with a one-tap
+  **Paste** (Clipboard API) → read; **browse-in-box** for embeddable sites, with
+  a server-detected `embeddable` flag (honest "open in a new tab" note when the
+  site sends `X-Frame-Options`/CSP `frame-ancestors`); attaches a curated excerpt.
+  Reopen mode loads an existing source's excerpt for editing + chat.
+- **`LinkAskPanel`**: streaming Q&A, suggestion chips, **Markdown** replies
+  (reuses `MarkdownMessage`).
+- Sources tab: clicking a **link** source opens the exploration dialog; files
+  keep the iframe viewer.
+- `LinkPreviewDialog.stories.js` + `LinkAskPanel.stories.js` cover extract /
+  gated / browse (embeddable + not) / reopen / ask-stream.
+
+### Verified
+`pnpm typecheck` + `yarn build` clean. 21 new tests (extract 5, ask 5,
+link-ask-graph 3, source GET/PATCH 7, link curated-excerpt 1). Full suite:
+**329 pass / 9 fail** — the 9 are the pre-existing auth/tools/download/history
+baseline. Live: `/extract` and `/ask` curled against the real LLM; Storybook
+states render with **0 a11y violations**.
+
+### Residual risk / follow-ups
+- Login-gated / framing-blocked capture stays **paste** — a web app cannot inject
+  into a cross-origin tab. Extension capture + mobile share-target are deferred
+  (see backlog).
+- Reopen mode shows the stored excerpt; "Re-read with the coach" re-runs the
+  extraction on demand.
+
+---
+
 ## Backlog / next
 - P0: **Goal Planner pipeline — headroom-aware multi-horizon plans** (Iteration 10, see below). Replaces the current single-shot LLM prompt with a typed 5-stage pipeline producing goal + phases + milestones + commitments + headroom check + drift detection. Ship behind `GOAL_PLANNER_ENABLED=false` (off by default); shadow → dogfood → flip; roll back if `plan_rejects` rate > 10%.
 - P1: **Calendar view + editable daily timetable + in-calendar blocker add/edit/remove** (blocker CRUD backend already in place; the daily_log table this iteration adds is the memory layer the timetable will read from).
 - P2: founder LinkedIn URL in AboutModal; hard-delete/cleanup for deleted sources & expired guest users; migration race-safety (atomic claim); touch/pointer support for the split divider; **upstash-redis / cross-instance cache** if multi-node staleness becomes a complaint; cache the remaining read endpoints (`audit`, `blockers`, `sources`, `memories`, `chat/history`) — one-liner per route, all already auto-invalidated.
+- P2: **Link capture beyond paste** — desktop browser-extension capture (browse a signed-in page → capture text/screenshot → confirm into a source) and mobile share-target (Android PWA `share_target`) / iOS Shortcut. Zero-install fallbacks (paste, screenshot→OCR) already ship.
 - P3: split server.py into modules; signed short-lived source download URLs instead of ?auth=.

@@ -648,11 +648,16 @@ export default function ChatModal({
   );
 
   const addLink = useCallback(
-    async (url) => {
+    async (url, goalId = "", options = {}) => {
       if (!url || typeof url !== "string") return;
       try {
-        const goalId = scope === "goal" && refId ? refId : "";
-        const created = await api.addLink({ url, goal_id: goalId, temporary: !goalId && Boolean(title) });
+        const goalIdFinal = scope === "goal" && refId ? refId : goalId;
+        const created = await api.addLink({
+          url,
+          goal_id: goalIdFinal,
+          temporary: !goalIdFinal && Boolean(title),
+          ...(typeof options.text === "string" && options.text.trim() ? { text: options.text } : {}),
+        });
         if (created?.id) setSources((prev) => [...prev, created]);
         toast.success("Link added as a source");
         const fresh = await api.state();
@@ -742,6 +747,7 @@ export default function ChatModal({
           focusOnMount={open}
           scopeLabel={scoped ? title : ""}
           scopeIntent={scoped ? (helperText || "Talk to the coach about this —") : ""}
+          goalContext={scoped ? (title || scopeLabel || "") : ""}
           // General chat is read-only — no mode switcher there.
           showModeSelect={scoped}
           emptyPrompt={

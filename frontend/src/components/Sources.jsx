@@ -14,6 +14,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { api, API } from "../lib/api";
+import LinkPreviewDialog from "./LinkPreviewDialog";
 
 /**
  * Sources — all uploaded files and pasted links the coach reasons over.
@@ -32,6 +33,10 @@ export default function Sources({ state, onChange }) {
   const [error, setError] = useState(null);
   const [deleting, setDeleting] = useState(null); // id of source being deleted
   const [viewingSource, setViewingSource] = useState(null); // Iteration 7 — View dialog
+  // Iteration 11 — link sources open the LLM exploration dialog (with their
+  // stored excerpt) instead of the raw iframe viewer, so the user can see
+  // what the coach read and edit it.
+  const [exploringSource, setExploringSource] = useState(null);
 
   const refresh = () => {
     setLoading(true);
@@ -139,7 +144,19 @@ export default function Sources({ state, onChange }) {
               goalTitle={goalTitle(s.goal_id)}
               onDelete={() => deleteSource(s.id)}
               deleting={deleting === s.id}
-              onView={(src) => setViewingSource(src)}
+              onView={(src) => {
+                if (src.kind === "link") {
+                  // Fetch the full row (incl. text_excerpt) then open the
+                  // exploration dialog seeded with what the coach already read.
+                  setExploringSource(src);
+                  api
+                    .getSource(src.id)
+                    .then((full) => setExploringSource(full))
+                    .catch(() => {});
+                } else {
+                  setViewingSource(src);
+                }
+              }}
             />
           ))}
         </div>
@@ -148,6 +165,17 @@ export default function Sources({ state, onChange }) {
       <SourceViewerDialog
         source={viewingSource}
         onClose={() => setViewingSource(null)}
+      />
+
+      <LinkPreviewDialog
+        open={!!exploringSource}
+        existingSource={exploringSource}
+        onClose={() => setExploringSource(null)}
+        onSaved={() => {
+          setExploringSource(null);
+          refresh();
+          onChange?.();
+        }}
       />
     </div>
   );

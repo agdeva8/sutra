@@ -594,10 +594,15 @@ export default function FocusedTaskChatDialog({
   );
 
   const addLink = useCallback(
-    async (url) => {
+    async (url, goalId = "", options = {}) => {
       if (!url) return null;
       try {
-        const created = await api.addLink({ url, goal_id: "", temporary: true });
+        const created = await api.addLink({
+          url,
+          goal_id: goalId || "",
+          temporary: true,
+          ...(typeof options.text === "string" && options.text.trim() ? { text: options.text } : {}),
+        });
         const fresh = await api.state();
         onStateChange?.(fresh);
         if (created?.id) setSources((prev) => [...prev, created]);

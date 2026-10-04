@@ -263,7 +263,7 @@ function Message({ m, settled = false, onConfirm, onReject, onRefine, onOpenRefi
   );
 }
 
-export default function ChatConsole({ messages, onSend, sending, input, setInput, onConfirm, onReject, onRefine, onOpenRefine, onOpenReject, onNavigate = null, onAnswerChoice = null, showConfirm = true, busyProposal, autoAnswer, setAutoAnswer, grillMe = false, setGrillMe = () => {}, onUploadFile = () => {}, onAddLink = () => {}, sources = [], onDeleteSource = () => {}, onClearChat = () => {}, pendingClarifications = null, onAnswerClarification = () => {}, onDismissClarifications = () => {}, showSources = true, focusOnMount = false, scopeLabel = "", scopeIntent = "", emptyPrompt = "", loading = false, onViewGoal = null, showModeSelect = true }) {
+export default function ChatConsole({ messages, onSend, sending, input, setInput, onConfirm, onReject, onRefine, onOpenRefine, onOpenReject, onNavigate = null, onAnswerChoice = null, showConfirm = true, busyProposal, autoAnswer, setAutoAnswer, grillMe = false, setGrillMe = () => {}, onUploadFile = () => {}, onAddLink = () => {}, sources = [], onDeleteSource = () => {}, onClearChat = () => {}, pendingClarifications = null, onAnswerClarification = () => {}, onDismissClarifications = () => {}, showSources = true, focusOnMount = false, scopeLabel = "", scopeIntent = "", goalContext = "", emptyPrompt = "", loading = false, onViewGoal = null, showModeSelect = true }) {
   const endRef = useRef(null);
   const taRef = useRef(null);
   const fileRef = useRef(null);
@@ -383,8 +383,8 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
     closeLink();
   };
 
-  const attachFromPreview = async () => {
-    await onAddLink(previewUrl);
+  const attachFromPreview = async (excerpt) => {
+    await onAddLink(previewUrl, "", { text: excerpt });
   };
 
   // --- Attach: drag & drop ---------------------------------------------------
@@ -1080,6 +1080,7 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
         onClose={closePreview}
         url={previewUrl}
         onAttach={attachFromPreview}
+        goalContext={goalContext}
       />
     </div>
   );
