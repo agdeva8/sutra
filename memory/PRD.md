@@ -53,7 +53,7 @@ Founder (User #1): self-directed IC with a primary work goal, a fitness/recovery
 - Clarifying-questions mode with an "answer for me" toggle (`auto_answer` flag on chat endpoints).
 - "Refine" on every proposal (add a note → coach re-proposes).
 - Action chips in dashboard (Add goal + area chips; per-goal edit/pause/drop/add-step) that pre-fill curated prompts (LLM stays the only writer).
-- Collapsible right panel; warm dark/light theme; SVG logo; new tagline "Let's sort your life — together."; About modal (upcoming features, privacy, founder link); humanized load wording; labeled Audit button.
+- Collapsible right panel; Apple-clean light-first theme; SVG logo; new tagline "Let's sort your life — together."; About modal (upcoming features, privacy, founder link); humanized load wording; labeled Audit button.
 - Verified: testing agent 100% backend + frontend (iteration_2.json).
 
 ## Iteration 3 (2026-06) — shipped
