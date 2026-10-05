@@ -35,6 +35,7 @@ import {
 } from '@/lib/emergent/llm'
 import { streamChat } from '@/lib/emergent/stream-chat'
 import type { ProviderId } from '@/lib/emergent/model-registry'
+import { enrichQuestions } from './clarify-options'
 
 export type ConvKind =
   | 'general'
@@ -383,7 +384,7 @@ export function buildOpsGraph(args: OpsGraphArgs) {
       prose,
       proposals,
       needsClarification,
-      clarifyingQuestions,
+      clarifyingQuestions: enrichQuestions(clarifyingQuestions),
       fullText: s.fullText,
     }
     if ((clarify || !autoAnswer) && prose) emit({ type: 'delta', content: prose })

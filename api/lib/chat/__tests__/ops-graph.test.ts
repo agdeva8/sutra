@@ -162,4 +162,26 @@ describe('buildOpsGraph', () => {
       options: ['Same city', 'Remote-only', 'Open to relocating'],
     })
   })
+
+  it('attaches deterministic options for a known fork via the option bank', async () => {
+    scripts.push(['I need a couple of details first.'])
+    scripts.push([
+      '[[TOOLS]]\n[{"action":"ask","question":"Which market should I target?"}]\n[[/TOOLS]]',
+    ])
+    const { result } = await run(base({ autoAnswer: false, clarify: true, message: 'I want to switch jobs.' }))
+    expect(result.clarifyingQuestions).toHaveLength(1)
+    expect(result.clarifyingQuestions[0]).toMatchObject({
+      question: 'Which market should I target?',
+      options: ['Same city', 'Remote-only', 'Open to relocating'],
+    })
+  })
+
+  it('leaves an optionless question as a plain string (bank must not over-match)', async () => {
+    scripts.push(['I need a couple of details first.'])
+    scripts.push([
+      '[[TOOLS]]\n[{"action":"ask","question":"Which interview round is weakest?"}]\n[[/TOOLS]]',
+    ])
+    const { result } = await run(base({ autoAnswer: false, clarify: true, message: 'I want to switch jobs.' }))
+    expect(result.clarifyingQuestions).toEqual(['Which interview round is weakest?'])
+  })
 })
