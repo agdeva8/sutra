@@ -4,10 +4,10 @@ import { api } from "../lib/api";
 import { localDateKey } from "../lib/utils";
 
 /**
- * TodayTimetable — today's timed blocks, commitments, and blockers.
+ * TodayTimetable — today's timed blocks, daily tasks, and blockers.
  *
  * Per-item controls:
- *   - Clickable circle checkbox → mark done (PATCH /api/commitments/:id)
+ *   - Clickable circle checkbox → mark done (PATCH /api/plan-items/:id)
  *   - Two CTA buttons that open a SCOPED chat (blank composer, the modal
  *     is titled after the action + the item):
  *       · "I can't do this"   → renegotiate it (keep / shrink / drop)
@@ -34,33 +34,23 @@ export default function TodayTimetable({ state, onChange, onOpenChat, compact = 
   const refresh = useCallback(() => {
     setLoading(true);
     setError(null);
-    Promise.all([
-      api.blockers(),
-      api.commitments(),
-      api.timetable(),
-    ])
-      .then(([blockersRes, commitmentsRes, timetableRes]) => {
+    Promise.all([api.blockers(), api.timetable()])
+      .then(([blockersRes, timetableRes]) => {
         const rawBlockers = Array.isArray(blockersRes)
           ? blockersRes
           : (blockersRes?.blockers || []);
-        const rawCommitments = Array.isArray(commitmentsRes)
-          ? commitmentsRes
-          : (commitmentsRes?.commitments || []);
 
         const todayKey = localDateKey();
         const todayBlockers = rawBlockers.filter(
           (b) => b.start_date === todayKey || (b.start_date <= todayKey && b.end_date >= todayKey),
         );
-        // Match TrackerCard's `todayCommits` predicate exactly, so the
-        // header counters ("N overdue", "M due today") always agree with
-        // the rows below them:
-        //   • anything due today, done or not
-        //   • anything overdue while still open
-        // A strict `due === today` match made an overdue commitment
-        // vanish the moment you un-ticked it, and left the
-        // "overdue first" sort below unreachable.
-        const todayCommits = rawCommitments.filter(
-          (c) => c.due === todayKey || (c.due && c.due < todayKey && c.status === "open"),
+        // Today's daily plan tasks (from the multi-horizon lattice): anything
+        // due today, or overdue while still open.
+        const todayTasks = (state?.plan_items || []).filter(
+          (p) =>
+            p.horizon === "daily" &&
+            (p.due_date === todayKey ||
+              (p.due_date && p.due_date < todayKey && (p.status || "open") !== "done")),
         );
         const todayBlocks = (timetableRes?.blocks || []).filter(
           (block) => block.block_date === todayKey,
@@ -68,15 +58,16 @@ export default function TodayTimetable({ state, onChange, onOpenChat, compact = 
         const merged = [
           ...todayBlocks.map((block) => ({ ...block, text: block.label, _kind: "block" })),
           ...todayBlockers.map((b) => ({ ...b, _kind: "blocker" })),
-          ...todayCommits.map((c) => ({ ...c, _kind: "commitment" })),
+          ...todayTasks.map((p) => ({ ...p, text: p.title, _kind: "plan" })),
         ];
-        // Timed blocks first in clock order; then blockers and commitments.
+        // Timed blocks first in clock order; then blockers, then tasks
+        // (overdue first).
         merged.sort((a, b) => {
-          const rank = { block: 0, blocker: 1, commitment: 2 };
+          const rank = { block: 0, blocker: 1, plan: 2 };
           if (rank[a._kind] !== rank[b._kind]) return rank[a._kind] - rank[b._kind];
           if (a._kind === "block") return String(a.start_time).localeCompare(String(b.start_time));
-          const aOver = a._kind === "commitment" && a.due < todayKey;
-          const bOver = b._kind === "commitment" && b.due < todayKey;
+          const aOver = a._kind === "plan" && a.due_date < todayKey;
+          const bOver = b._kind === "plan" && b.due_date < todayKey;
           return aOver === bOver ? 0 : aOver ? -1 : 1;
         });
         setItems(merged);
@@ -86,21 +77,21 @@ export default function TodayTimetable({ state, onChange, onOpenChat, compact = 
         setError(err);
       })
       .finally(() => setLoading(false));
-  }, []);
+  }, [state]);
 
   useEffect(() => { refresh(); }, [refresh, state]);
 
   const toggleDone = async (c) => {
-    if (c._kind !== "commitment") return;
+    if (c._kind !== "plan") return;
     setSaving(c.id);
     // Optimistic flip
     setItems((prev) =>
-      prev.map((b) => (b.id === c.id && b._kind === "commitment"
+      prev.map((b) => (b.id === c.id && b._kind === "plan"
         ? { ...b, status: c.status === "done" ? "open" : "done" }
         : b))
     );
     try {
-      await api.updateCommitment(c.id, {
+      await api.updatePlanItem(c.id, {
         status: c.status === "done" ? "open" : "done",
       });
       onChange?.();
@@ -119,11 +110,11 @@ export default function TodayTimetable({ state, onChange, onOpenChat, compact = 
   // and because ChatModal only overwrote the input when a prefill was
   // non-empty, the previous chat's text leaked into the next one.
   const cantDoThis = (item) => {
-    const title = item.text || item.title || "this commitment";
+    const title = item.text || item.title || "this task";
     onOpenChat?.(
       "",
       {
-        scope: item._kind === "blocker" ? "blocker" : "commitment",
+        scope: item._kind === "blocker" ? "blocker" : "plan",
         refId: item.id,
         kind: "plan_day",
         title: `Renegotiate "${title}"`,
@@ -133,11 +124,11 @@ export default function TodayTimetable({ state, onChange, onOpenChat, compact = 
     );
   };
   const addToPlan = (item) => {
-    const title = item.text || item.title || "this commitment";
+    const title = item.text || item.title || "this task";
     onOpenChat?.(
       "",
       {
-        scope: item._kind === "blocker" ? "blocker" : "commitment",
+        scope: item._kind === "blocker" ? "blocker" : "plan",
         refId: item.id,
         kind: "plan_day",
         title: `Break down "${title}"`,
@@ -208,10 +199,10 @@ export default function TodayTimetable({ state, onChange, onOpenChat, compact = 
       )}
       <ul className="divide-y divide-[var(--border)]" role="list">
         {items.map((item) => {
-          const isCommitment = item._kind === "commitment";
+          const isTask = item._kind === "plan";
           const isTimedBlock = item._kind === "block";
-          const done = isCommitment && item.status === "done";
-          const overdue = isCommitment && item.due && item.due < todayKey;
+          const done = isTask && item.status === "done";
+          const overdue = isTask && item.due_date && item.due_date < todayKey;
           return (
             <li
               key={`${item._kind}-${item.id}`}
@@ -223,7 +214,7 @@ export default function TodayTimetable({ state, onChange, onOpenChat, compact = 
                 <button
                   type="button"
                   onClick={() => toggleDone(item)}
-                  disabled={!isCommitment || saving === item.id}
+                  disabled={!isTask || saving === item.id}
                   aria-label={done ? `Mark "${item.text || item.title}" as not done` : `Mark "${item.text || item.title}" as done`}
                   aria-pressed={done}
                   data-testid={`timetable-checkbox-${item.id}`}
@@ -231,7 +222,7 @@ export default function TodayTimetable({ state, onChange, onOpenChat, compact = 
                     done
                       ? "border-[var(--success)] bg-[color-mix(in_srgb,var(--success)_10%,transparent)] text-[var(--success)]"
                       : "border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]"
-                  } ${!isCommitment ? "opacity-30 cursor-not-allowed" : ""}`}
+                  } ${!isTask ? "opacity-30 cursor-not-allowed" : ""}`}
                 >
                   {saving === item.id
                     ? <Loader2 className="w-4 h-4 animate-spin" />
@@ -252,13 +243,13 @@ export default function TodayTimetable({ state, onChange, onOpenChat, compact = 
                     {isTimedBlock && item.start_time && item.end_time && (
                       <span className="font-mono tabular-nums text-[var(--accent)]">{item.start_time}–{item.end_time}</span>
                     )}
-                    {(item.due || item.start_date) && (
-                      <span>{item.due || item.start_date}</span>
+                    {(item.due_date || item.due || item.start_date) && (
+                      <span>{item.due_date || item.due || item.start_date}</span>
                     )}
                     {overdue && (
                       <span className="text-[var(--danger)] font-semibold">Overdue</span>
                     )}
-                    {isCommitment && !overdue && item.due === todayKey && "Today"}
+                    {isTask && !overdue && item.due_date === todayKey && "Today"}
                   </div>
                 </div>
               </div>

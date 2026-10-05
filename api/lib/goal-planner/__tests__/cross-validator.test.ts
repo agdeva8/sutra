@@ -42,14 +42,6 @@ const plan: Plan = {
   ],
   blockers: [],
   blocks: [],
-  commitments: [
-    {
-      goal_title: TITLE,
-      text: 'Pick a SD resource',
-      due: '2026-10-02',
-      phase: 'Foundations',
-    },
-  ],
   prose: 'The daily 90-min slot is the load-bearing constraint.',
 }
 
@@ -75,15 +67,6 @@ const validEmit: Emit = {
         goal_title: TITLE,
         title: 'SD fundamentals locked',
         target_date: '2026-11-05',
-        phase: 'Foundations',
-      },
-    },
-    {
-      action: 'add_commitment',
-      args: {
-        goal_title: TITLE,
-        text: 'Pick a SD resource',
-        due: '2026-10-02',
         phase: 'Foundations',
       },
     },
@@ -184,45 +167,11 @@ describe('crossValidate — add_goal', () => {
     expect(r.errors.join(' ')).toContain('must not invent blockers')
   })
 
-  it('rejects an add_commitment due date not in the plan', () => {
-    const r = crossValidate({
-      ...base,
-      emit: {
-        tools: [
-          {
-            action: 'add_commitment',
-            args: { goal_title: TITLE, text: 'Pick a SD resource', due: '2026-10-09', phase: 'Foundations' },
-          },
-        ],
-      },
-    })
-    expect(r.ok).toBe(false)
-    expect(r.errors.join(' ')).toContain('is not in plan.commitments')
-  })
-
-  it('enforces the 3-8 milestone / 1-3 commitment bounds for add_goal', () => {
-    const thinPlan: Plan = { ...plan, milestones: plan.milestones.slice(0, 2), commitments: [] }
+  it('enforces the 3-8 milestone bounds for add_goal', () => {
+    const thinPlan: Plan = { ...plan, milestones: plan.milestones.slice(0, 2) }
     const r = crossValidate({ ...base, plan: thinPlan, emit: validEmit })
     expect(r.ok).toBe(false)
     expect(r.errors.join(' ')).toContain('requires 3-8 milestones')
-    expect(r.errors.join(' ')).toContain('requires 1-3 commitments')
-  })
-
-  it('allows referencing an existing goal title (not the new plan goal)', () => {
-    const r = crossValidate({
-      ...base,
-      existingGoalTitles: ['Get fit'],
-      emit: {
-        tools: [
-          {
-            action: 'add_commitment',
-            args: { goal_title: 'Get fit', text: 'Run 5k', due: '2026-10-02', phase: 'Foundations' },
-          },
-        ],
-      },
-    })
-    // goal_title resolves, but the due date is still checked against the plan.
-    expect(r.errors.join(' ')).not.toContain('matches no plan/existing goal')
   })
 
   it('accepts a plan-day block only when it matches the plan', () => {
@@ -240,7 +189,6 @@ describe('crossValidate — add_goal', () => {
       milestones: [],
       blockers: [],
       blocks: [block],
-      commitments: [],
     }
     const emit: Emit = { tools: [{ action: 'add_block', args: block }] }
     const result = crossValidate({ intent: 'plan_day', plan: dayPlan, emit, today: '2026-10-03', existingGoalTitles: [TITLE] })
@@ -263,7 +211,6 @@ describe('crossValidate — add_goal', () => {
         goal: null,
         milestones: [],
         blockers: [],
-        commitments: [],
         blocks: [block, { ...block, start_time: '10:00', end_time: '11:00', label: 'Application work' }],
       },
       emit: { tools: [{ action: 'add_block', args: block }] },
@@ -282,7 +229,7 @@ describe('crossValidate — add_goal', () => {
     }
     const result = crossValidate({
       intent: 'plan_day',
-      plan: { ...plan, goal: null, milestones: [], blockers: [], commitments: [], blocks: [block] },
+      plan: { ...plan, goal: null, milestones: [], blockers: [], blocks: [block] },
       emit: { tools: [{ action: 'add_block', args: block }] },
       today: '2026-10-03',
       existingGoalTitles: [],

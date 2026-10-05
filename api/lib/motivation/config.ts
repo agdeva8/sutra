@@ -30,26 +30,23 @@ import {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Master switch. When false:
- *   - The route handler returns the built-in fallback catalogue
- *     directly, skipping the pipeline.
- *   - detectBucket() still runs so the card's UX path is identical
- *     to "agent enabled, no candidates passed".
+ * Master switch. When false, `recommend()` returns the empty "searching"
+ * response without kicking the pipeline (used by the test runner so unit
+ * tests never hit Tavily / the LLM).
  *
- * Default: enabled in production, disabled everywhere else (so dev
- * environments don't burn Tavily credits during unit tests).
- *
- * Override with `MOTIVATION_AGENT_ENABLED=true|false` in env.
+ * Default: on everywhere except `NODE_ENV === 'test'`. There is no curated
+ * catalogue fallback anymore, so dev must run the real pipeline to show
+ * anything. Override with `MOTIVATION_AGENT_ENABLED=true|false` in env.
  */
-function parseEnabledFlag(raw: string | undefined, isProd: boolean): boolean {
+function parseEnabledFlag(raw: string | undefined, nodeEnv: string): boolean {
   if (raw === 'true') return true
   if (raw === 'false') return false
-  return isProd
+  return nodeEnv !== 'test'
 }
 
 export const MOTIVATION_AGENT_ENABLED = parseEnabledFlag(
   process.env.MOTIVATION_AGENT_ENABLED,
-  env.NODE_ENV === 'production',
+  env.NODE_ENV,
 )
 
 /* -------------------------------------------------------------------------- */
@@ -57,9 +54,8 @@ export const MOTIVATION_AGENT_ENABLED = parseEnabledFlag(
 /* -------------------------------------------------------------------------- */
 
 /**
- * Tavily API key. Optional at boot — when missing AND the agent is
- * enabled, the pipeline falls back to the catalogue at runtime
- * (logged as `tavily_missing`).
+ * Tavily API key. Optional at boot — when missing the pipeline returns
+ * the empty "searching" response at runtime (logged as `tavily_missing`).
  */
 export const TAVILY_API_KEY = process.env.TAVILY_API_KEY || null
 
@@ -143,7 +139,7 @@ const COST_PER_M_TOKENS_USD = {
   tavily_per_query: 0.005, // ~$5 per 1k queries, Starter tier
 } as const
 
-/** Hard cost ceiling per call. Short-circuit to fallback catalogue. */
+/** Hard cost ceiling per call. Short-circuit to the empty response. */
 export const COST_CAP_USD = 0.25
 
 /** Cost of a single LLM call (USD). */

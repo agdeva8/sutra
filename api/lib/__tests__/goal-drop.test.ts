@@ -18,7 +18,6 @@ import {
 
 function nameOf(t: unknown): string {
   if (t === schema.goals) return 'goals'
-  if (t === schema.commitments) return 'commitments'
   if (t === schema.milestones) return 'milestones'
   if (t === schema.timetableBlocks) return 'timetableBlocks'
   if (t === schema.users) return 'users'
@@ -100,10 +99,6 @@ function baseRows() {
       { id: GOAL_ID, title: 'Learn Spanish', weeklyHours: 8, status: 'active' },
       { id: 'goal_2', title: 'Run a half', weeklyHours: 5, status: 'active' },
     ],
-    commitments: [
-      { id: 'c1', text: 'Book a tutor', due: null },
-      { id: 'c2', text: 'First lesson', due: '2026-01-10' },
-    ],
     milestones: [{ id: 'm1', title: 'A1 reached', targetDate: '2026-03-01' }],
     timetableBlocks: [
       {
@@ -131,7 +126,6 @@ describe('computeGoalDropImpact', () => {
 
     expect(impact.goal_title).toBe('Learn Spanish')
     expect(impact.counts).toEqual({
-      commitments: 2,
       milestones: 1,
       timetable_blocks: 1,
     })
@@ -155,7 +149,6 @@ describe('computeGoalDropImpact', () => {
     })
     const sentence = dropImpactSentence(impact)
     expect(sentence).toContain('Learn Spanish')
-    expect(sentence).toContain('2 open commitments')
     expect(sentence).toContain('1 milestone')
     expect(sentence).toContain('1 scheduled block')
     expect(sentence).toContain('8h/week')
@@ -163,7 +156,7 @@ describe('computeGoalDropImpact', () => {
 })
 
 describe('applyGoalDropCascade', () => {
-  it('drops the goal, closes commitments, deletes scaffolding, audits once', async () => {
+  it('drops the goal, deletes scaffolding, audits once', async () => {
     const { db, captured } = makeDb(baseRows())
     const { result } = await applyGoalDropCascade(
       db,
@@ -178,9 +171,6 @@ describe('applyGoalDropCascade', () => {
     const goalUpdate = captured.updates.find((u) => u.table === 'goals')
     expect(goalUpdate?.values.status).toBe('dropped')
 
-    const commitUpdate = captured.updates.find((u) => u.table === 'commitments')
-    expect(commitUpdate?.values.status).toBe('done')
-
     expect(captured.deletes).toContain('milestones')
     expect(captured.deletes).toContain('timetableBlocks')
 
@@ -193,13 +183,11 @@ describe('applyGoalDropCascade', () => {
     })
 
     expect(result).toContain("Dropped goal 'Learn Spanish'")
-    expect(result).toContain('2 commitments')
     expect(result).toContain('freed 8h/week')
   })
 
   it('still audits a goal with no children', async () => {
     const rows = baseRows()
-    rows.commitments = []
     rows.milestones = []
     rows.timetableBlocks = []
     const { db, captured } = makeDb(rows)

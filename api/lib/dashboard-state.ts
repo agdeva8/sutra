@@ -156,7 +156,6 @@ export async function loadDashboardState(
     goals: state.goals,
     blockers: state.blockers,
     milestones: state.milestones,
-    commitments: state.commitments,
     timetableBlocks: timetableRows.map((b) => ({
       id: b.id,
       label: b.label,

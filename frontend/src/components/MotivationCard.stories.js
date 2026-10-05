@@ -67,26 +67,14 @@ export default {
 
 export const Default = {};
 
-// SWR in flight — the server returned the catalogue immediately
-// and is computing the LLM-curated picks in the background. The
-// card shows a "refreshing" badge so the user knows a better view
-// is coming without having to click anything.
-export const Refreshing = {
+// SWR in flight — the server has no cached picks yet and is searching
+// in the background, so the card shows its "searching" line. Use the
+// Default story to see the settled picks state.
+export const Searching = {
   parameters: {
     api: {
       "motivation/recommend": {
-        items: [
-          {
-            id: "cat_1",
-            kind: "article",
-            title: "The 2-Day Rule (don't skip twice)",
-            author: "James Clear",
-            duration: "4 min read",
-            url: "https://jamesclear.com/how-to-stop-procrastinating",
-            frame:
-              "Right now, you have items past due. Missing once is an accident. Missing twice is the start of a new habit.",
-          },
-        ],
+        items: [],
         cache: "miss",
       },
     },

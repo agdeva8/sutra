@@ -75,6 +75,9 @@ export const users = pgTable('users', {
   // (names the tension in prose, does not auto-renegotiate) until the user
   // sets it in Settings. See memory/PRD.md Iteration 10.
   availableWeeklyHours: integer('available_weekly_hours'),
+  // Iteration N (scheduling) — per-weekday free hours the solver schedules
+  // into. Keys are mon…sun; a missing day = 0. See memory/scheduling-design.md.
+  availability: jsonb('availability').notNull().default({}),
   createdAt: timestamp('created_at', { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -125,31 +128,6 @@ export const goals = pgTable('goals', {
     .notNull()
     .defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-})
-
-export const commitments = pgTable('commitments', {
-  id: text('id').primaryKey(),
-  userId: text('user_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  goalId: text('goal_id').references(() => goals.id, { onDelete: 'set null' }),
-  goalTitle: text('goal_title').notNull().default(''),
-  text: text('text').notNull(),
-  // Iteration 5 (Bug 7) — free-text "what you did" note from the Today
-  // timetable. Persists on the row alongside `text` and is rendered back
-  // in the tile. Added by migration 0007_commitments_note.sql to live DB
-  // (0001_init does not create the column). Nullable on purpose so the
-  // optimistic-save path on TodayTimetable leaves no half-written state.
-  note: text('note').default(''),
-  due: date('due'),
-  // Iteration 10 (Goal Planner) — phase name; key in goal.phase_objectives.
-  phase: text('phase').notNull().default(''),
-  status: text('status', { enum: ['open', 'done'] })
-    .notNull()
-    .default('open'),
-  createdAt: timestamp('created_at', { withTimezone: true })
     .notNull()
     .defaultNow(),
 })

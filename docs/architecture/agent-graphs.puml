@@ -146,27 +146,23 @@ note right
 end note
 
 if (MOTIVATION_AGENT_ENABLED?) then (no)
-  :return catalogue;
+  :return empty "searching";
   stop
 else (yes)
 endif
 
-if (forceRefresh?) then (no)
-  :readCache(user, bucket, stateHash);
-  if (cache status?) then (hit, <= 60m)
-    :return cached items (cache = hit);
-    stop
-  elseif (stale, <= 24h) then
-    :return stale items (cache = stale);
-    :triggerPipelineOnce() in background;
-    stop
-  else (miss)
-    :return catalogue now (cache = miss);
-    :triggerPipelineOnce() in background;
-    stop
-  endif
-else (yes)
-  :skip cache read;
+:readCache(user, bucket, stateHash);
+if (cache status?) then (hit, <= 60m)
+  :return cached items (cache = hit);
+  stop
+elseif (stale, <= 24h) then
+  :return stale items (cache = stale);
+  :triggerPipelineOnce() in background;
+  stop
+else (miss)
+  :return empty "searching" (cache = miss);
+  :triggerPipelineOnce() in background;
+  stop
 endif
 
 note right
@@ -178,11 +174,11 @@ partition "runPipeline (LangGraph, 20s master deadline, $0.25 cost cap)" {
   :n_signals - extractLackingSignals + buildQueries;
   :n_search - searchTavily (Tavily, 3 query variants);
   if (raw empty OR over cost cap?) then (yes)
-    :result = catalogue;
+    :result = empty "searching";
   else (no)
     :n_fetch - fetchCandidates + normalize;
     if (candidates empty?) then (yes)
-      :result = catalogue;
+      :result = empty "searching";
     else (no)
       :n_critique - critiqueAll (concurrency 5,
       AI SDK structured output, 10 dimensions);
@@ -192,12 +188,12 @@ partition "runPipeline (LangGraph, 20s master deadline, $0.25 cost cap)" {
         && weighted_total >= 6.5
       end note
       if (scored empty OR over cap?) then (yes)
-        :result = catalogue;
+        :result = empty "searching";
       else (no)
         :n_pick - pickTopN (gates + <=1 per domain)
         + persistRejects;
         if (picks empty?) then (yes)
-          :result = catalogue;
+          :result = empty "searching";
         else (no)
           :n_frame - frameCandidate (generateText) per pick;
           :n_cache - writeCache + bumpServedCount;

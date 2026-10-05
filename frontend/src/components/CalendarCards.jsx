@@ -42,12 +42,6 @@ export function CalendarCard({ card, onClick }) {
         <span aria-hidden="true">{card.glyph} </span>
         {card.title}
       </div>
-      {card.commitment && (
-        <div className="truncate text-[9px] leading-tight text-[var(--text-secondary)]">
-          <span aria-hidden="true">⚑ </span>
-          {card.commitment}
-        </div>
-      )}
       {(card.goalTitle || card.fulfils || card.hours) && (
         <div className="truncate text-[9px] leading-tight text-[var(--text-muted)]">
           {card.goalTitle}

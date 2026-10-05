@@ -114,7 +114,6 @@ describe('GET /api/audit/export', () => {
     expect(body).toHaveProperty('conversation')
     expect(body).toHaveProperty('state')
     expect(body.state).toHaveProperty('goals')
-    expect(body.state).toHaveProperty('commitments')
     expect(body.user.email).toBe('test@example.com')
   })
 

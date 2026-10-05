@@ -18,7 +18,32 @@ const nextConfig: NextConfig = {
   // tesseract.js spawns a worker from its own package layout — keep it
   // external so the bundler doesn't rewrite its worker/core paths (used by
   // `extractImage` in lib/sources.ts for OCR of uploaded photos).
-  serverExternalPackages: ["tesseract.js"],
+  serverExternalPackages: ["tesseract.js", "or-tools-wasm"],
+  // or-tools-wasm loads its CP-SAT runtime .wasm by path at solve time, so the
+  // file tracer can't see it. Pin the CP-SAT runtime into every API function
+  // (JSPI build for modern Node, asyncify fallback for older runtimes). Only
+  // the CP-SAT runtime is included — not the other ~300 MB of solvers.
+  outputFileTracingIncludes: {
+    "/api/**": [
+      "./node_modules/or-tools-wasm/build/javascript/node-wasm/cp_sat_runtime_node.wasm",
+      "./node_modules/or-tools-wasm/build/javascript/node-wasm/cp_sat_runtime_node_asyncify.wasm",
+    ],
+  },
+  // The package ships every solver (routing/mathopt/mp_solver/pdlp/set_cover/
+  // graph) plus a browser build — ~348 MB. We only use CP-SAT server-side, so
+  // drop the rest from the traced function (CP-SAT node runtime ≈ 19 MB).
+  outputFileTracingExcludes: {
+    "/api/**": [
+      "**/or-tools-wasm/build/javascript/wasm/**",
+      "**/or-tools-wasm/build/javascript/browser/**",
+      "**/or-tools-wasm/build/javascript/node-wasm/graph_*",
+      "**/or-tools-wasm/build/javascript/node-wasm/mathopt_*",
+      "**/or-tools-wasm/build/javascript/node-wasm/mp_solver_*",
+      "**/or-tools-wasm/build/javascript/node-wasm/pdlp_*",
+      "**/or-tools-wasm/build/javascript/node-wasm/routing_*",
+      "**/or-tools-wasm/build/javascript/node-wasm/set_cover_*",
+    ],
+  },
   async headers() {
     return [
       {

@@ -23,20 +23,10 @@ export interface DriftMilestone {
   status: string
 }
 
-export interface DriftCommitment {
-  id: string
-  text: string
-  due: string | null
-  status: 'open' | 'done'
-}
-
 export interface DriftInput {
   /** ISO `YYYY-MM-DD`. */
   today: string
   milestones: readonly DriftMilestone[]
-  commitments: readonly DriftCommitment[]
-  /** Overdue-commitment threshold within the trailing week (default 3). */
-  overdueCommitmentThreshold?: number
 }
 
 export type DriftStatus = 'on_track' | 'at_risk'
@@ -73,19 +63,6 @@ export function computeDrift(input: DriftInput): DriftResult {
         `Milestone "${m.title}" passed its target date (${m.targetDate}) without completing.`,
       )
     }
-  }
-
-  const threshold = input.overdueCommitmentThreshold ?? 3
-  const weekAgo = isoMinusDays(today, 7)
-  const overdueCommits = input.commitments.filter(
-    (c) =>
-      c.status === 'open' &&
-      typeof c.due === 'string' &&
-      c.due < today &&
-      c.due >= weekAgo,
-  )
-  if (overdueCommits.length >= threshold) {
-    reasons.push(`${overdueCommits.length} commitments overdue in the last 7 days.`)
   }
 
   return {

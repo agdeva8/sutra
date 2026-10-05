@@ -66,8 +66,6 @@ export interface SchedulerInput {
   phases: PhaseInput[]
   /** Milestone semantics, in the order the model emitted them. */
   milestones: Array<{ title: string; phase: string; rationale?: string }>
-  /** Commitment semantics (the daily grain). */
-  commitments: Array<{ text: string; due: string | null; phase: string }>
 }
 
 export interface ScheduledMilestone {
@@ -124,7 +122,7 @@ function landsInside(itemIso: string, windowEndIso: string): boolean {
  *   - daily rows mirror the plan's commitments.
  */
 export function buildLattice(input: SchedulerInput): SchedulerResult {
-  const { phases, milestones, commitments } = input
+  const { phases, milestones } = input
   let start = input.start_date
   let end = input.target_date
 
@@ -268,20 +266,6 @@ export function buildLattice(input: SchedulerInput): SchedulerResult {
       end_date: span.end_date,
       due_date: null,
       weekly_hours: input.weekly_hours,
-    })
-  }
-
-  // Daily — the plan's commitments as-is.
-  for (const c of commitments) {
-    items.push({
-      horizon: 'daily',
-      phase: c.phase,
-      title: c.text,
-      note: '',
-      start_date: c.due,
-      end_date: c.due,
-      due_date: c.due,
-      weekly_hours: null,
     })
   }
 

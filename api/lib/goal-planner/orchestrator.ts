@@ -59,6 +59,7 @@ import {
   RENEGOTIATION_OPTIONS,
 } from './prompts'
 import { buildLattice, type PlanItemRow } from './scheduler'
+import { decomposePlanItems } from './decompose'
 import {
   EmitSchema,
   IntakeSchema,
@@ -108,6 +109,12 @@ export interface PlanPipelineArgs {
   existingGoalTitles: string[]
   /** `users.available_weekly_hours`; null = advisory headroom. */
   budgetHours: number | null
+  /**
+   * `users.availability` — weekday → free hours. `null`/empty means the user
+   * has never set it, so Stage 1 asks the availability questions (once, on
+   * their first goal). After that it's reused.
+   */
+  availability: Record<string, number> | null
   /** `weekly_hours` for each active goal (null = not yet estimated). */
   activeGoalWeeklyHours: ReadonlyArray<number | null>
   renegotiation?: {
@@ -235,7 +242,6 @@ function isEmptyPlan(plan: Plan): boolean {
     !plan.goal &&
     plan.milestones.length === 0 &&
     plan.blockers.length === 0 &&
-    plan.commitments.length === 0 &&
     plan.blocks.length === 0
   )
 }
@@ -308,6 +314,8 @@ function buildPlannerGraph({ config: pArgs, complete, checkpointer }: BuildGraph
           round,
           maxRounds: MAX_CLARIFYING_ROUNDS,
           priorQuestions,
+          availabilityKnown:
+            !!pArgs.availability && Object.keys(pArgs.availability).length > 0,
         }),
       )
       const forceProceed = pArgs.mode === 'auto' || roundsExhausted
@@ -499,11 +507,6 @@ function buildPlannerGraph({ config: pArgs, complete, checkpointer }: BuildGraph
             phase: m.phase,
             rationale: m.rationale,
           })),
-          commitments: plan.commitments.map((c) => ({
-            text: c.text,
-            due: c.due,
-            phase: c.phase,
-          })),
         })
         plan = {
           ...plan,
@@ -513,6 +516,29 @@ function buildPlannerGraph({ config: pArgs, complete, checkpointer }: BuildGraph
           })),
         }
         planItems = scheduled.items
+
+        // Week → distinct days, availability-aware. Only when the user has
+        // set availability; otherwise the lattice's cloned dailies stand.
+        if (pArgs.availability && Object.keys(pArgs.availability).length > 0) {
+          const blockedDates: string[] = []
+          for (const b of plan.blockers) {
+            if (!b.start_date || !b.end_date) continue
+            const end = new Date(`${b.end_date}T00:00:00.000Z`)
+            for (
+              let d = new Date(`${b.start_date}T00:00:00.000Z`);
+              d <= end;
+              d.setUTCDate(d.getUTCDate() + 1)
+            ) {
+              blockedDates.push(d.toISOString().slice(0, 10))
+            }
+          }
+          planItems = await decomposePlanItems(scheduled.items, {
+            availability: pArgs.availability,
+            blockedDates,
+            provider: pArgs.provider,
+            complete,
+          })
+        }
       } catch (e) {
         // Scheduling is pure arithmetic; a failure must not sink the plan.
         rejects.push(reject('plan', `scheduler failed: ${errMsg(e)}`, { plan }, null, true))
@@ -776,6 +802,7 @@ function stubArgs(threadId: string): PlanPipelineArgs {
     today: new Date().toISOString().slice(0, 10),
     existingGoalTitles: [],
     budgetHours: null,
+    availability: null,
     activeGoalWeeklyHours: [],
     threadId,
   }

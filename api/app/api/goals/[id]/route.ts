@@ -39,7 +39,6 @@ import { db } from '@/lib/db'
 import { applyGoalDropCascade } from '@/lib/goal-drop'
 import {
   auditLog,
-  commitments,
   goals,
   milestones,
   timetableBlocks,
@@ -47,7 +46,7 @@ import {
 } from '@/db/schema'
 
 /** Schema bundle the shared drop cascade expects (`lib/goal-drop.ts`). */
-const schema = { auditLog, commitments, goals, milestones, timetableBlocks, users }
+const schema = { auditLog, goals, milestones, timetableBlocks, users }
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'

@@ -25,13 +25,7 @@
  * prompt instruction, not a hard gate.
  */
 
-import {
-  daysBetween,
-  MAX_COMMITMENTS,
-  MAX_MILESTONES,
-  MIN_COMMITMENTS,
-  MIN_MILESTONES,
-} from './config'
+import { daysBetween, MAX_MILESTONES, MIN_MILESTONES } from './config'
 import {
   ACTION_ARG_SCHEMAS,
   ALLOWED_ACTIONS,
@@ -73,7 +67,6 @@ export function crossValidate(input: CrossValidateInput): CrossValidateResult {
   const milestoneByTitle = new Map(
     plan.milestones.map((m) => [norm(m.title), m]),
   )
-  const planCommitmentDues = new Set(plan.commitments.map((c) => c.due))
   const planBlocks = new Map(
     plan.blocks.map((block) => [
       `${block.block_date}|${block.start_time}|${block.end_time}|${norm(block.label)}`,
@@ -94,12 +87,6 @@ export function crossValidate(input: CrossValidateInput): CrossValidateResult {
     if (mc < MIN_MILESTONES || mc > MAX_MILESTONES) {
       errors.push(
         `add_goal requires ${MIN_MILESTONES}-${MAX_MILESTONES} milestones (got ${mc})`,
-      )
-    }
-    const cc = plan.commitments.length
-    if (cc < MIN_COMMITMENTS || cc > MAX_COMMITMENTS) {
-      errors.push(
-        `add_goal requires ${MIN_COMMITMENTS}-${MAX_COMMITMENTS} commitments (got ${cc})`,
       )
     }
   }
@@ -178,25 +165,6 @@ export function crossValidate(input: CrossValidateInput): CrossValidateResult {
         }
         break
       }
-      case 'add_commitment': {
-        const gt = norm(String(args.goal_title))
-        if (!knownTitles.has(gt)) {
-          errors.push(
-            `add_commitment.goal_title '${args.goal_title}' matches no plan/existing goal`,
-          )
-        }
-        if (!planCommitmentDues.has(args.due)) {
-          errors.push(
-            `add_commitment.due '${args.due}' is not in plan.commitments`,
-          )
-        }
-        if (phaseKeys.size > 0 && !phaseKeys.has(args.phase)) {
-          errors.push(
-            `add_commitment.phase '${args.phase}' is not a key in plan.goal.phase_objectives`,
-          )
-        }
-        break
-      }
       case 'add_blocker': {
         const key = `${args.start_date}|${args.end_date}`
         if (!planBlockerKeys.has(key)) {
@@ -220,6 +188,15 @@ export function crossValidate(input: CrossValidateInput): CrossValidateResult {
           if (dayOffset < 0 || dayOffset > 2) {
             errors.push(`add_block.block_date '${args.block_date}' must be today or within the next 2 days`)
           }
+        }
+        break
+      }
+      case 'set_availability': {
+        const avail = (args.availability ?? {}) as Record<string, unknown>
+        const weekdays = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
+        const bad = Object.keys(avail).filter((k) => !weekdays.includes(k))
+        if (bad.length) {
+          errors.push(`set_availability has unknown weekday keys: ${bad.join(', ')}`)
         }
         break
       }

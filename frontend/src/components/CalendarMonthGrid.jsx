@@ -11,8 +11,8 @@ import { CalendarCard } from "./CalendarCards";
  * stable: no long goal-range bars stretching across the whole month.
  *
  * `cards` are pre-enriched by the caller (id, item{start,end,kind,status},
- * date, glyph, title, goalTitle, color, commitment, fulfils, hours) — the
- * same shape `calendarCards` already builds for the card grid.
+ * date, glyph, title, goalTitle, color, fulfils, hours) — the same shape
+ * `calendarCards` already builds for the card grid.
  */
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];

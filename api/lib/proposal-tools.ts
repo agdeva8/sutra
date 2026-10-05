@@ -49,8 +49,6 @@ export const PROPOSAL_ACTIONS = [
   'add_milestone',
   'add_blocker',
   'add_block',
-  'add_commitment',
-  'complete_commitment',
 ] as const
 
 export type ProposalToolName = (typeof PROPOSAL_ACTIONS)[number]

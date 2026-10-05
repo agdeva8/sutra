@@ -1,70 +1,43 @@
 import { useEffect, useState, useRef } from "react";
-import { Sparkles, ExternalLink, Loader2, RefreshCw, X, BookOpen, Headphones, Video, FileText } from "lucide-react";
+import { Sparkles, ExternalLink, Loader2, BookOpen, Headphones, Video, FileText } from "lucide-react";
 import { api } from "../lib/api";
 import { localDateKey } from "../lib/utils";
 
 /**
- * MotivationCard — surfaces 1-3 hand-curated motivation items when
- * the user lands on the Goals tab with overdue items. Sits inside
- * the tracker card so the user never has to dig for it.
+ * MotivationCard — read-only. Surfaces 1-3 curated items fetched from
+ * /api/motivation/recommend. There is no refresh / retry / dismiss
+ * control: the backend refreshes its own cache in the background (on a
+ * miss, and when a cached row has expired within its stale window), so
+ * a later visit serves the refreshed picks.
  *
- * Data flow:
- *   1. fetch /api/motivation/recommend on mount (and on refresh).
- *   2. Server detects the user's current bucket (overdue / dormant
- *      / stuck) from a tiny slice of state.
- *   3. Returns up to N items, randomised within the bucket so the
- *      card varies across reloads.
- *   4. Each item carries a server-side frame that puts the item in
- *      the user's current moment (overdue vs. dormant vs. stuck).
- *
- * Stale-while-revalidate (SWR) poll — the server returns the
- * catalogue instantly on a cold cache and kicks the LLM pipeline
- * off in the background. We poll every 5s while we know a refresh
- * is in flight (`cache: 'miss'` / `'stale'`); once the server hands
- * us `cache: 'hit'` we know the fresh LLM-curated row landed and
- * we stop polling. Same response shape either way, so the swap is
- * invisible to the user — just one item quietly changes.
+ * We poll silently while a background job is in flight so a fresh
+ * `cache: 'hit'` can appear in-session; if nothing lands before the
+ * cap, the card just shows a friendly "nothing for you" line.
  *
  * UX rules:
  *   - Skips itself silently when nothing interesting is happening
- *     (no overdue, no goals) — never nags the user.
- *   - Dismissable: a small × in the corner hides it for the rest of
- *     the session (per component mount).
- *   - Refresh button re-rolls items from the same bucket.
+ *     (no overdue, no active goals) — never nags the user.
  */
 const POLL_INTERVAL_MS = 5_000
 // Cap on how long we keep polling for a fresh LLM-curated row. The
 // server's pipeline takes ~20-30s on a healthy day; we leave headroom
-// and stop after this. Without a cap, a broken LLM / missing Tavily
-// key leaves the frontend polling the route every 5s forever — every
-// poll kicks off another `void runPipeline()` in the backend (the
-// cost cap eventually short-circuits those, but the call itself still
-// hits the route, runs the bucket detector, etc). 60s = 12 polls
-// ceiling, well above the cold-miss window, well below the runaway.
+// and stop after this so a broken LLM / missing Tavily key doesn't
+// leave the frontend polling the route every 5s forever.
 const POLL_MAX_DURATION_MS = 60_000
 
 export default function MotivationCard({ state }) {
   const [items, setItems] = useState([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
-  const [dismissed, setDismissed] = useState(false)
-  // True while the server told us the cache is `miss` / `stale` —
-  // i.e. a background refresh is in flight that we should poll
-  // for. Stays false on `hit` and on hard errors (so we don't
-  // hammer the route when the LLM is broken).
-  const [awaitingFresh, setAwaitingFresh] = useState(false)
-  // True once the poll cap is hit. Renders the "couldn't refresh"
-  // hint next to the badge instead of a forever-spinner.
-  const [pollGaveUp, setPollGaveUp] = useState(false)
-  // Ref to the poll interval so we can clear it on unmount and on
-  // transitions out of `awaitingFresh`.
+  // True while a background refresh is in flight (server told us the
+  // cache is `miss`, or a stale row is being revalidated). Drives the
+  // "searching" line; flips false on a `hit`, on error, or at the cap.
+  const [inFlight, setInFlight] = useState(true)
   const pollRef = useRef(null)
 
-  const overdueCount = (state?.commitments || []).filter(
-    (c) =>
-      c.status === "open" &&
-      c.due &&
-      c.due < localDateKey(),
+  const overdueCount = (state?.milestones || []).filter(
+    (m) =>
+      (m.status || "open") !== "done" &&
+      m.target_date &&
+      m.target_date < localDateKey(),
   ).length
   const activeGoals = (state?.goals || []).filter((g) => g.status === "active").length
 
@@ -77,83 +50,50 @@ export default function MotivationCard({ state }) {
     }
   }
 
-  const startPolling = () => {
-    stopPolling()
-    setPollGaveUp(false)
-    const pollStartedAt = Date.now()
-    pollRef.current = setInterval(() => {
-      // Cap the poll window. The healthy cold-miss path lands in 20-30s;
-      // after 60s we assume the LLM is broken and stop hammering the
-      // route. The user can still hit the refresh button to retry.
-      if (Date.now() - pollStartedAt > POLL_MAX_DURATION_MS) {
-        setAwaitingFresh(false)
-        setPollGaveUp(true)
-        stopPolling()
-        return
-      }
+  useEffect(() => {
+    if (!shouldShow) return
+    let cancelled = false
+
+    const load = () =>
       api
         .motivation()
         .then((d) => {
+          if (cancelled) return
           setItems(d.items || [])
           if (d.cache === "hit") {
-            // Fresh LLM-curated row landed — swap and stop polling.
-            setAwaitingFresh(false)
-            setPollGaveUp(false)
+            // Fresh LLM-curated row landed — swap in and stop polling.
+            setInFlight(false)
             stopPolling()
           }
-          // If still 'miss' / 'stale', keep polling (until the cap).
+          // Still 'miss' / 'stale' → keep polling (until the cap).
         })
         .catch(() => {
-          // Background poll failure is non-fatal — keep trying until
-          // we either get a hit or the user dismisses the card.
-        })
-    }, POLL_INTERVAL_MS)
-  }
-
-  const fetchRecommendations = (opts = {}) => {
-    setLoading(true)
-    setError(null)
-    setPollGaveUp(false)
-    api
-      .motivation({ refresh: opts.forceRefresh === true })
-      .then((d) => {
-        setItems(d.items || [])
-        if (d.cache === "hit") {
-          setAwaitingFresh(false)
+          if (cancelled) return
+          // Non-fatal — show the friendly empty line instead of an error.
+          setInFlight(false)
           stopPolling()
-        } else {
-          // 'miss' or 'stale' — server kicked off a background
-          // refresh; start (or continue) polling until it lands
-          // (or the poll cap fires). Manual refresh (forceRefresh)
-          // also lands here, since the fresh pipeline is still
-          // running in the background.
-          setAwaitingFresh(true)
-          startPolling()
-        }
-      })
-      .catch((err) => {
-        console.error("Failed to load motivation recommendations:", err)
-        setError(err)
-        setAwaitingFresh(false)
+        })
+
+    setInFlight(true)
+    load()
+    const pollStartedAt = Date.now()
+    pollRef.current = setInterval(() => {
+      if (Date.now() - pollStartedAt > POLL_MAX_DURATION_MS) {
+        setInFlight(false)
         stopPolling()
-      })
-      .finally(() => setLoading(false))
-  }
+        return
+      }
+      load()
+    }, POLL_INTERVAL_MS)
 
-  useEffect(() => {
-    if (!shouldShow || dismissed) return
-    fetchRecommendations()
+    return () => {
+      cancelled = true
+      stopPolling()
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shouldShow, dismissed])
+  }, [shouldShow])
 
-  // Always tear down the poll on unmount — otherwise the interval
-  // would keep firing against a state we'd never see.
-  useEffect(() => {
-    return () => stopPolling()
-  }, [])
-
-  if (!shouldShow || dismissed) return null
-  if (items.length === 0 && !loading && !error) return null
+  if (!shouldShow) return null
 
   return (
     <div
@@ -170,65 +110,22 @@ export default function MotivationCard({ state }) {
             Picked from what you're working on
           </div>
         </div>
-        <button
-          data-testid="motivation-refresh"
-          type="button"
-          onClick={() => fetchRecommendations({ forceRefresh: true })}
-          disabled={loading}
-          className="h-11 w-11 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-tertiary)] border border-transparent transition-colors"
-          title="Refresh"
-        >
-          {loading ? (
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-          ) : (
-            <RefreshCw className="w-3.5 h-3.5" />
-          )}
-        </button>
-        {awaitingFresh && (
-          <span
-            data-testid="motivation-refreshing"
-            className="font-mono text-[9px] uppercase tracking-widest text-[var(--accent)] inline-flex items-center gap-1"
-            title="Curating fresh picks — this view will update shortly"
-          >
-            <Loader2 className="w-3 h-3 animate-spin" /> refreshing
-          </span>
-        )}
-        {pollGaveUp && !awaitingFresh && (
-          <span
-            data-testid="motivation-refresh-stalled"
-            className="font-mono text-[9px] uppercase tracking-widest text-[var(--text-muted)] inline-flex items-center gap-1"
-            title="Curator didn't land in time — tap refresh to try again"
-          >
-            tap refresh to retry
-          </span>
-        )}
-        <button
-          data-testid="motivation-dismiss"
-          type="button"
-          onClick={() => setDismissed(true)}
-          className="h-11 w-11 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
-          title="Hide for this view"
-        >
-          <X className="w-3.5 h-3.5" />
-        </button>
       </div>
 
       <ul className="px-4 sm:px-5 py-3 space-y-2.5">
-        {loading && items.length === 0 && (
-          <li className="flex items-center gap-2 text-xs text-[var(--text-muted)] py-2">
-            <Loader2 className="w-3.5 h-3.5 animate-spin" /> re-framing…
-          </li>
-        )}
-        {!loading && error && (
-          <li className="flex items-center justify-between text-xs text-[var(--text-muted)] py-2" data-testid="motivation-error">
-            <span>Couldn't load recommendations</span>
-            <button
-              type="button"
-              onClick={fetchRecommendations}
-              className="min-h-11 inline-flex items-center gap-1 text-xs text-[var(--accent)] hover:underline"
-            >
-              <RefreshCw className="w-3 h-3" /> Retry
-            </button>
+        {items.length === 0 && (
+          <li
+            className="flex items-center gap-2 text-xs text-[var(--text-muted)] py-2"
+            data-testid={inFlight ? "motivation-searching" : "motivation-empty"}
+          >
+            {inFlight ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>Searching the web for what fits right now…</span>
+              </>
+            ) : (
+              <span>Nothing for you right now — you're doing great.</span>
+            )}
           </li>
         )}
         {items.map((it) => (

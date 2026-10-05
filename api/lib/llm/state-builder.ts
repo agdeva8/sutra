@@ -41,7 +41,6 @@ import { db } from '@/lib/db'
 import { getDailyLogsSince, type DailyLogRow } from '@/lib/daily-log'
 import {
   blockers,
-  commitments,
   goals,
   messages,
   milestones,
@@ -78,16 +77,6 @@ export interface StateGoal {
   // goal; the chat-time context doesn't currently use these but
   // keeping the field avoids a future migration).
   sources?: StateSource[]
-}
-
-export interface StateCommitment {
-  id: string
-  text: string
-  status: 'open' | 'done'
-  due?: string | null
-  goal_title?: string | null
-  goal_id?: string | null
-  phase?: string
 }
 
 export interface StateMilestone {
@@ -137,7 +126,6 @@ export interface StateSource {
 
 export interface CoachState {
   goals: StateGoal[]
-  commitments: StateCommitment[]
   milestones: StateMilestone[]
   blockers: StateBlocker[]
   sources: StateSource[]
@@ -211,23 +199,6 @@ export async function loadStateCore(userId: string): Promise<CoachState> {
     .where(eq(goals.userId, userId))
     .orderBy(asc(goals.createdAt))
     .limit(500)
-
-  const qCommitments = db
-    .select({
-      id: commitments.id,
-      text: commitments.text,
-      status: commitments.status,
-      phase: commitments.phase,
-      due: commitments.due,
-      goalTitle: commitments.goalTitle,
-      // Selected only to filter out children of dropped goals below —
-      // never surfaced in the state shape.
-      goalId: commitments.goalId,
-    })
-    .from(commitments)
-    .where(eq(commitments.userId, userId))
-    .orderBy(asc(commitments.createdAt))
-    .limit(1000)
 
   const qMilestones = db
     .select({
@@ -307,21 +278,8 @@ export async function loadStateCore(userId: string): Promise<CoachState> {
   // instead of five. The query objects are built in the original order
   // above, so table-arrival-order mocks still see
   // goals → commitments → milestones → blockers → sources.
-  const [
-    goalsRows,
-    commitmentsRows,
-    milestonesRows,
-    blockersRows,
-    sourcesRows,
-    planItemsRows,
-  ] = await Promise.all([
-    qGoals,
-    qCommitments,
-    qMilestones,
-    qBlockers,
-    qSources,
-    qPlanItems,
-  ])
+  const [goalsRows, milestonesRows, blockersRows, sourcesRows, planItemsRows] =
+    await Promise.all([qGoals, qMilestones, qBlockers, qSources, qPlanItems])
 
   const byGoal = new Map<string, StateSource[]>()
   const sourcesList: StateSource[] = []
@@ -370,18 +328,6 @@ export async function loadStateCore(userId: string): Promise<CoachState> {
     goalsRows.filter((g) => g.status === 'dropped').map((g) => g.id),
   )
 
-  const commitmentsList: StateCommitment[] = commitmentsRows
-    .filter((c) => !c.goalId || !droppedGoalIds.has(c.goalId))
-    .map((c) => ({
-      id: c.id,
-      text: c.text,
-      status: c.status,
-      due: c.due,
-      goal_title: c.goalTitle,
-      goal_id: c.goalId,
-      phase: c.phase,
-    }))
-
   const milestonesList: StateMilestone[] = milestonesRows
     .filter((m) => !m.goalId || !droppedGoalIds.has(m.goalId))
     .map((m) => ({
@@ -420,12 +366,11 @@ export async function loadStateCore(userId: string): Promise<CoachState> {
 
   return {
     goals: goalsList,
-    commitments: commitmentsList,
     milestones: milestonesList,
     blockers: blockersList,
     sources: sourcesList,
     plan_items: planItemsList,
-    over_commitment: computeOverCommitment(goalsList, commitmentsList),
+    over_commitment: computeOverCommitment(goalsList),
   }
 }
 
@@ -693,7 +638,7 @@ export async function buildContext(
     const oc = state.over_commitment
     lines.push('')
     lines.push(
-      `LOAD: ${oc.active_goals} active goals, ${oc.open_commitments} open commitments. Level: ${oc.level}.`,
+      `LOAD: ${oc.active_goals} active goals. Level: ${oc.level}.`,
     )
   } else if (kind === 'plan_day' || kind === 'edit_goal' || kind === 'drop_goal') {
     // Scoped context — see the entity the conversation is about plus the
@@ -703,14 +648,6 @@ export async function buildContext(
       lines.push('CURRENT TRACKED GOALS (titles only):')
       for (const g of liveGoals) {
         lines.push(`- ${g.title} (${g.horizon}, ${g.status})`)
-      }
-    }
-    const openCommits = state.commitments.filter((c) => c.status === 'open')
-    if (openCommits.length > 0) {
-      lines.push('')
-      lines.push('OPEN COMMITMENTS (titles only):')
-      for (const c of openCommits.slice(0, 50)) {
-        lines.push(`- ${c.text} [due: ${c.due ?? 'unscheduled'}; goal: ${c.goal_title ?? ''}]`)
       }
     }
     if (kind === 'plan_day') {
@@ -754,17 +691,6 @@ export async function buildContext(
       lines.push('CURRENT TRACKED GOALS: none yet.')
     }
 
-    // OPEN COMMITMENTS — only status === 'open'.
-    const openCommits = state.commitments.filter((c) => c.status === 'open')
-    if (openCommits.length > 0) {
-      lines.push('')
-      lines.push('OPEN COMMITMENTS:')
-      for (const c of openCommits) {
-        const due = c.due ? ` (due ${c.due})` : ''
-        lines.push(`- ${c.text}${due} [goal: ${c.goal_title ?? ''}]`)
-      }
-    }
-
     // MILESTONES — all of them (Python doesn't filter).
     if (state.milestones.length > 0) {
       lines.push('')
@@ -791,7 +717,7 @@ export async function buildContext(
     const oc = state.over_commitment
     lines.push('')
     lines.push(
-      `LOAD: ${oc.active_goals} active goals, ${oc.open_commitments} open commitments. Level: ${oc.level}.`,
+      `LOAD: ${oc.active_goals} active goals. Level: ${oc.level}.`,
     )
   }
 
@@ -802,16 +728,8 @@ export async function buildContext(
     lines.push('')
     lines.push('DAILY LOG (last 7 days, newest first):')
     for (const log of dailyLogs) {
-      const done = log.commitments.filter((c) => c.completed).length
-      const notes = log.commitments
-        .map((c) => c.note)
-        .filter((n) => n && n.trim().length > 0)
-      const parts = [
-        `${done}/${log.commitments.length} commitments done`,
-        log.text ? `note: ${log.text}` : '',
-        notes.length > 0 ? `done-notes: ${notes.join('; ')}` : '',
-      ].filter(Boolean)
-      lines.push(`- ${log.date}: ${parts.join(' | ')}`)
+      const parts = [log.text ? `note: ${log.text}` : ''].filter(Boolean)
+      lines.push(`- ${log.date}: ${parts.join(' | ') || '(no note)'}`)
     }
   }
 

@@ -54,8 +54,8 @@ const EnvSchema = z.object({
   INTEGRATION_PROXY_URL: z.string().url().optional(),
 
   // Tavily search API. Required when MOTIVATION_AGENT_ENABLED=true;
-  // the motivation pipeline falls back to the catalogue at runtime
-  // when missing. Optional at boot so dev/test without the flag work.
+  // the motivation pipeline returns the empty "searching" response at
+  // runtime when missing. Optional at boot so dev/test without the flag work.
   TAVILY_API_KEY: z.string().min(1).optional(),
 
   // For 10-min guest_token HMAC signing.

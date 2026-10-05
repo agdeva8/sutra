@@ -22,7 +22,6 @@ import { NextRequest } from 'next/server'
 import {
   auditLog,
   blockers,
-  commitments,
   goals,
   milestones,
   planItems,
@@ -44,7 +43,6 @@ const mocks = vi.hoisted(() => {
   const mockAuth = vi.fn()
   const results = {
     goals: [] as unknown[],
-    commitments: [] as unknown[],
     milestones: [] as unknown[],
     blockers: [] as unknown[],
     sources: [] as unknown[],
@@ -63,7 +61,6 @@ const mocks = vi.hoisted(() => {
       // order, and we still route each one to its own fixture.
       const tableByName = {
         goals,
-        commitments,
         milestones,
         blockers,
         sources,
@@ -93,7 +90,6 @@ const mocks = vi.hoisted(() => {
   // Per-table chain objects (shared identity for identity-based dispatch).
   const chains = {
     goals: buildChain('goals'),
-    commitments: buildChain('commitments'),
     milestones: buildChain('milestones'),
     blockers: buildChain('blockers'),
     sources: buildChain('sources'),
@@ -111,7 +107,6 @@ const mocks = vi.hoisted(() => {
       const stub: any = {}
       stub.from = vi.fn((t: unknown) => {
         if (t === goals) return chains.goals
-        if (t === commitments) return chains.commitments
         if (t === milestones) return chains.milestones
         if (t === blockers) return chains.blockers
         if (t === sources) return chains.sources
@@ -209,7 +204,6 @@ beforeEach(() => {
   clearCache()
   mocks.dbMock._reset()
   // All other fixtures empty by default
-  mocks.results.commitments = []
   mocks.results.milestones = []
   mocks.results.blockers = []
   mocks.results.sources = []
@@ -250,14 +244,14 @@ describe('GET /api/state — write-through cache contract', () => {
 
     // And the mutation changed the underlying data.
     setGoal('g1', 'Read 24 books')
-    mocks.results.commitments = [
-      { id: 'c1', text: 'Pick 6', status: 'open' },
+    mocks.results.milestones = [
+      { id: 'm1', title: 'First 6 books', targetDate: '2026-11-01', status: 'open', goalId: 'g1', goalTitle: 'Read 24 books' },
     ]
 
     const r2 = await GET(authedRequest())
     const body2 = await r2.json()
     expect(body2.goals[0].title).toBe('Read 24 books')
-    expect(body2.commitments).toHaveLength(1)
+    expect(body2.milestones).toHaveLength(1)
   })
 
   it('explicit write-through refresh leaves the cache serving fresh data', async () => {

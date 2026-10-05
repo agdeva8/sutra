@@ -4,21 +4,24 @@
  * Owns the cache/stale-while-revalidate contract and delegates the actual
  * pipeline to the LangGraph in `graph.ts` (AI SDK stages).
  *
- * Failover (preserves the route.ts user-facing guarantees):
+ * Failover:
  *   1. Cache hit   (≤ 60m)  → return cached items        (cache: 'hit')
  *   2. Stale cache (≤ 24h)  → return stale + kick off async refresh
  *                            (cache: 'stale', same items, background writes)
- *   3. Miss        (none)   → return catalogue immediately + kick off async
- *                            pipeline (cache: 'miss', deterministic items,
- *                            background writes — same SWR shape as stale)
- *   4. Pipeline failure / cap breach → the graph returns the fallback
- *      catalogue (it never throws).
+ *   3. Miss        (none)   → return an empty "searching" response + kick off
+ *                            the async pipeline (cache: 'miss', items: []).
+ *                            There is no curated fallback anymore — the card
+ *                            says it is searching rather than showing bucket
+ *                            filler.
+ *   4. Pipeline failure / cap breach → the graph returns an empty response
+ *      (it never throws). The card keeps polling until its own cap, then
+ *      offers a retry.
  *
  * SWR rationale: the pipeline takes ~20-30s on DeepSeek flash (5-way
  * parallel critiques × ~25 candidates with the 8s per-stage timeout).
- * Returning the catalogue immediately and refreshing in the background gives
- * the card useful content at first paint; the frontend's `MotivationCard`
- * polls every 5s while a refresh is in flight.
+ * Returning empty immediately keeps the Goals tab responsive while the fresh
+ * picks compute in the background; the frontend's `MotivationCard` polls
+ * every 5s while a refresh is in flight.
  *
  * Public entry: `recommend(args)`. Returns a `RecommendationResponse`.
  */
@@ -26,13 +29,11 @@
 import 'server-only'
 
 import { readCache } from './cache'
-import { fallbackFrame, pickFromCatalogue } from './catalogue'
 import { MOTIVATION_AGENT_ENABLED, PIPELINE_TIMEOUT_MS } from './config'
 import { runMotivationGraph } from './graph'
 
 import type {
   Bucket,
-  RecommendationItem,
   RecommendationRequest,
   RecommendationResponse,
 } from './schema'
@@ -84,44 +85,43 @@ async function triggerPipelineOnce(args: {
 
 /**
  * Run the full recommendation pipeline. Always resolves — never throws.
- * On any internal failure, falls back to the catalogue so the user
- * still gets a useful response.
+ * On any internal failure (or a disabled agent) it returns the empty
+ * "searching" response; the card polls until the pipeline lands a cache hit.
  */
 export async function recommend(
   req: RecommendationRequest,
 ): Promise<RecommendationResponse> {
-  const { userId, bucket, stateHash, n, forceRefresh = false } = req
+  const { userId, bucket, stateHash, n } = req
 
-  // Flag off → straight to catalogue. Same shape, same response.
+  // Flag off → nothing to search with, so return the empty contract.
   if (!MOTIVATION_AGENT_ENABLED) {
-    return fromCatalogue(bucket, n)
+    return emptyResponse(bucket)
   }
 
-  // 1. Cache lookup — skipped when the caller asked for a forced refresh.
-  if (!forceRefresh) {
-    const cached = await readCache({ userId, bucket, stateHash })
-    if (cached.status === 'hit') {
-      return { bucket, items: cached.items, generated_at: cached.generated_at, cache: 'hit' }
-    }
-
-    // 2. Stale cache — serve stale, refresh async.
-    if (cached.status === 'stale') {
-      void triggerPipelineOnce({ userId, bucket, stateHash, n }).catch((err) => {
-        // eslint-disable-next-line no-console
-        console.warn('[motivation] stale refresh failed:', err)
-      })
-      return { bucket, items: cached.items, generated_at: cached.generated_at, cache: 'stale' }
-    }
+  // 1. Cache lookup.
+  const cached = await readCache({ userId, bucket, stateHash })
+  if (cached.status === 'hit') {
+    return { bucket, items: cached.items, generated_at: cached.generated_at, cache: 'hit' }
   }
 
-  // 3. Cold miss — SWR. Return the catalogue immediately so the Goals tab is
-  //    never blocked behind the LLM pipeline; the pipeline runs in the
-  //    background and the next poll picks up the fresh `hit`.
+  // 2. Stale cache — serve stale, refresh async.
+  if (cached.status === 'stale') {
+    void triggerPipelineOnce({ userId, bucket, stateHash, n }).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.warn('[motivation] stale refresh failed:', err)
+    })
+    return { bucket, items: cached.items, generated_at: cached.generated_at, cache: 'stale' }
+  }
+
+  // 3. Cold miss — SWR. Return an empty response so the Goals tab is never
+  //    blocked behind the LLM pipeline; the card renders a "searching" line,
+  //    the pipeline runs in the background, and the next poll picks up the
+  //    fresh `hit`.
   void triggerPipelineOnce({ userId, bucket, stateHash, n }).catch((err) => {
     // eslint-disable-next-line no-console
     console.warn('[motivation] cold-miss refresh failed:', err)
   })
-  return fromCatalogue(bucket, n)
+  return emptyResponse(bucket)
 }
 
 /* -------------------------------------------------------------------------- */
@@ -147,7 +147,7 @@ async function runPipeline(args: {
       stateHash,
       n,
       signal: masterCtrl.signal,
-      fallback: () => fromCatalogue(bucket, n),
+      fallback: () => emptyResponse(bucket),
     })
   } finally {
     clearTimeout(masterTimer)
@@ -155,31 +155,25 @@ async function runPipeline(args: {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Catalogue fallback                                                         */
+/* Empty (searching / failed) response                                        */
 /* -------------------------------------------------------------------------- */
 
-function fromCatalogue(bucket: Bucket, n: number): RecommendationResponse {
-  const seeds = pickFromCatalogue(bucket, n)
-  const items: RecommendationItem[] = seeds.map((s) => ({
-    id: s.id,
-    kind: s.kind,
-    title: s.title,
-    author: s.author,
-    url: s.url,
-    duration: s.duration,
-    frame: fallbackFrame(s, bucket),
-    excerpt: s.excerpt,
-    score_total: 0,
-  }))
+/**
+ * The response the card renders as "searching". Used on a cold miss (the
+ * pipeline is running) and whenever the pipeline fails, caps out, or the
+ * agent is disabled. No curated filler — the next poll returns `hit` when
+ * the pipeline lands real picks.
+ */
+function emptyResponse(bucket: Bucket): RecommendationResponse {
   return {
     bucket,
-    items,
+    items: [],
     generated_at: new Date().toISOString(),
     cache: 'miss',
   }
 }
 
 // Exported for tests — the SWR cold-miss branch in `recommend()` depends on
-// `fromCatalogue` returning the exact contract shape. Production code paths
+// `emptyResponse` returning the exact contract shape. Production code paths
 // should go through `recommend()`, never this.
-export const _internal = { fromCatalogue }
+export const _internal = { emptyResponse }

@@ -68,6 +68,37 @@ const state = {
     { created_at: day(-4), kind: "file", original_filename: "race-plan-2026.pdf" },
     { created_at: day(-3), kind: "link", original_filename: "Platform engineering roadmap" },
   ],
+  // Weekly + monthly plan_items so the 3-Months and Year spans have content.
+  plan_items: (() => {
+    const out = [];
+    for (let w = 0; w < 12; w++) {
+      out.push({
+        id: `pw${w}`,
+        goal_id: "g1",
+        horizon: "weekly",
+        phase: w < 4 ? "Base" : "Build",
+        title: `Week ${w + 1} — Training block`,
+        note: "Base phase",
+        start_date: day(w * 7 - 10),
+        end_date: day(w * 7 - 4),
+        due_date: null,
+        weekly_hours: 8,
+      });
+    }
+    out.push({
+      id: "pm1",
+      goal_id: "g1",
+      horizon: "monthly",
+      phase: "Base",
+      title: "First 10k race",
+      note: "",
+      start_date: null,
+      end_date: null,
+      due_date: day(40),
+      weekly_hours: null,
+    });
+    return out;
+  })(),
 };
 
 export default {

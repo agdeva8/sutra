@@ -40,7 +40,7 @@ export function OverCommitmentIndicator({ oc }) {
         <Sparkles className="w-4 h-4" style={{ color: style.color }} />
         <span className="text-xs font-semibold" style={{ color: style.color }}>Your week · {style.label}</span>
         <span className="ml-auto font-mono text-[10px] text-[var(--text-muted)]">
-          {oc.active_goals} {oc.active_goals === 1 ? "goal" : "goals"} · {oc.open_commitments} open {oc.open_commitments === 1 ? "commitment" : "commitments"}
+          {oc.active_goals} {oc.active_goals === 1 ? "goal" : "goals"}
         </span>
       </div>
       <p className="text-xs leading-relaxed text-[var(--text-primary)]">{oc.message}</p>
@@ -180,8 +180,7 @@ function SourcesChip({ goal, sources, onUpload, onAddLink, onDelete }) {
   );
 }
 
-function GoalCard({ goal, commitments, milestones, onAction, onUploadSource, onAddLink, onDeleteSource, onAddMemory }) {
-  const goalCommits = commitments.filter((c) => c.goal_id === goal.id);
+function GoalCard({ goal, milestones, onAction, onUploadSource, onAddLink, onDeleteSource, onAddMemory }) {
   const goalMiles = milestones.filter((m) => m.goal_id === goal.id || m.goal_title === goal.title);
   const sources = goal.sources || [];
   return (
@@ -199,16 +198,6 @@ function GoalCard({ goal, commitments, milestones, onAction, onUploadSource, onA
           )}
           <MilestonesChip milestones={goalMiles} />
           <SourcesChip goal={goal} sources={sources} onUpload={onUploadSource} onAddLink={onAddLink} onDelete={onDeleteSource} />
-          {goalCommits.length > 0 && (
-            <div className="mt-2 space-y-1 border-t border-[var(--border)] pt-2">
-              {goalCommits.map((c) => (
-                <div key={c.id} className="flex items-start gap-1.5 text-xs">
-                  {c.status === "done" ? <CheckCircle2 className="w-3 h-3 text-[var(--success)] mt-0.5 shrink-0" /> : <Circle className="w-3 h-3 text-[var(--text-muted)] mt-0.5 shrink-0" />}
-                  <span className={c.status === "done" ? "line-through text-[var(--text-muted)]" : "text-[var(--text-secondary)]"}>{c.text}{c.due ? ` · ${c.due}` : ""}</span>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
       </div>
       <div className="mt-2 pt-2 border-t border-[var(--border)] flex items-center gap-1">
@@ -385,7 +374,7 @@ export default function TrackingDashboard({
             <div className="px-1 pb-2 text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">{HORIZON_LABELS[group.horizon]}</div>
             <div className="rounded-2xl bg-[var(--bg-secondary)] overflow-hidden divide-y divide-[var(--border)]">
               {group.goals.map((g) => (
-                <GoalCard key={g.id} goal={g} commitments={state.commitments} milestones={milestones} onAction={onAction} onUploadSource={onUploadSource} onAddLink={onAddLink} onDeleteSource={onDeleteSource} onAddMemory={openGoalMemory} />
+                <GoalCard key={g.id} goal={g} milestones={milestones} onAction={onAction} onUploadSource={onUploadSource} onAddLink={onAddLink} onDeleteSource={onDeleteSource} onAddMemory={openGoalMemory} />
               ))}
             </div>
           </div>

@@ -115,16 +115,6 @@ describe('applyProposal — Goal Planner field persistence (Iteration 10)', () =
     expect(insertedFor(schema.milestones).goalId).toBe('goal_1')
   })
 
-  it('add_commitment persists phase', async () => {
-    const res = await applyProposal('u1', {
-      id: 'p4',
-      action: 'add_commitment',
-      args: { goal_title: 'T', text: 'Pick a resource', due: '2026-10-02', phase: 'Mocks' },
-    })
-    expect(res.success).toBe(true)
-    expect(insertedFor(schema.commitments).phase).toBe('Mocks')
-  })
-
   it('add_block creates a plan-sourced timetable block and resolves its goal', async () => {
     const res = await applyProposal('u1', {
       id: 'p-block',

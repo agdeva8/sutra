@@ -34,19 +34,18 @@ const blockerCoversDay = (b, dayStart) => {
  *   - Timetable blocks: time-boxed slots (focus / routine / commitment /
  *     blocker) with label, start/end time, note.
  *   - Blockers: multi-day unavailability.
- *   - Commitments: goal-linked tasks with a done toggle.
  *   - Milestones: read-only.
  *
  * Props:
  *   day       — the selected Date (or null → render nothing)
- *   state     — the dashboard state (commitments / blockers / milestones)
+ *   state     — the dashboard state (blockers / milestones)
  *   onChange  — called after any mutation so the parent re-fetches state
  *   onClose   — close the panel
  */
 export default function DayPlanner({ day, state, onChange = () => {}, onClose, embedded = false }) {
   const [blocks, setBlocks] = useState([]);
   const [saving, setSaving] = useState(false);
-  // The single unified add flow (commitment / time block / blocker).
+  // The single unified add flow (time block / unavailable).
   const [addOpen, setAddOpen] = useState(false);
 
   // Block dialog
@@ -78,17 +77,15 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, e
 
   const dateStr = fmtDate(day);
   const dayStart = new Date(day); dayStart.setHours(0, 0, 0, 0);
-  const commitments = state?.commitments || [];
   const blockers = state?.blockers || [];
   const milestones = state?.milestones || [];
-  const dayCommitments = commitments.filter((c) => c.due === dateStr);
   const dayBlockers = blockers.filter((b) => blockerCoversDay(b, dayStart));
   const dayBlocks = blocks
     .filter((b) => b.block_date === dateStr)
     .sort((a, b) => String(a.start_time || "").localeCompare(String(b.start_time || "")));
 
   // Plan tasks — per-day rows from the multi-horizon lattice (plan_items).
-  // Marked by a "Fulfils …" note; commitments are the other daily rows.
+  // Marked by a "Fulfils …" note.
   const planItems = state?.plan_items || [];
   const dayPlanTasks = planItems.filter(
     (i) => i.horizon === "daily" && (i.note || "").startsWith("Fulfils") && i.due_date === dateStr,
@@ -101,7 +98,7 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, e
   );
 
   const hasItems =
-    dayPlanTasks.length + dayMilestones.length + dayCommitments.length + dayBlockers.length + dayBlocks.length > 0;
+    dayPlanTasks.length + dayMilestones.length + dayBlockers.length + dayBlocks.length > 0;
 
   // --- blocks -------------------------------------------------------------
   const openEditBlock = (b) => {
@@ -163,13 +160,6 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, e
     catch (e) { console.error(e); } finally { setSaving(false); }
   };
 
-  // --- commitments --------------------------------------------------------
-  const toggleCommitment = async (c) => {
-    try {
-      await api.updateCommitment(c.id, { status: c.status === "done" ? "open" : "done" });
-      onChange();
-    } catch (e) { console.error(e); }
-  };
   const togglePlanTask = async (t) => {
     try {
       await api.updatePlanItem(t.id, { status: t.status === "done" ? "open" : "done" });
@@ -271,28 +261,6 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, e
               <Milestone className="w-4 h-4 shrink-0" style={{ color: mileColor(m) }} />
               <span className="text-[var(--text-secondary)] truncate flex-1">{m.title || "Milestone"}</span>
               {m.status === "done" && <CheckCircle2 className="w-4 h-4 text-[var(--success)] shrink-0" />}
-            </div>
-          ))}
-
-          {dayCommitments.map((c) => (
-            <div key={c.id} className="flex items-center gap-1.5">
-              <button
-                type="button"
-                data-testid={`detail-commitment-toggle-${c.id}`}
-                onClick={() => toggleCommitment(c)}
-                aria-pressed={c.status === "done"}
-                aria-label={c.status === "done" ? "Mark not done" : "Mark done"}
-                className="shrink-0 inline-flex items-center justify-center h-11 w-11 -ml-3"
-              >
-                {c.status === "done" ? (
-                  <CheckCircle2 className="w-5 h-5 text-[var(--success)]" />
-                ) : (
-                  <Circle className="w-5 h-5 text-[var(--text-muted)]" />
-                )}
-              </button>
-              <span className={c.status === "done" ? "line-through text-[var(--text-muted)] text-[13px] truncate flex-1" : "text-[var(--text-secondary)] text-[13px] truncate flex-1"}>
-                {c.text}
-              </span>
             </div>
           ))}
 
@@ -429,7 +397,7 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, e
         </div>
       </CenteredDialog>
 
-      {/* The ONE add flow — commitment / time block / unavailable range. */}
+      {/* The ONE add flow — time block / unavailable range. */}
       <AddToDayDialog
         open={addOpen}
         onClose={() => setAddOpen(false)}

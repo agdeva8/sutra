@@ -11,8 +11,8 @@
  * (`lib/llm/client.ts`) via `critique.ts` / `frame.ts`.
  *
  * Budgets (all live in config.ts) are owned by the caller (`recommend.ts`)
- * via the abort signal; the graph short-circuits to the deterministic
- * catalogue on any stage failure, cost-cap breach, or empty stage output —
+ * via the abort signal; the graph short-circuits to the empty "searching"
+ * response on any stage failure, cost-cap breach, or empty stage output —
  * it never throws.
  */
 
@@ -68,7 +68,7 @@ export interface MotivationGraphArgs {
   stateHash: string
   n: number
   signal: AbortSignal
-  /** Deterministic fallback (catalogue) response. */
+  /** Deterministic fallback (empty "searching") response. */
   fallback: () => RecommendationResponse
   checkpointer?: BaseCheckpointSaver
 }

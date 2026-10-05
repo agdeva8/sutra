@@ -37,9 +37,6 @@ const plan: Plan = {
   ],
   blockers: [],
   blocks: [],
-  commitments: [
-    { goal_title: TITLE, text: 'Pick a resource', due: '2026-10-02', phase: 'Foundations' },
-  ],
   prose: 'The daily slot is the load-bearing constraint.',
 }
 
@@ -61,7 +58,6 @@ const schedMilestones = buildLattice({
     phase: m.phase,
     rationale: m.rationale,
   })),
-  commitments: plan.commitments.map((c) => ({ text: c.text, due: c.due, phase: c.phase })),
 }).milestones
 const MILE_DATE = new Map(schedMilestones.map((m) => [m.title, m.target_date]))
 
@@ -75,10 +71,6 @@ const emitOk: Emit = {
       action: 'add_milestone',
       args: { goal_title: TITLE, title: 'SD fundamentals', target_date: MILE_DATE.get('SD fundamentals')!, phase: 'Foundations' },
     },
-    {
-      action: 'add_commitment',
-      args: { goal_title: TITLE, text: 'Pick a resource', due: '2026-10-02', phase: 'Foundations' },
-    },
   ],
 }
 
@@ -90,37 +82,25 @@ const emptyPlan: Plan = {
   milestones: [],
   blockers: [],
   blocks: [],
-  commitments: [],
   prose: 'The wedding only overlaps the final rounds.',
 }
 
-/** The corrected re-plan: no date move, but one confirmable next action. */
+/** The corrected re-plan: no date move, but one confirmable constraint. */
 const reviewPlan: Plan = {
   goal: null,
   milestones: [],
-  blockers: [],
-  blocks: [],
-  commitments: [
-    {
-      goal_title: REVIEW_GOAL,
-      text: 'Re-check final-round scheduling after the wedding (Dec 16)',
-      due: '2026-12-17',
-      phase: 'Active',
-    },
+  blockers: [
+    { title: 'Wedding (Dec 16)', start_date: '2026-12-16', end_date: '2026-12-16', note: '' },
   ],
+  blocks: [],
   prose: 'No date change needed — the wedding only overlaps the final rounds.',
 }
 
 const reviewEmit: Emit = {
   tools: [
     {
-      action: 'add_commitment',
-      args: {
-        goal_title: REVIEW_GOAL,
-        text: 'Re-check final-round scheduling after the wedding (Dec 16)',
-        due: '2026-12-17',
-        phase: 'Active',
-      },
+      action: 'add_blocker',
+      args: { title: 'Wedding (Dec 16)', start_date: '2026-12-16', end_date: '2026-12-16' },
     },
   ],
 }
@@ -166,6 +146,7 @@ function base(over: Partial<PlanPipelineArgs> = {}): PlanPipelineArgs {
     today: '2026-10-01',
     existingGoalTitles: [],
     budgetHours: 40,
+    availability: null,
     activeGoalWeeklyHours: [5],
     ...over,
   }
@@ -180,7 +161,7 @@ describe('runPlanPipeline', () => {
     )
     expect(res.kind).toBe('ok')
     if (res.kind !== 'ok') return
-    expect(res.tools).toHaveLength(3)
+    expect(res.tools).toHaveLength(2)
     expect(res.headroom?.decision).toBe('proceed')
     expect(res.modes).toEqual(['object', 'object', 'object'])
     expect(res.rejects).toEqual([])
@@ -240,7 +221,7 @@ describe('runPlanPipeline', () => {
         )
         expect(res.kind, `${intent}/${shape}`).toBe('ok')
         if (res.kind !== 'ok') continue
-        expect(res.tools.some((t) => t.action === 'add_commitment')).toBe(true)
+        expect(res.tools.some((t) => t.action === 'add_blocker')).toBe(true)
       }
     }
   })
@@ -259,7 +240,7 @@ describe('runPlanPipeline', () => {
       )
       expect(res.kind, intent).toBe('ok')
       if (res.kind !== 'ok') continue
-      expect(res.tools.some((t) => t.action === 'add_commitment')).toBe(true)
+      expect(res.tools.some((t) => t.action === 'add_blocker')).toBe(true)
       expect(res.rejects.some((r) => r.stage === 'plan' && r.recovered)).toBe(true)
     }
   })
@@ -458,7 +439,7 @@ describe('runPlanPipeline', () => {
       base({ threadId, message: 'I have not applied yet.', resume: 'I have not applied yet.', deps: { complete } }),
     )
     expect(third.kind).toBe('ok')
-    if (third.kind === 'ok') expect(third.tools).toHaveLength(3)
+    if (third.kind === 'ok') expect(third.tools).toHaveLength(2)
   })
 
   it('switching to auto bypasses a pending clarify and plans from the full history', async () => {

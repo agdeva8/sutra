@@ -16,8 +16,8 @@
  * per hostname. Books/videos/articles can still mix.
  *
  * If we still have < n passes after diversity enforcement, we return
- * however many we have. The caller (`recommend.ts`) decides whether
- * to fall back to the catalogue when the count is too low.
+ * however many we have. The caller (`recommend.ts`) turns an empty pick
+ * into the "searching" response; there is no catalogue fallback.
  */
 
 import 'server-only'

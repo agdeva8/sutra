@@ -4,21 +4,20 @@
  * Returns 1-3 motivation items for the current user. Delegates to
  * `recommend()` in `api/lib/motivation/recommend.ts` which runs the
  * full search → fetch → critique → picker → frame pipeline with a
- * 24h cache. The route blocks on the cold-miss path (no hand-curated
- * catalogue fallback for MVP); the `maxDuration` export bounds the
- * user-visible wait.
+ * 24h cache. On a cold miss the route returns an empty items list (the
+ * card renders a "searching" line) and the pipeline runs in the
+ * background; `maxDuration` bounds the request.
  *
  * The card-side contract is `{ bucket, items, generated_at, cache }`.
- * `MotivationCard` polls every 10s while `cache === 'stale'` (a
- * background refresh is in flight) and retries up to 2 more times
- * with backoff on errors / `cache: 'miss'`.
+ * `MotivationCard` polls every 5s while `cache` is `'miss'` / `'stale'`
+ * (a background refresh is in flight) and gives up after 60s.
  */
 
 import { NextResponse, type NextRequest } from 'next/server'
 import { and, eq, lt } from 'drizzle-orm'
 
 import { db } from '@/lib/db'
-import { goals, commitments } from '@/db/schema'
+import { goals, milestones } from '@/db/schema'
 import { resolveRequestUser } from '@/lib/request-user'
 
 import {
@@ -70,15 +69,9 @@ async function detectBucket(userId: string): Promise<Bucket> {
   const today = new Date().toISOString().slice(0, 10)
 
   const overdue = await db
-    .select({ id: commitments.id })
-    .from(commitments)
-    .where(
-      and(
-        eq(commitments.userId, userId),
-        eq(commitments.status, 'open'),
-        lt(commitments.due, today),
-      ),
-    )
+    .select({ id: milestones.id })
+    .from(milestones)
+    .where(and(eq(milestones.userId, userId), lt(milestones.targetDate, today)))
     .limit(50)
   if (overdue.length > 0) return 'overdue'
 
@@ -114,13 +107,6 @@ export async function GET(req: NextRequest) {
 
   const url = new URL(req.url)
   const count = Math.min(3, Math.max(1, Number(url.searchParams.get('n')) || 3))
-  // `?refresh=true` is set by the manual refresh button in
-  // MotivationCard — bypasses the cache read so the user gets a
-  // fresh LLM-curated row, not a stale or catalogue fallback. The
-  // SWR poller never sets this (it polls without a query string).
-  // The dedup map still ensures a force-refresh and a stray poll
-  // arriving 200ms apart share one pipeline.
-  const forceRefresh = url.searchParams.get('refresh') === 'true'
 
   let bucket: Bucket = 'stuck'
   try {
@@ -132,22 +118,20 @@ export async function GET(req: NextRequest) {
   // Extract lacking signals and compute the cache key. The signal
   // extract is best-effort — a DB hiccup shouldn't take down the
   // recommendation; we fall through to the orchestrator with whatever
-  // we have, which itself falls through to `emptyFallback` on
-  // failure.
+  // we have, which returns the empty "searching" response on failure.
   const signals = await extractLackingSignals({ userId, bucket }).catch(
     () => ({ bucket, themes: [] }),
   )
   const stateHash = computeStateHash(signals)
 
-  // Cold-miss calls block on the pipeline (up to ~25s typical, 35s
-  // timeout). The route's `maxDuration = 60` bounds the request at
-  // the platform layer.
+  // Never blocks on the pipeline: a miss returns empty immediately and
+  // the pipeline runs in the background (see recommend.ts). The route's
+  // `maxDuration = 60` bounds the request at the platform layer.
   const response = await recommend({
     userId,
     bucket,
     stateHash,
     n: count,
-    forceRefresh,
   })
   return NextResponse.json(response)
 }

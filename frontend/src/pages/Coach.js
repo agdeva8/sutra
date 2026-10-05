@@ -75,7 +75,6 @@ const NAV_TARGETS = {
   drop_goal: { panel: "state" },
   pause_goal: { panel: "state" },
   edit_goal: { panel: "state" },
-  commitments: { panel: "today" },
   today: { panel: "today" },
   timeline: { panel: "timeline" },
   sources: { panel: "sources" },
@@ -237,7 +236,7 @@ export default function Coach() {
     const frameTitle =
       act && FRAMES[act.type || "edit"]
         ? FRAMES[act.type || "edit"].title(act.goalTitle)
-        : `Add commitments for the "${act?.goalTitle || "goal"}" goal`;
+        : `Add steps for the "${act?.goalTitle || "goal"}" goal`;
     // Map the goal action to its real conversation kind so the follow-up
     // chat is NON-generic and drop/pause/edit-aware instead of a free-form
     // plan_day bucket (founder feedback: the drop flow opened a generic

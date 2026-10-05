@@ -82,9 +82,9 @@ export default function AddToDayDialog({
           note: "",
         });
       } else if (allDay) {
-        await api.createCommitment({
-          text: what.trim(),
-          due: startDate,
+        await api.createPlanItem({
+          title: what.trim(),
+          due_date: startDate,
           goal_id: goalId || null,
         });
       } else {
@@ -102,7 +102,7 @@ export default function AddToDayDialog({
         kind === "unavailable"
           ? "Marked you unavailable"
           : allDay
-          ? "Added a commitment"
+          ? "Added a task"
           : "Added a time block",
       );
       onCreated?.();

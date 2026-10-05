@@ -89,11 +89,9 @@ export const api = {
   createBlock: (b) => req("/timetable", { method: "POST", body: JSON.stringify(b) }),
   updateBlock: (id, b) => req(`/timetable/${id}`, { method: "PUT", body: JSON.stringify(b) }),
   deleteBlock: (id) => req(`/timetable/${id}`, { method: "DELETE" }),
-  // Commitments (direct edit)
-  commitments: () => req("/commitments"),
-  createCommitment: (c) => req("/commitments", { method: "POST", body: JSON.stringify(c) }),
-  updateCommitment: (id, c) => req(`/commitments/${id}`, { method: "PATCH", body: JSON.stringify(c) }),
-  // Plan items (multi-horizon execution lattice) — tick a task done/open.
+  // Plan items (multi-horizon execution lattice) — tick a task done/open, or
+  // add a user-owned daily task directly.
+  createPlanItem: (p) => req("/plan-items", { method: "POST", body: JSON.stringify(p) }),
   updatePlanItem: (id, patch) => req(`/plan-items/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   // Sources
   sources: () => req("/sources"),
@@ -135,9 +133,9 @@ export const api = {
   memories: () => req("/memories"),
   createMemory: (body) => req("/memories", { method: "POST", body: JSON.stringify(body) }),
   deleteMemory: (id) => req(`/memories/${id}`, { method: "DELETE" }),
-  // Motivation
-  motivation: ({ refresh = false } = {}) =>
-    req(refresh ? "/motivation/recommend?refresh=true" : "/motivation/recommend"),
+  // Motivation — read-only feed. No refresh param: the backend
+  // refreshes its own cache in the background.
+  motivation: () => req("/motivation/recommend"),
   // Iteration 10 — Goal Planner. Non-streaming typed pipeline for the five
   // planned chat kinds. Returns { status, prose, proposals?, headroom?, plan?,
   // questions?, options?, reason? }. status:'disabled' means the server flag is

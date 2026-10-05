@@ -24,7 +24,7 @@ import { createHash } from 'node:crypto'
 import { and, eq, isNotNull, lt, sql } from 'drizzle-orm'
 
 import { db } from '@/lib/db'
-import { commitments, goals } from '@/db/schema'
+import { goals, milestones } from '@/db/schema'
 
 import type { Bucket, LackingSignals } from './schema'
 
@@ -57,22 +57,21 @@ export async function extractLackingSignals(args: {
     .where(and(eq(goals.userId, userId), eq(goals.status, 'active')))
     .limit(50)
 
-  // For overdue: also pull overdue commitment titles + count + slippage.
+  // For overdue: also pull overdue milestone titles + count + slippage.
   let overdueRows: { id: string; goalTitle: string; due: string | null }[] = []
   if (bucket === 'overdue') {
     overdueRows = await db
       .select({
-        id: commitments.id,
-        goalTitle: commitments.goalTitle,
-        due: commitments.due,
+        id: milestones.id,
+        goalTitle: milestones.goalTitle,
+        due: milestones.targetDate,
       })
-      .from(commitments)
+      .from(milestones)
       .where(
         and(
-          eq(commitments.userId, userId),
-          eq(commitments.status, 'open'),
-          isNotNull(commitments.due),
-          lt(commitments.due, today),
+          eq(milestones.userId, userId),
+          isNotNull(milestones.targetDate),
+          lt(milestones.targetDate, today),
         ),
       )
       .limit(50)
