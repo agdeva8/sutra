@@ -11,9 +11,6 @@ const ACTION_LABELS = {
   add_block: "Timetable block",
   drop_goal: "Goal",
   pause_goal: "Goal",
-  add_commitment: "Commitment",
-  complete_commitment: "Commitment",
-  update_commitment: "Commitment",
 };
 
 const HORIZON_LABELS = { weekly: "This week", short: "Short-term", medium: "Medium-term", long: "Long-term" };
@@ -26,17 +23,14 @@ const CONFIRM_LABELS = {
   drop_goal: "Drop goal",
   pause_goal: "Pause goal",
   add_milestone: "Add milestone",
-  add_commitment: "Add commitment",
-  complete_commitment: "Mark done",
-  update_commitment: "Update commitment",
   add_blocker: "Add blocker",
   add_block: "Add to timetable",
 };
 
 /**
  * Section badge for the body — founder feedback (Iteration 9+): the
- * proposal card body needs to read clearly as "GOAL" vs "COMMITMENT"
- * vs "MILESTONE" vs "BLOCKER" instead of a flat list of fields.
+ * proposal card body needs to read clearly as "GOAL" vs "MILESTONE" vs
+ * "BLOCKER" instead of a flat list of fields.
  */
 const SECTION_BY_ACTION = {
   create_goal: "GOAL",
@@ -45,9 +39,6 @@ const SECTION_BY_ACTION = {
   drop_goal: "GOAL",
   pause_goal: "GOAL",
   add_milestone: "MILESTONE",
-  add_commitment: "COMMITMENT",
-  complete_commitment: "COMMITMENT",
-  update_commitment: "COMMITMENT",
   add_blocker: "BLOCKER",
   add_block: "SCHEDULE",
 };
@@ -99,11 +90,11 @@ function flatProposal(p) {
 
 /**
  * Iteration 9+ structure:
- *   - Two-line header: section badge (GOAL/MILESTONE/COMMITMENT/BLOCKER)
+ *   - Two-line header: section badge (GOAL/MILESTONE/BLOCKER/SCHEDULE)
  *     on top + "<Section>: <title>" as the second line (founder request).
  *   - Body shows the right fields per section: GOAL = title +
  *     description + deadline; MILESTONE = title + description + why +
- *     deadline; COMMITMENT = text + why added + due; BLOCKER = window.
+ *     deadline; BLOCKER = window.
  *   - No per-item Confirm (handled by the pinned button); Refine +
  *     Reject stay inline and open their respective modals.
  */
@@ -119,8 +110,6 @@ function DropImpactBlock({ impact }) {
   const freed = impact.freed_weekly_hours;
   const budget = impact.budget_hours;
   const lines = [
-    c.commitments > 0 &&
-      `${c.commitments} open commitment${c.commitments === 1 ? "" : "s"} will be closed`,
     c.milestones > 0 &&
       `${c.milestones} milestone${c.milestones === 1 ? "" : "s"} will be removed`,
     c.timetable_blocks > 0 &&
@@ -186,13 +175,10 @@ export default function ToolConfirmationPrompt({ proposal, onConfirm, onOpenRefi
   // Title used in the "<Section>: <title>" headline on the header's
   // second line. Per-section so a milestone never borrows the goal's
   // title: MILESTONE/BLOCKER use their own title, GOAL uses
-  // title/new_title/goal_title, COMMITMENT uses the first line of text.
+  // title/new_title/goal_title.
   const headlineTitle = (() => {
     if (section === "MILESTONE") return d.title || "";
     if (section === "BLOCKER") return d.title || d.text || "";
-    if (section === "COMMITMENT") {
-      return typeof d.text === "string" ? d.text.split("\n")[0].slice(0, 90) : "";
-    }
     if (section === "SCHEDULE") return d.label || "";
     return (
       d.title ||
@@ -220,7 +206,6 @@ export default function ToolConfirmationPrompt({ proposal, onConfirm, onOpenRefi
 
   const showGoalFields = section === "GOAL";
   const showMilestoneFields = section === "MILESTONE";
-  const showCommitmentFields = section === "COMMITMENT";
   const showBlockerFields = section === "BLOCKER";
   const showScheduleFields = section === "SCHEDULE";
 
@@ -283,19 +268,6 @@ export default function ToolConfirmationPrompt({ proposal, onConfirm, onOpenRefi
               label="Deadline"
               value={d.target_date}
               accent={!!d.target_date}
-            />
-          </div>
-        )}
-
-        {showCommitmentFields && (
-          <div className="space-y-2">
-            <FieldRow icon={Target} label="Commitment" value={d.text} />
-            <FieldRow icon={FileText} label="Why this was added" value={d.why || d.note || d.reason} />
-            <FieldRow
-              icon={Calendar}
-              label="Due"
-              value={d.due || d.target_date}
-              accent={!!(d.due || d.target_date)}
             />
           </div>
         )}

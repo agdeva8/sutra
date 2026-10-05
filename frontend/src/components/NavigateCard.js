@@ -19,7 +19,6 @@ const DEFAULT_LABELS = {
   drop_goal: "Go to your goals",
   pause_goal: "Go to your goals",
   edit_goal: "Go to your goals",
-  commitments: "Go to commitments",
   today: "Go to Today",
   timeline: "Go to Timeline",
   sources: "Go to Sources",

@@ -23,12 +23,6 @@ const REJECT_CHIPS_BY_ACTION = {
     "Wrong date",
     "Wrong scope",
   ],
-  add_commitment: [
-    "Already finished",
-    "Not relevant anymore",
-    "Too big for a single commitment",
-    "Wrong due date",
-  ],
   add_blocker: [
     "Not a blocker — just busy",
     "Wrong window",
@@ -43,14 +37,6 @@ const REJECT_CHIPS_BY_ACTION = {
     "Don't pause",
     "Wrong window",
     "Wrong goal",
-  ],
-  complete_commitment: [
-    "Not done yet",
-    "Done already — should be confirmed, not rejected",
-  ],
-  update_commitment: [
-    "Don't change it",
-    "Wrong change",
   ],
   set_goal_dates: [
     "Wrong dates",

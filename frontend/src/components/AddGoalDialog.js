@@ -532,8 +532,8 @@ export default function AddGoalDialog({
     const confirmedIds = [];
     setSending(true);
     try {
-      // Create the goal first, then confirm its dependent milestones and
-      // commitments so the resolver can attach them to the new goal.
+      // Create the goal first, then confirm its dependent milestones so the
+      // resolver can attach them to the new goal.
       const ordered = [...pending].sort((a, b) =>
         Number(b.action === "create_goal") - Number(a.action === "create_goal"),
       );
@@ -681,8 +681,8 @@ export default function AddGoalDialog({
   //   - latest assistant message has at least one pending create_goal proposal
   //   - if any pending add_milestone proposal is in the same message
   //     → button label = "Confirm" (we have a full goal + milestones)
-  //   - else → button label = "Recreate goals & commitments" (re-ask the
-  //     coach to bundle milestones and commitments into the next proposal)
+  //   - else → button label = "Recreate goals & milestones" (re-ask the
+  //     coach to bundle milestones into the next proposal)
   //
   // The button is a thin override on top of ToolConfirmationPrompt: the
   // existing Confirm / Refine / Reject buttons inside the proposal card
@@ -729,7 +729,7 @@ export default function AddGoalDialog({
           proposalId: createProposal.id,
           label: hasMilestones
             ? `Confirm${pending.length > 0 ? ` (${pending.length} ${pending.length === 1 ? "change" : "changes"})` : ""}`
-            : "Recreate goals & commitments",
+            : "Recreate goals & milestones",
           variant: hasMilestones ? "confirm" : "recreate",
         };
       }
@@ -748,7 +748,7 @@ export default function AddGoalDialog({
       return {
         messageId: m.id,
         proposalId: null,
-        label: "Redefine goals & commitments",
+        label: "Redefine goals & milestones",
         variant: "redefine",
       };
     }
@@ -774,7 +774,7 @@ export default function AddGoalDialog({
         rejected.forEach((p) => lines.push(`- ${labelFor(p)}${p.rejection ? `: ${p.rejection}` : ""}`));
       }
       send(
-        `Re-propose the plan applying ALL of these notes at once. Return the full goal + milestones + commitments again with the changes applied.\n\n${lines.join("\n")}`,
+        `Re-propose the plan applying ALL of these notes at once. Return the full goal + milestones again with the changes applied.\n\n${lines.join("\n")}`,
       );
       return;
     }
@@ -785,13 +785,13 @@ export default function AddGoalDialog({
     }
     if (pinnedAction.variant === "redefine") {
       send(
-        "Scrap that plan. Re-propose this goal from scratch — one goal, then 3-4 milestones with target dates, then 2-3 weekly commitments (smallest first step first). Same category, same voice.",
+        "Scrap that plan. Re-propose this goal from scratch — one goal, then 3-4 milestones with target dates (smallest first step first). Same category, same voice.",
       );
       return;
     }
-    // Recreate — re-ask the coach to bundle milestones + commitments.
+    // Recreate — re-ask the coach to bundle milestones.
     send(
-      "Your last proposal was a goal with no milestones and no commitments. Re-propose the SAME goal but bundle at least 3 milestones (with target dates) and at least 2 weekly commitments (smallest first step + smallest second step). Same voice, same why, same first action.",
+      "Your last proposal was a goal with no milestones. Re-propose the SAME goal but bundle at least 3 milestones (with target dates; smallest first step first). Same voice, same why, same first action.",
     );
   };
 

@@ -12,11 +12,10 @@ const state = {
     { id: "g1", title: "Run a marathon", status: "active" },
     { id: "g2", title: "Ship the v2 landing page", status: "active" },
   ],
-  commitments: [
-    { id: "c1", text: "Easy 5k before work", due: day(0), status: "open" },
-    { id: "c2", text: "Rewrite the CV summary", due: day(-1), status: "open" },
-    { id: "c3", text: "Send the copy to review", due: day(0), status: "open" },
-    { id: "c4", text: "Order new running socks", due: day(0), status: "open" },
+  milestones: [
+    { id: "m1", title: "Easy 5k before work", status: "open", target_date: day(0), goal_title: "Run a marathon" },
+    { id: "m2", title: "Rewrite the CV summary", status: "open", target_date: day(0), goal_title: "Ship the v2 landing page" },
+    { id: "m3", title: "Order new running socks", status: "open", target_date: day(0), goal_title: "Run a marathon" },
   ],
 };
 

@@ -258,7 +258,7 @@ function Inspector({ selection }) {
           Add to day — {selection.date.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}
         </div>
         <div className="mt-0.5 text-[10px] text-[var(--text-muted)]">
-          Empty day space opens the add-to-day dialog: commitment · timetable block · blocker.
+          Empty day space opens the add-to-day dialog: task · timetable block · blocker.
         </div>
       </div>
     );

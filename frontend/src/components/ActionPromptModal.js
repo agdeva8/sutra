@@ -35,7 +35,7 @@ export const FRAME_CHIPS = {
   add_step: [
     "Add a milestone",
     "Add a measurable first step",
-    "Add a deadline-bound commitment",
+    "Add a deadline-bound milestone",
     "Add a research step",
   ],
 };

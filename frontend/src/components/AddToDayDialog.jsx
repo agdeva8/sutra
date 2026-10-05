@@ -6,13 +6,11 @@ import { localDateKey } from "../lib/utils";
 
 /**
  * AddToDayDialog — the ONE add flow for the calendar's scheduling/constraint
- * concepts. Replaces the old Blocker / Time-block / Commitment trio (Hard
- * constraint #2: blockers + timetable blocks are direct CRUD, no coach
- * confirm; commitments are created directly from the calendar here just as
- * the old day planner did).
+ * concepts (Hard constraint #2: blockers + timetable blocks + user daily tasks
+ * are direct CRUD, no coach confirm).
  *
  * Pick what it is and when:
- *   Thing to do  + all day    → a commitment (due date)
+ *   Thing to do  + all day    → a daily plan task (plan_items)
  *   Thing to do  + at a time  → a timetable block (focus)
  *   I'm unavailable           → a blocker over a date range
  */

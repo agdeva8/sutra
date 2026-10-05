@@ -15,10 +15,6 @@ const day = (offset) => {
   return localDateKey(d);
 };
 
-const commitments = [
-  { id: "c1", text: "Easy 5k before work", due: day(0), status: "open", goal_id: "g1" },
-];
-
 export default {
   title: "Components/Overview",
   component: Overview,
@@ -34,7 +30,7 @@ export default {
       },
       "auth/guest": { user: { user_id: null, name: "Guest", is_guest: true } },
       blockers: [],
-      commitments,
+      timetable: { blocks: [] },
     },
   },
   decorators: [
@@ -50,9 +46,8 @@ export default {
         { id: "g1", title: "Run a marathon", status: "active", target_date: "2026-12-01" },
         { id: "g2", title: "Ship the v2 landing page", status: "active" },
       ],
-      commitments,
       milestones: [],
-      over_commitment: { over: false },
+      over_commitment: { level: "clear", active_goals: 2, open_commitments: 0, message: "A steady, focused load.", conflicting: [] },
     },
     onOpenChat: fn(),
     onOpenToday: fn(),
@@ -65,7 +60,7 @@ export const Default = {};
 
 /** No goals yet → the preview becomes the "add your first goal" CTA. */
 export const Empty = {
-  args: { state: { goals: [], commitments: [], milestones: [] } },
+  args: { state: { goals: [], milestones: [] } },
 };
 
 /** `state` is null on first load → the skeleton (aria-busy) renders. */

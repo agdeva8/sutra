@@ -3,7 +3,7 @@ import MotivationCard from "./MotivationCard";
 import { localDateKey } from "../lib/utils";
 
 // The card only shows itself when something is overdue or a goal is active;
-// an overdue commitment is the case it was built for.
+// an overdue MILESTONE is the case it was built for.
 const yesterday = new Date();
 yesterday.setDate(yesterday.getDate() - 1);
 
@@ -12,8 +12,8 @@ const state = {
     { id: "g1", title: "Switch into platform engineering", status: "active" },
     { id: "g2", title: "Run a marathon", status: "active" },
   ],
-  commitments: [
-    { id: "c1", text: "Rewrite the CV summary", due: localDateKey(yesterday), status: "open" },
+  milestones: [
+    { id: "m1", title: "Rewrite the CV summary", target_date: localDateKey(yesterday), status: "open" },
   ],
 };
 

@@ -49,21 +49,15 @@ const state = {
     { id: "m2", goal_id: "g2", goal_title: "Run a marathon", title: "First 10k race", status: "open", target_date: day(6) },
     { id: "m3", goal_id: "g3", goal_title: "Ship the v2 landing page", title: "Copy approved", status: "done", target_date: day(-3) },
   ],
-  commitments: [
-    { id: "c1", goal_id: "g1", text: "Rewrite the CV summary", due: day(-1), status: "open" },
-    { id: "c2", goal_id: "g2", text: "Easy 5k before work", due: day(0), status: "open" },
-    { id: "c3", goal_id: "g3", text: "Send the copy to review", due: day(0), status: "done" },
-    { id: "c4", goal_id: "g2", text: "Order new running socks", due: day(3), status: "open" },
-  ],
   blockers: [
     { id: "b1", title: "Conference week", start_date: day(3), end_date: day(5), note: "" },
   ],
   over_commitment: {
     level: "moderate",
-    active_goals: 2,
-    open_commitments: 3,
-    message: "Three commitments land in the same two days this week.",
-    conflicting: ["Rewrite the CV summary", "Easy 5k before work"],
+    active_goals: 3,
+    open_commitments: 0,
+    message: "3 goals in play. Doable, but only one can lead this week.",
+    conflicting: ["Run a marathon", "Switch into platform engineering"],
   },
 };
 
@@ -91,7 +85,6 @@ const motivation = {
   ],
 };
 const blockers = [{ id: "b1", title: "Conference week", start_date: day(3), end_date: day(5), note: "" }];
-const commitments = state.commitments;
 
 export default {
   title: "Components/TrackingDashboard",
@@ -99,7 +92,7 @@ export default {
   tags: ["autodocs"],
   parameters: {
     layout: "fullscreen",
-    api: { "motivation/recommend": motivation, blockers, commitments },
+    api: { "motivation/recommend": motivation, blockers, timetable: { blocks: [] } },
   },
   args: {
     state,

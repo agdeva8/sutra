@@ -9,7 +9,7 @@ const today = (() => {
 
 /**
  * DayPlanner is the editable daily-timetable panel for a single day
- * (timetable blocks, blockers, commitments, read-only milestones). It
+ * (timetable blocks, blockers, read-only milestones). It
  * fetches `/api/timetable` on mount and renders inside a CenteredDialog;
  * with no `day` it renders nothing.
  */
@@ -27,24 +27,25 @@ export default {
         ],
       },
       blockers: [],
-      commitments: [],
     },
   },
   args: {
     state: {
       goals: [{ id: "g1", title: "Run a marathon", status: "active" }],
-      commitments: [
-        { id: "c1", text: "Easy 5k before work", due: today, status: "open", goal_title: "Run a marathon", note: "" },
-      ],
       blockers: [],
-      milestones: [],
+      milestones: [
+        { id: "m1", title: "Easy 5k before work", target_date: today, status: "open", goal_title: "Run a marathon" },
+      ],
+      plan_items: [
+        { id: "p1", horizon: "daily", title: "Base fitness: easy run", due_date: today, status: "open", goal_id: "g1", note: 'Fulfils "First 10k race" · 1h' },
+      ],
     },
     onChange: fn(),
     onClose: fn(),
   },
 };
 
-/** A day with blocks + a commitment. `day` is built in-render (a Date
+/** A day with blocks + milestones. `day` is built in-render (a Date
  *  can't be passed as a serializable story arg). */
 export const Default = {
   render: (args) => <DayPlanner {...args} day={new Date()} />,

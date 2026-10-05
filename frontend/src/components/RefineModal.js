@@ -27,18 +27,9 @@ const REFINE_CHIPS_BY_ACTION = {
     "Make the milestone smaller",
     "Make it more measurable",
   ],
-  add_commitment: [
-    "Make it smaller",
-    "Push the due date later",
-    "Pull the due date earlier",
-    "Make it more specific",
-    "Different first action",
-  ],
   add_blocker: ["Shorter window", "Move the window earlier", "Move the window later"],
   drop_goal: ["Don't drop — pause it instead", "Wrong goal"],
   pause_goal: ["Don't pause — drop it", "Longer pause window", "Shorter pause window"],
-  complete_commitment: ["Already done — confirm"],
-  update_commitment: ["Push the due date later", "Smaller text", "Drop this commitment"],
   set_goal_dates: ["Push the dates later", "Pull the dates earlier"],
 };
 const DEFAULT_REFINE_CHIPS = ["Try again from scratch", "Different framing", "Smaller scope"];

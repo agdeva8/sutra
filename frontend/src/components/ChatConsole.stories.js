@@ -59,7 +59,7 @@ export const WithMessage = {
       {
         id: "a1",
         role: "assistant",
-        content: "I propose a health goal with three milestones and two weekly commitments.",
+        content: "I propose a health goal with three milestones.",
         proposals: [
           {
             id: "prop_1",

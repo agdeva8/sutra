@@ -168,26 +168,41 @@ export function buildLattice(input: SchedulerInput): SchedulerResult {
     const winEnd = effectiveWindow(span.start_date, span.end_date)
     const phaseMilestones = byPhase.get(span.name) ?? []
 
-    // Monthly — milestones evenly spread across the phase's effective window.
+    // Monthly — milestones spread across the phase's effective window. Each
+    // milestone also gets a WORK WINDOW whose start overlaps the previous
+    // milestone's, so multiple milestones progress in PARALLEL (the founder's
+    // "start prepping system design while applying" case) instead of strictly
+    // one-after-another.
     const k = phaseMilestones.length
+    const windows: Array<{
+      title: string
+      phase: string
+      rationale?: string
+      target: string
+      workStart: string
+    }> = []
     if (k > 0) {
       const winDays = daysBetween(span.start_date, winEnd)
       const seg = winDays / k
       phaseMilestones.forEach((m, j) => {
-        const target = addDaysIso(span.start_date, Math.round((j + 1) * seg))
-        const safeTarget = landsInside(target, span.end_date) ? target : winEnd
+        const targetRaw = addDaysIso(span.start_date, Math.round((j + 1) * seg))
+        const safeTarget = landsInside(targetRaw, span.end_date) ? targetRaw : winEnd
+        // Overlap: milestone j starts at half of its own segment (j=0 → span
+        // start), so it runs alongside the previous milestone's tail.
+        const workStart = addDaysIso(span.start_date, Math.round(j * seg * 0.5))
         scheduledByTitle.set(m.title, {
           title: m.title,
           phase: m.phase,
           rationale: m.rationale,
           target_date: safeTarget,
         })
+        windows.push({ title: m.title, phase: m.phase, rationale: m.rationale, target: safeTarget, workStart })
         items.push({
           horizon: 'monthly',
           phase: m.phase,
           title: m.title,
           note: m.rationale ?? '',
-          start_date: null,
+          start_date: workStart,
           end_date: null,
           due_date: safeTarget,
           weekly_hours: null,
@@ -195,58 +210,66 @@ export function buildLattice(input: SchedulerInput): SchedulerResult {
       })
     }
 
-    // Weekly — checkpoints covering the effective window in 7-day bands.
-    // Each row is anchored to the next upcoming milestone for a readable
-    // label (deterministic: first milestone whose target >= week start).
-    const upcoming = phaseMilestones
-      .map((m) => scheduledByTitle.get(m.title))
-      .filter((m): m is ScheduledMilestone => !!m)
-      .sort((a, b) => (a.target_date < b.target_date ? -1 : 1))
+    // Weekly — one row per ACTIVE milestone window per 7-day band, so a week
+    // can carry parallel workstreams. Each row is labelled with its part
+    // number within the milestone's window ("part 1/2"), so consecutive weeks
+    // read distinctly instead of repeating the milestone name.
+    const weeksInWindow = (startIso: string, endIso: string) =>
+      Math.max(1, Math.floor(daysBetween(startIso, endIso) / 7) + 1)
 
     let w = span.start_date
     while (w < winEnd) {
       const we = addDaysIso(w, 6)
       const bandEnd = we < winEnd ? we : winEnd
-      const nextMilestone = upcoming.find((m) => m.target_date >= w)
-      const label = nextMilestone ? nextMilestone.title : span.name || 'plan'
+      const active = windows.filter((win) => win.workStart <= bandEnd && win.target >= w)
+      const labels: Array<{ title: string; note?: string }> =
+        active.length > 0
+          ? active.map((win) => {
+              const total = weeksInWindow(win.workStart, win.target)
+              const idx = Math.min(
+                total,
+                Math.max(1, Math.floor(daysBetween(win.workStart, w) / 7) + 1),
+              )
+              return { title: `${win.title} — part ${idx}/${total}`, note: win.rationale }
+            })
+          : [{ title: span.name || 'plan', note: span.objective }]
 
-      // Weekly checkpoint.
-      items.push({
-        horizon: 'weekly',
-        phase: span.name,
-        title: `Week ${weekCounter} — ${label}`,
-        note: span.objective,
-        start_date: w,
-        end_date: bandEnd,
-        due_date: null,
-        weekly_hours: input.weekly_hours,
-      })
+      // Weekly checkpoints — one per active workstream this week.
+      for (const label of labels) {
+        items.push({
+          horizon: 'weekly',
+          phase: span.name,
+          title: `Week ${weekCounter} — ${label.title}`,
+          note: label.note ?? span.objective,
+          start_date: w,
+          end_date: bandEnd,
+          due_date: null,
+          weekly_hours: input.weekly_hours,
+        })
+      }
 
       // Per-day tasks — one for EVERY calendar day in the band (weekend
-      // included). Each day's hours are the week's budget split evenly, and
-      // is anchored to the week's milestone so the day view can show what it
-      // fulfils. `weekly_hours != null` distinguishes these plan tasks from
-      // the commitment-derived daily rows below.
+      // included), one row per active workstream. The week's budget is split
+      // across the days AND the parallel workstreams.
       const daysInBand = daysBetween(w, bandEnd) + 1
       const perDay =
-        input.weekly_hours != null && daysInBand > 0
-          ? Math.round((input.weekly_hours / daysInBand) * 10) / 10
+        input.weekly_hours != null && daysInBand > 0 && labels.length > 0
+          ? Math.round((input.weekly_hours / daysInBand / labels.length) * 10) / 10
           : null
-      for (let d = 0; d < daysInBand; d++) {
-        const day = addDaysIso(w, d)
-        // `weekly_hours` stays NULL (the column is an integer weekly budget);
-        // the per-day hours live in the note. Plan daily tasks are the rows
-        // whose note starts with "Fulfils" — commitments are the others.
-        items.push({
-          horizon: 'daily',
-          phase: span.name,
-          title: label,
-          note: perDay != null ? `Fulfils “${label}” · ${perDay}h` : `Fulfils “${label}”`,
-          start_date: day,
-          end_date: day,
-          due_date: day,
-          weekly_hours: null,
-        })
+      for (const label of labels) {
+        for (let d = 0; d < daysInBand; d++) {
+          const day = addDaysIso(w, d)
+          items.push({
+            horizon: 'daily',
+            phase: span.name,
+            title: label.title,
+            note: perDay != null ? `Fulfils “${label.title}” · ${perDay}h` : `Fulfils “${label.title}”`,
+            start_date: day,
+            end_date: day,
+            due_date: day,
+            weekly_hours: null,
+          })
+        }
       }
 
       w = addDaysIso(bandEnd, 1)

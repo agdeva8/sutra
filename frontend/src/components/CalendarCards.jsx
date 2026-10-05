@@ -3,14 +3,13 @@ import React, { Fragment } from "react";
 /**
  * Calendar card grid — Option C presentation.
  *
- * Each item is a 3-line breadcrumb card:
- *   line 1  the task / commitment / milestone (○ / ⚑ / ◆)
- *   line 2  the commitment the task advances
- *   line 3  "<goal> › fulfils <milestone> · <hours>"
+ * Each item is a breadcrumb card:
+ *   line 1  the task / milestone (○ / ◆)
+ *   line 2  "<goal> › fulfils <milestone> · <hours>"
  * A left stripe carries the goal colour.
  *
- * `cards` are pre-enriched by the caller (goal title/colour, commitment,
- * fulfils, hours) so this stays presentational.
+ * `cards` are pre-enriched by the caller (goal title/colour, fulfils, hours)
+ * so this stays presentational.
  */
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];

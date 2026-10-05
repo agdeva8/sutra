@@ -42,8 +42,8 @@ export default {
   args: {
     state: {
       goals: [{ id: "g1", title: "Run a marathon", status: "active" }],
-      commitments: [
-        { id: "c1", text: "Easy 5k before work", due: "2026-01-01", status: "open", goal_id: "g1" },
+      milestones: [
+        { id: "m1", title: "Easy 5k before work", target_date: "2026-01-01", status: "open", goal_id: "g1" },
       ],
     },
   },
@@ -53,5 +53,5 @@ export const Default = {};
 
 /** No goals yet → the card hides, the screen shows its empty-state copy. */
 export const Empty = {
-  args: { state: { goals: [], commitments: [] } },
+  args: { state: { goals: [], milestones: [] } },
 };

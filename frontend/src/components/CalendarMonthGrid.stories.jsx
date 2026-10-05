@@ -18,7 +18,7 @@ const card = (id, kind, title, start, end, color, extra = {}) => ({
   id,
   item: { id, kind, title, start: day(start), end: day(end) },
   date: day(start),
-  glyph: kind === "commitment" ? "⚑" : kind === "milestone" ? "◆" : kind === "blocker" ? "▲" : "○",
+  glyph: kind === "milestone" ? "◆" : kind === "blocker" ? "▲" : "○",
   title,
   color,
   ...extra,
@@ -34,9 +34,8 @@ const cards = [
   card("b2", "blocker", "Launch crunch", 12, 25, RED),
   card("t1", "task", "Write the design doc", 5, 8, BLUE, { fulfils: "MVP shipped", hours: "2d" }),
   // single-day — cards
-  card("c1", "commitment", "Easy 5k before work", 1, 1, BLUE, { goalTitle: "Run a marathon" }),
   card("m1", "milestone", "First 10k race", 6, 6, AMBER, { goalTitle: "Run a marathon" }),
-  card("t2", "task", "Draft target-role list", 2, 2, BLUE, { commitment: "Block 15h/week in calendar", goalTitle: "Switch into platform engineering", fulfils: "Target list written", hours: "1.5h" }),
+  card("t2", "task", "Draft target-role list", 2, 2, BLUE, { goalTitle: "Switch into platform engineering", fulfils: "Target list written", hours: "1.5h" }),
 ];
 
 export default {

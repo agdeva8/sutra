@@ -11,9 +11,9 @@ export function cn(...inputs) {
  * Do NOT use `new Date().toISOString().slice(0, 10)` for this. `toISOString`
  * converts to UTC, so for any timezone ahead of UTC it returns *yesterday*
  * once the local clock passes midnight — in IST (+05:30) the whole of 00:00
- *–05:29 local resolves to the previous UTC day. That made "today's
- * commitments" hide the items actually due today and show yesterday's as
- * overdue. `setHours(0,0,0,0)` does not help either: it pins local midnight,
+ *–05:29 local resolves to the previous UTC day. That made "today's tasks"
+ * hide the items actually due today and show yesterday's as overdue.
+ * `setHours(0,0,0,0)` does not help either: it pins local midnight,
  * which `toISOString` then shifts backwards again.
  *
  * Date-only values from the API are stored as plain `YYYY-MM-DD` strings

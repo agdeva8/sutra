@@ -228,7 +228,7 @@ function Message({ m, settled = false, onConfirm, onReject, onRefine, onOpenRefi
             data-testid="chat-response-pending"
             className="max-w-[92%] text-xs leading-relaxed text-[var(--text-muted)]"
           >
-            Checking your goals, commitments, and attached sources…
+            Checking your goals, milestones, and attached sources…
             <span className="gc-caret text-[var(--accent)]">▋</span>
           </div>
         )

@@ -147,3 +147,38 @@ describe('buildLattice (deterministic scheduler)', () => {
     expect(a.milestones).toEqual(b.milestones)
   })
 })
+
+describe('buildLattice — distinct parts + parallel workstreams', () => {
+  const twoMilestones = () =>
+    input({
+      phases: [{ name: 'Foundations', objective: 'Ship the foundation' }],
+      milestones: [
+        { title: 'Target list of 20 companies', phase: 'Foundations', rationale: 'a' },
+        { title: 'System design: 6 core topics', phase: 'Foundations', rationale: 'b' },
+      ],
+      start_date: '2026-01-01',
+      target_date: '2026-03-01',
+      weekly_hours: 20,
+    })
+
+  it('labels weeks with distinct parts of a milestone, not its name alone', () => {
+    const r = buildLattice(twoMilestones())
+    const weeklies = r.items.filter((i) => i.horizon === 'weekly')
+    expect(weeklies.length).toBeGreaterThan(0)
+    // Every weekly label carries a part index.
+    for (const wk of weeklies) expect(wk.title).toMatch(/part \d+\/\d+/)
+    // Consecutive weeks for the SAME milestone are distinct strings.
+    const partsOf = (name: string) =>
+      weeklies.filter((w) => w.title.includes(name)).map((w) => w.title)
+    const a = partsOf('Target list of 20 companies')
+    expect(new Set(a).size).toBe(a.length)
+  })
+
+  it('runs milestones in parallel — some week carries two workstreams', () => {
+    const r = buildLattice(twoMilestones())
+    const weeklies = r.items.filter((i) => i.horizon === 'weekly')
+    const perWeek = new Map<string, number>()
+    for (const w of weeklies) perWeek.set(w.start_date!, (perWeek.get(w.start_date!) ?? 0) + 1)
+    expect([...perWeek.values()].some((n) => n >= 2)).toBe(true)
+  })
+})

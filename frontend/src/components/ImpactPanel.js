@@ -3,7 +3,7 @@ import { AlertTriangle, GitBranch, Calendar, ArrowRight } from "lucide-react";
 /**
  * ImpactPanel — renders the structured `[[IMPACT]]` block the server
  * emits alongside assistant replies (spec §10.5): over-commitment load
- * shift, conflicts with existing commitments, buffer warnings, and the
+ * shift, conflicts with existing plan items, buffer warnings, and the
  * coach's recommendation.
  *
  * Attached to an assistant message as `message.impact`; renders null

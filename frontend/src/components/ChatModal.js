@@ -491,8 +491,6 @@ export default function ChatModal({
               pause_goal: "Paused",
               add_milestone: "Added milestone",
               add_block: "Scheduled",
-              add_commitment: "Added commitment",
-              complete_commitment: "Completed",
             }[proposal?.action] || "Confirmed";
           const content = title ? `${verb} "${title}"` : result || "Change applied";
           const goalId =

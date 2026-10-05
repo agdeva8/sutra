@@ -28,9 +28,6 @@ const state = {
     { id: "m1", goal_id: "g1", title: "Target list of 15 roles and master resume finalized", target_date: iso(6) },
     { id: "m2", goal_id: "g1", title: "3 STAR stories and 1 system design walkthrough recorded", target_date: iso(20) },
   ],
-  commitments: [
-    { id: "c1", goal_id: "g1", text: "Build the 15-role target list and master resume", due: iso(5), status: "open" },
-  ],
 };
 
 const task = {
@@ -48,15 +45,6 @@ const milestoneItem = {
   id: "m1",
   title: "3 STAR stories and 1 system design walkthrough recorded",
   target_date: iso(20),
-  goal_id: "g1",
-  status: "open",
-};
-
-const commitmentItem = {
-  kind: "commitment",
-  id: "c1",
-  title: "Build the 15-role target list and master resume",
-  due: iso(5),
   goal_id: "g1",
   status: "open",
 };
@@ -85,5 +73,4 @@ const Frame = (props) => (
 
 export const Task = () => <Frame item={task} />;
 export const Milestone = () => <Frame item={milestoneItem} />;
-export const Commitment = () => <Frame item={commitmentItem} />;
 export const Blocker = () => <Frame item={blockerItem} />;

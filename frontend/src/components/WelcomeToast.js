@@ -13,7 +13,7 @@ import { localDateKey } from "../lib/utils";
  * stays short and dismissible so it's never annoying.
  *
  * Body content is derived from the server state at mount time:
- *   - "Good morning, {name}. You have N open commitments today."
+ *   - "Good morning, {name}. You have N milestones due today."
  *   - "Welcome back. Last action 3 days ago was…"
  *   - "Your goals for this week:" + chip list
  *

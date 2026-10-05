@@ -49,10 +49,9 @@ const state = {
     { id: "m2", goal_id: "g2", goal_title: "Switch into platform engineering", title: "Three informational calls", status: "open", target_date: day(12) },
     { id: "m3", goal_id: "g3", goal_title: "Ship the v2 landing page", title: "Copy approved", status: "done", target_date: day(-3) },
   ],
-  commitments: [
-    { id: "c1", text: "Easy 5k before work", due: day(1), status: "open", goal_title: "Run a marathon" },
-    { id: "c2", text: "Rewrite the CV summary", due: day(-1), status: "open", goal_title: "Switch into platform engineering" },
-    { id: "c3", text: "Send the copy to review", due: day(-3), status: "done", goal_title: "Ship the v2 landing page" },
+  plan_items: [
+    { id: "p1", goal_id: "g1", horizon: "daily", title: "Easy 5k before work", due_date: day(1), status: "open", note: 'Fulfils "First 10k race" · 1h' },
+    { id: "p2", goal_id: "g2", horizon: "daily", title: "Rewrite the CV summary", due_date: day(0), status: "open", note: 'Fulfils "Three informational calls" · 1.5h' },
   ],
   blockers: [
     { id: "b1", title: "Conference week", start_date: day(3), end_date: day(5) },
