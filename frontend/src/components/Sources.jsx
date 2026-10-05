@@ -64,7 +64,7 @@ export default function Sources({ state, onChange }) {
     }
   };
 
-  const goals = state?.goals || [];
+  const goals = (state?.goals || []).filter((g) => g.status !== "dropped");
   const goalTitle = (goalId) => {
     if (!goalId) return null;
     return goals.find((g) => g.id === goalId)?.title || null;

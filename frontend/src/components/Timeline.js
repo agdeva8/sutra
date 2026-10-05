@@ -1846,7 +1846,7 @@ function StripView({ state, today, openChat, onSelectItem, onPrefill }) {
       const k = bucketFromDate(date, today);
       out[k].push({ kind, item, date });
     };
-    (state?.goals || []).forEach((g) => {
+    (state?.goals || []).filter((g) => g.status !== "dropped").forEach((g) => {
       const d = parse(g.target_date) || parse(g.start_date) || today;
       push("goal", g, d);
     });
@@ -1867,7 +1867,7 @@ function StripView({ state, today, openChat, onSelectItem, onPrefill }) {
   }, [state, today]);
 
   const totals = useMemo(() => {
-    const goals = state?.goals?.length || 0;
+    const goals = (state?.goals || []).filter((g) => g.status !== "dropped").length;
     const openCommitments = (state?.commitments || []).filter(
       (c) => c.status !== "done",
     ).length;
