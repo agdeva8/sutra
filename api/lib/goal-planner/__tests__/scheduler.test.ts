@@ -165,8 +165,12 @@ describe('buildLattice — distinct parts + parallel workstreams', () => {
     const r = buildLattice(twoMilestones())
     const weeklies = r.items.filter((i) => i.horizon === 'weekly')
     expect(weeklies.length).toBeGreaterThan(0)
-    // Every weekly label carries a part index.
-    for (const wk of weeklies) expect(wk.title).toMatch(/part \d+\/\d+/)
+    // A part index is only allowed when the window spans >1 week; a single-week
+    // window must NOT read "— part 1/1".
+    for (const wk of weeklies) {
+      const m = wk.title.match(/part (\d+)\/(\d+)/)
+      if (m) expect(Number(m[2])).toBeGreaterThan(1)
+    }
     // Consecutive weeks for the SAME milestone are distinct strings.
     const partsOf = (name: string) =>
       weeklies.filter((w) => w.title.includes(name)).map((w) => w.title)

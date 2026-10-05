@@ -230,7 +230,12 @@ export function buildLattice(input: SchedulerInput): SchedulerResult {
                 total,
                 Math.max(1, Math.floor(daysBetween(win.workStart, w) / 7) + 1),
               )
-              return { title: `${win.title} — part ${idx}/${total}`, note: win.rationale }
+              // Only number the parts when the milestone actually spans more
+              // than one week — "part 1/1" is noise.
+              return {
+                title: total > 1 ? `${win.title} — part ${idx}/${total}` : win.title,
+                note: win.rationale,
+              }
             })
           : [{ title: span.name || 'plan', note: span.objective }]
 

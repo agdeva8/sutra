@@ -43,7 +43,7 @@ import CenteredDialog from "./CenteredDialog";
 import { showReplanNudge } from "./ReplanToast";
 import { CardsGrid, WeekGrid, MonthGrid } from "./CalendarCards";
 import CalendarMonthGrid from "./CalendarMonthGrid";
-import CalendarMonthNested, { GoalFilter } from "./CalendarMonthNested";
+import CalendarNestedView, { GoalFilter } from "./CalendarNestedView";
 import { HourGrid } from "./CalendarHourGrid";
 import { api } from "../lib/api";
 import { toast } from "sonner";
@@ -2493,25 +2493,57 @@ function CalendarView({
     return <CalendarEmptyState onAsk={openChat || onPrefill} />;
   }
 
-  // Day span → hour grid when the user has a timetable, else the default day.
-  if (span === "day" && blocks.length > 0) {
-    return (
-      <HourGrid
-        days={[startOfDay(anchor)]}
-        blocks={blocks}
-        cards={cards || []}
-        onSelectItem={onSelectItem}
-        onSelectSlot={onSelectSlot}
+  // Every zoom shares one nested calendar: goal box ▸ milestone boxes ▸ weekly
+  // task boxes. The column unit is the smallest unit of the span — day → day
+  // columns, 3 months → week columns, year → month columns.
+  const colorByGoal = new Map((goals || []).map((g, i) => [g.id, GOAL_PALETTE[i % GOAL_PALETTE.length]]));
+  const goalItems = allItems
+    .filter((it) => it.kind === "goal")
+    .map((g) => ({ ...g, color: colorByGoal.get(g.id) || GOAL_PALETTE[0] }));
+  const allGoalIds = goalItems.map((g) => g.id);
+  const selectedGoals = new Set(
+    activeGoalIds ? allGoalIds.filter((id) => activeGoalIds.has(id)) : allGoalIds,
+  );
+  const toggleGoal = (id) => {
+    const next = new Set(selectedGoals);
+    if (next.has(id)) {
+      if (next.size === 1) return setActiveGoalIds(next); // keep at least one visible
+      next.delete(id);
+    } else {
+      next.add(id);
+    }
+    setActiveGoalIds(next);
+  };
+  const renderNested = (rangeStart, rangeEnd, u) => (
+    <div className="space-y-2">
+      <GoalFilter
+        goals={goalItems}
+        selected={selectedGoals}
+        onToggle={toggleGoal}
+        onAll={() => setActiveGoalIds(new Set(allGoalIds))}
       />
-    );
-  }
+      <CalendarNestedView
+        start={rangeStart}
+        end={rangeEnd}
+        unit={u}
+        goals={goalItems}
+        milestones={milestones}
+        planItems={planItems}
+        blockers={blockers}
+        selectedGoalIds={selectedGoals}
+        onSelectItem={onSelectItem}
+        onSelectDay={onSelectDay}
+      />
+    </div>
+  );
 
-  // Week span → hour grid when the timetable is planned, else 7 day columns.
-  if (span === "week") {
+  // Day span → the Google-Calendar hour grid when a timetable is planned, else
+  // one nested row per goal for that single day.
+  if (span === "day") {
     if (blocks.length > 0) {
       return (
         <HourGrid
-          days={dayList}
+          days={[startOfDay(anchor)]}
           blocks={blocks}
           cards={cards || []}
           onSelectItem={onSelectItem}
@@ -2519,25 +2551,18 @@ function CalendarView({
         />
       );
     }
-    return (
-      <CardsGrid
-        days={dayList}
-        cards={cards || []}
-        onSelectDay={onSelectDay}
-        onSelectItem={onSelectItem}
-        minHeight={200}
-      />
-    );
+    return renderNested(startOfDay(anchor), startOfDay(anchor), "day");
   }
 
-  // Month span — goal box ▸ milestone boxes ▸ weekly task boxes, with a
-  // multi-select goal filter. Falls back to the flat month grid when there are
-  // no goals yet (milestones/blockers still need somewhere to show).
+  // Week span → 7 day columns; a task sits on the days it spans.
+  if (span === "week") {
+    const ws = startOfWeek(anchor);
+    return renderNested(ws, addDays(ws, 6), "day");
+  }
+
+  // Month span → one column per day. Falls back to the flat month grid when
+  // there are no goals yet (milestones/blockers still need somewhere to show).
   if (span === "month") {
-    const colorByGoal = new Map((goals || []).map((g, i) => [g.id, GOAL_PALETTE[i % GOAL_PALETTE.length]]));
-    const goalItems = allItems
-      .filter((it) => it.kind === "goal")
-      .map((g) => ({ ...g, color: colorByGoal.get(g.id) || GOAL_PALETTE[0] }));
     if (goalItems.length === 0) {
       return (
         <CalendarMonthGrid
@@ -2549,57 +2574,22 @@ function CalendarView({
         />
       );
     }
-    const allIds = goalItems.map((g) => g.id);
-    const selected = new Set(activeGoalIds ? allIds.filter((id) => activeGoalIds.has(id)) : allIds);
-    const toggleGoal = (id) => {
-      const next = new Set(selected);
-      if (next.has(id)) {
-        if (next.size === 1) return setActiveGoalIds(next); // keep at least one visible
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      setActiveGoalIds(next);
-    };
-    return (
-      <div className="space-y-2">
-        <GoalFilter
-          goals={goalItems}
-          selected={selected}
-          onToggle={toggleGoal}
-          onAll={() => setActiveGoalIds(new Set(allIds))}
-        />
-        <CalendarMonthNested
-          anchor={anchor}
-          goals={goalItems}
-          milestones={milestones}
-          planItems={planItems}
-          blockers={blockers}
-          selectedGoalIds={selected}
-          onSelectItem={onSelectItem}
-          onSelectDay={onSelectDay}
-        />
-      </div>
-    );
+    return renderNested(startOfMonth(anchor), new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0), "day");
   }
 
-  // 3-month span → month rows × week columns (Week 1 … N), limited to the
-  // weeks that actually fall inside this 90-day window. Without the filter
-  // every quarter/year showed the same full set of weekly targets.
+  // 3-month span → one column per week.
   if (span === "quarter") {
     const qStart = startOfDay(anchor);
-    const qEnd = addDays(qStart, days);
-    const weeksInWindow = planTargets.weekly.filter((p) => {
-      const s = parse(p.item?.start_date) || p.date;
-      if (!s) return false;
-      const e = parse(p.item?.end_date) || s;
-      return e >= qStart && s < qEnd;
-    });
-    return <WeekGrid items={weeksInWindow} onSelectItem={onSelectItem} start={qStart} end={qEnd} />;
+    return renderNested(qStart, addDays(qStart, 89), "week");
   }
-  // Year span → a Jan … Dec grid; each month cell lists its milestones.
+
+  // Year span → one column per month.
   if (span === "year") {
-    return <MonthGrid year={anchor.getFullYear()} cards={planTargets.monthly} onSelectItem={onSelectItem} />;
+    return renderNested(
+      new Date(anchor.getFullYear(), 0, 1),
+      new Date(anchor.getFullYear(), 11, 31),
+      "month",
+    );
   }
 
   /* === Year view (Iteration 7 — Ask 3) ===
@@ -3458,24 +3448,14 @@ export function TimelineItemDetailsDialog({ item, state, onClose, onEdit, onRemo
         )}
 
         {/* goal context — labelled so the raw paragraph isn't a mystery */}
-        {(goal?.why || goal?.next_action) && (
+        {goal?.why && (
           <section className="space-y-3">
-            {goal?.why && (
-              <div>
-                <h3 className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]">
-                  Why this matters
-                </h3>
-                <p className="mt-1 text-sm leading-relaxed text-[var(--text-secondary)]">{goal.why}</p>
-              </div>
-            )}
-            {goal?.next_action && (
-              <div className="rounded-xl bg-[var(--bg-secondary)] p-3.5">
-                <h3 className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]">
-                  Next action
-                </h3>
-                <p className="mt-1 text-sm leading-relaxed text-[var(--text-primary)]">{goal.next_action}</p>
-              </div>
-            )}
+            <div>
+              <h3 className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]">
+                Why this matters
+              </h3>
+              <p className="mt-1 text-sm leading-relaxed text-[var(--text-secondary)]">{goal.why}</p>
+            </div>
           </section>
         )}
 
