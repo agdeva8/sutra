@@ -138,6 +138,9 @@ export default function CalendarMonthNested({
     // Only render what overlaps the visible month; clip partial overlaps.
     // Never clamp an out-of-month item onto the boundary — that piles Nov/Dec
     // milestones and weekly items onto the last day of the month.
+    // NOTE: max/min must stay Date-typed (Math.max on Dates returns a number).
+    const maxD = (a, b) => (a > b ? a : b);
+    const minD = (a, b) => (a < b ? a : b);
     const inMonth = (s, e) => {
       if (!s || !e) return null;
       const a = s < monthStart ? monthStart : s;
@@ -176,7 +179,7 @@ export default function CalendarMonthNested({
             })
             .map((p) => {
               const r = itemRange(p);
-              const tspan = inMonth(Math.max(r.start, start), Math.min(r.end, end));
+              const tspan = inMonth(maxD(r.start, start), minD(r.end, end));
               if (!tspan) return null;
               used.add(p.id);
               return {
@@ -199,8 +202,8 @@ export default function CalendarMonthNested({
         .map((p) => {
           const r = itemRange(p);
           const tspan = inMonth(
-            Math.max(r.start || gStart, gStart),
-            Math.min(r.end || gEnd, gEnd),
+            maxD(r.start || gStart, gStart),
+            minD(r.end || gEnd, gEnd),
           );
           if (!tspan) return null;
           return {
