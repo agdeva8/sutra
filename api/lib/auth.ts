@@ -254,8 +254,19 @@ async function migrateGuestRowsToUser(userId: string): Promise<void> {
   // Reassign every child row that belonged to the guest.
   const { db } = await import('@/lib/db')
   const { sql } = await import('drizzle-orm')
+  // Skip any table a later migration dropped (0013 removed `commitments`).
+  // A stale entry here used to throw `relation "commitments" does not exist`
+  // and 500 the whole login, so resolve the list against the live schema.
   const tables = ['goals', 'commitments', 'milestones', 'blockers', 'messages', 'audit_log', 'sources', 'state_overrides']
+  const tablesResult = await db.execute(
+    sql`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`,
+  )
+  // Result shape differs by driver: pg Pool gives { rows, ... }, neon gives direct array.
+  const rawTables = tablesResult as unknown as { rows?: Array<{ table_name: string }> } | Array<{ table_name: string }>
+  const tableRows = Array.isArray(rawTables) ? rawTables : (rawTables.rows ?? [])
+  const existingTables = new Set(tableRows.map((r) => r.table_name))
   for (const t of tables) {
+    if (!existingTables.has(t)) continue
     await db.execute(
       sql.raw(
         `UPDATE ${t} SET user_id = '${userId.replace(/'/g, "''")}' WHERE user_id = '${guestUserId.replace(/'/g, "''")}'`,
