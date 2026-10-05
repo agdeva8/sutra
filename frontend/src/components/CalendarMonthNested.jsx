@@ -135,11 +135,22 @@ export default function CalendarMonthNested({
 
     const weekly = (planItems || []).filter((p) => p && p.horizon === "weekly");
 
+    // Only render what overlaps the visible month; clip partial overlaps.
+    // Never clamp an out-of-month item onto the boundary — that piles Nov/Dec
+    // milestones and weekly items onto the last day of the month.
+    const inMonth = (s, e) => {
+      if (!s || !e) return null;
+      const a = s < monthStart ? monthStart : s;
+      const b = e > monthEnd ? monthEnd : e;
+      return b < a ? null : { start: a, end: b };
+    };
+
     const rows = [];
     for (const g of goals) {
       if (selectedGoalIds && !selectedGoalIds.has(g.id)) continue;
-      const gStart = clamp(parseDate(g.start) || monthStart, monthStart, monthEnd);
-      const gEnd = clamp(parseDate(g.end) || monthEnd, monthStart, monthEnd);
+      const gSpan = inMonth(parseDate(g.start) || monthStart, parseDate(g.end) || monthEnd);
+      if (!gSpan) continue;
+      const { start: gStart, end: gEnd } = gSpan;
       const gMilestones = (milestones || [])
         .filter((m) => m.goalId === g.id && m.date)
         .sort((a, b) => a.date - b.date);
@@ -147,57 +158,61 @@ export default function CalendarMonthNested({
       const goalTasks = weekly.filter((p) => p.goal_id === g.id);
       const used = new Set();
 
-      const ms = gMilestones.map((m, i) => {
-        const prevTarget = i === 0 ? gStart : gMilestones[i - 1].date;
-        const start = i === 0 ? gStart : clamp(addDays(prevTarget, 1), monthStart, monthEnd);
-        const end = clamp(m.date, monthStart, monthEnd);
-        // Attach weekly items by phase, else by falling inside the window.
-        const tasks = goalTasks
-          .filter((p) => {
-            if (used.has(p.id)) return false;
-            const r = itemRange(p);
-            if (!r.start) return false;
-            if (m.phase && p.phase) return p.phase === m.phase;
-            return r.start >= start && r.start <= end;
-          })
-          .map((p) => {
-            used.add(p.id);
-            const r = itemRange(p);
-            return {
-              id: p.id,
-              item: { ...p, kind: "plan", title: p.title, milestone: m.title, date: r.start },
-              title: p.title,
-              start: clamp(r.start, start, end),
-              end: clamp(r.end, start, end),
-              hours: p.weekly_hours ? `${p.weekly_hours}h/wk` : "",
-            };
-          })
-          .filter((t) => t.end >= t.start);
-        return {
-          id: m.id,
-          item: { ...m, kind: "milestone" },
-          title: m.title,
-          start: clamp(start, monthStart, monthEnd),
-          end,
-          tasks,
-        };
-      });
+      const ms = gMilestones
+        .map((m, i) => {
+          const prevTarget = i === 0 ? gStart : gMilestones[i - 1].date;
+          const mStartRaw = i === 0 ? gStart : addDays(prevTarget, 1);
+          const span = inMonth(mStartRaw < gStart ? gStart : mStartRaw, m.date);
+          if (!span) return null; // milestone entirely outside this month
+          const { start, end } = span;
+          // Attach weekly items by phase, else by overlapping the window.
+          const tasks = goalTasks
+            .filter((p) => {
+              if (used.has(p.id)) return false;
+              const r = itemRange(p);
+              if (!r.start || !r.end) return false;
+              if (m.phase && p.phase) return p.phase === m.phase;
+              return r.end >= start && r.start <= end;
+            })
+            .map((p) => {
+              const r = itemRange(p);
+              const tspan = inMonth(Math.max(r.start, start), Math.min(r.end, end));
+              if (!tspan) return null;
+              used.add(p.id);
+              return {
+                id: p.id,
+                item: { ...p, kind: "plan", title: p.title, milestone: m.title, date: r.start },
+                title: p.title,
+                start: tspan.start,
+                end: tspan.end,
+                hours: p.weekly_hours ? `${p.weekly_hours}h/wk` : "",
+              };
+            })
+            .filter(Boolean);
+          return { id: m.id, item: { ...m, kind: "milestone" }, title: m.title, start, end, tasks };
+        })
+        .filter(Boolean);
 
       // Weekly items that matched no milestone hang directly under the goal.
       const orphans = goalTasks
         .filter((p) => !used.has(p.id))
         .map((p) => {
           const r = itemRange(p);
+          const tspan = inMonth(
+            Math.max(r.start || gStart, gStart),
+            Math.min(r.end || gEnd, gEnd),
+          );
+          if (!tspan) return null;
           return {
             id: p.id,
             item: { ...p, kind: "plan", title: p.title, date: r.start },
             title: p.title,
-            start: clamp(r.start || gStart, gStart, gEnd),
-            end: clamp(r.end || gEnd, gStart, gEnd),
+            start: tspan.start,
+            end: tspan.end,
             hours: p.weekly_hours ? `${p.weekly_hours}h/wk` : "",
           };
         })
-        .filter((t) => t.start && t.end && t.end >= t.start);
+        .filter(Boolean);
 
       rows.push({
         id: g.id,
