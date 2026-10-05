@@ -144,4 +144,22 @@ describe('buildOpsGraph', () => {
     ].join(' ')
     expect(extractClarifyingQuestions(questions)).toHaveLength(5)
   })
+
+  it('carries ask options through so the Ask card can render choice chips', async () => {
+    // Turn 1 (generate): prose only, no questions → routes to the Ask node.
+    scripts.push(['I need a couple of details first.'])
+    // Turn 2 (ask): the model returns a choice question as an `ask` action.
+    scripts.push([
+      'Before I plan:\n\n[[TOOLS]]\n[{"action":"ask","question":"Which market?","options":["Same city","Remote-only","Open to relocating"],"multi":false}]\n[[/TOOLS]]',
+    ])
+    const { result } = await run(base({ autoAnswer: false, clarify: true, message: 'I want to switch jobs.' }))
+    expect(result.proposals).toEqual([])
+    expect(result.clarifyingQuestions).toHaveLength(1)
+    const q = result.clarifyingQuestions[0]
+    expect(typeof q).toBe('object')
+    expect(q).toMatchObject({
+      question: 'Which market?',
+      options: ['Same city', 'Remote-only', 'Open to relocating'],
+    })
+  })
 })
