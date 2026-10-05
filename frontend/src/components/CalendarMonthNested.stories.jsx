@@ -35,6 +35,10 @@ const planItems = GOAL_DEFS.flatMap((g) => [
   { id: `${g.id}-w4`, goal_id: g.id, horizon: "weekly", phase: g.phases[1], title: "Week 4 focus", start_date: iso(at(22)), end_date: iso(at(Math.min(daysInMonth, 28))), weekly_hours: 3 },
 ]);
 
+const blockers = [
+  { id: "b1", title: "Conference week", start: at(8), end: at(10), note: "Out of office — no deep work." },
+];
+
 export default { title: "Timeline/Calendar month nested (real)", parameters: { layout: "fullscreen" } };
 
 export const Default = () => {
@@ -56,6 +60,7 @@ export const Default = () => {
         goals={goals}
         milestones={milestones}
         planItems={planItems}
+        blockers={blockers}
         selectedGoalIds={selected}
         onSelectItem={() => {}}
         onSelectDay={() => {}}

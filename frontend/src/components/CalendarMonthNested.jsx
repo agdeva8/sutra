@@ -121,6 +121,7 @@ export default function CalendarMonthNested({
   goals = [],
   milestones = [],
   planItems = [],
+  blockers = [],
   selectedGoalIds,
   onSelectItem,
   onSelectDay,
@@ -164,7 +165,7 @@ export default function CalendarMonthNested({
             const r = itemRange(p);
             return {
               id: p.id,
-              item: { ...p, kind: "plan", title: p.title },
+              item: { ...p, kind: "plan", title: p.title, milestone: m.title, date: r.start },
               title: p.title,
               start: clamp(r.start, start, end),
               end: clamp(r.end, start, end),
@@ -189,7 +190,7 @@ export default function CalendarMonthNested({
           const r = itemRange(p);
           return {
             id: p.id,
-            item: { ...p, kind: "plan", title: p.title },
+            item: { ...p, kind: "plan", title: p.title, date: r.start },
             title: p.title,
             start: clamp(r.start || gStart, gStart, gEnd),
             end: clamp(r.end || gEnd, gStart, gEnd),
@@ -210,10 +211,27 @@ export default function CalendarMonthNested({
       });
     }
 
-    return { monthStart, monthEnd, days, todayIso, rows };
-  }, [anchor, goals, milestones, planItems, selectedGoalIds]);
+    // Blockers are constraints, not tasks — they span days and always show.
+    const blockerRows = (blockers || [])
+      .map((b) => {
+        const s = parseDate(b.start);
+        const e = parseDate(b.end) || s;
+        if (!s || !e || e < monthStart || s > monthEnd) return null;
+        return {
+          id: b.id,
+          item: { ...b, kind: "blocker" },
+          title: b.title,
+          start: clamp(s, monthStart, monthEnd),
+          end: clamp(e, monthStart, monthEnd),
+        };
+      })
+      .filter(Boolean);
 
-  const { days, todayIso, rows } = model;
+    return { monthStart, monthEnd, days, todayIso, rows, blockerRows };
+  }, [anchor, goals, milestones, planItems, blockers, selectedGoalIds]);
+
+  const { days, todayIso, rows, blockerRows } = model;
+  const allRows = [...blockerRows, ...rows];
   const n = days.length;
   const dayNum = (d) => d.getDate();
   const colStart = (d) => clamp(dayNum(d), 1, n);
@@ -268,20 +286,20 @@ export default function CalendarMonthNested({
           className="relative grid"
           style={{
             gridTemplateColumns: `repeat(${n}, minmax(0, 1fr))`,
-            gridTemplateRows: `repeat(${Math.max(rows.length, 1)}, auto)`,
+            gridTemplateRows: `repeat(${Math.max(allRows.length, 1)}, auto)`,
           }}
         >
-          {rows.length === 0 ? (
+          {allRows.length === 0 ? (
             <div className="col-span-full px-3 py-6 text-center text-[11px] text-[var(--text-muted)]">
               Select at least one goal.
             </div>
           ) : (
             <>
               {/* background day cells (click to add) */}
-              {rows.map((g, gi) =>
+              {allRows.map((r, gi) =>
                 days.map((d, ci) => (
                   <button
-                    key={`bg-${g.id}-${ci}`}
+                    key={`bg-${r.id}-${ci}`}
                     type="button"
                     onClick={() => onSelectDay?.(d)}
                     aria-label={`Add on ${d.toDateString()}`}
@@ -309,12 +327,35 @@ export default function CalendarMonthNested({
                 ))}
               </div>
 
+              {/* blockers — constraints spanning days, above the goals */}
+              {blockerRows.map((b, bi) => (
+                <div
+                  key={b.id}
+                  style={{ gridColumn: `${colStart(b.start)} / ${colEnd(b.end) + 1}`, gridRow: bi + 1 }}
+                  className="p-1"
+                >
+                  <button
+                    type="button"
+                    onClick={() => onSelectItem?.(b.item)}
+                    style={{
+                      background: "color-mix(in srgb, var(--danger) 14%, var(--bg-primary))",
+                      border: "1px solid color-mix(in srgb, var(--danger) 55%, transparent)",
+                    }}
+                    className="flex w-full items-center gap-1 rounded px-1.5 py-0.5 text-left hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--accent)]"
+                  >
+                    <span aria-hidden="true" className="relative z-30 shrink-0 text-[9px] text-[var(--danger)]">▲</span>
+                    <span className="relative z-30 min-w-0 truncate text-[10px] font-semibold text-[var(--text-primary)]">{b.title}</span>
+                    <span className="relative z-30 ml-auto shrink-0 text-[8px] uppercase tracking-wide text-[var(--danger)]">blocker</span>
+                  </button>
+                </div>
+              ))}
+
               {rows.map((g, gi) => {
                 const gSpan = colEnd(g.end) - colStart(g.start) + 1;
                 return (
                   <div
                     key={g.id}
-                    style={{ gridColumn: `${colStart(g.start)} / ${colEnd(g.end) + 1}`, gridRow: gi + 1 }}
+                    style={{ gridColumn: `${colStart(g.start)} / ${colEnd(g.end) + 1}`, gridRow: blockerRows.length + gi + 1 }}
                     className="p-1"
                   >
                     <div className="rounded-md p-1" style={boxStyle(g.color, 0)}>

@@ -2703,6 +2703,7 @@ function CalendarView({
           goals={goalItems}
           milestones={milestones}
           planItems={planItems}
+          blockers={blockers}
           selectedGoalIds={selected}
           onSelectItem={onSelectItem}
           onSelectDay={onSelectDay}
