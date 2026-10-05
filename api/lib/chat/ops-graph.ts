@@ -35,6 +35,7 @@ import {
 } from '@/lib/emergent/llm'
 import { streamChat } from '@/lib/emergent/stream-chat'
 import type { ProviderId } from '@/lib/emergent/model-registry'
+import { enrichQuestions } from './clarify-options'
 
 export type ConvKind =
   | 'general'
@@ -58,11 +59,32 @@ export interface OpsGraphArgs {
   userGoals: Array<{ id: string; title: string; status?: string }>
 }
 
+/**
+ * A clarification question. Plain string when there's nothing to tap; an object
+ * carrying 2-5 short `options` (and `multi`) when the answer is a choice, so the
+ * Ask card can render chips instead of only a free-text box.
+ */
+export type ClarifyQuestion =
+  | string
+  | { question: string; options?: string[]; multi?: boolean }
+
+/** Normalize an ask proposal's args into a ClarifyQuestion (string when no options). */
+function readAskQuestion(args: Record<string, unknown>): ClarifyQuestion | null {
+  const q = args?.question
+  if (typeof q !== 'string' || !q.trim()) return null
+  const options = Array.isArray(args.options)
+    ? (args.options as unknown[]).filter((o): o is string => typeof o === 'string' && o.trim().length > 0)
+    : []
+  const multi = args.multi === true
+  if (options.length === 0 && !multi) return q
+  return { question: q, ...(options.length ? { options } : {}), ...(multi ? { multi: true } : {}) }
+}
+
 export interface OpsGraphResult {
   prose: string
   proposals: Proposal[]
   needsClarification: string | null
-  clarifyingQuestions: string[]
+  clarifyingQuestions: ClarifyQuestion[]
   fullText: string
 }
 
@@ -72,7 +94,7 @@ const OpsState = Annotation.Root({
   proposals: Annotation<Proposal[]>({ reducer: (_a, b) => b, default: () => [] }),
   hadToolsBlock: Annotation<boolean>({ reducer: (_a, b) => b, default: () => false }),
   needsClarification: Annotation<string | null>({ reducer: (_a, b) => b, default: () => null }),
-  clarifyingQuestions: Annotation<string[]>({ reducer: (_a, b) => b, default: () => [] }),
+  clarifyingQuestions: Annotation<ClarifyQuestion[]>({ reducer: (_a, b) => b, default: () => [] }),
   result: Annotation<OpsGraphResult | null>({ reducer: (_a, b) => b, default: () => null }),
 })
 
@@ -209,15 +231,15 @@ export function buildOpsGraph(args: OpsGraphArgs) {
       {
         role: 'user' as const,
         content:
-          `MODE: ${mode}. Do not emit a [[TOOLS]] block or propose any state change. ` +
-          'Read the full recent conversation and ask only for details that materially ' +
-          'change this plan. ASK mode assumes low-impact details. GRILL mode asks ' +
-          'every material unanswered detail, in tailored rounds with no total-round ' +
-          'limit. Ask up to 6 questions now; do not repeat answered questions. ' +
-          'For a job change, check readiness gaps, application/interview stage, ' +
-          'weekly effort, and constraints. For a whole-day schedule, check wake/sleep ' +
-          'times and fixed commitments. If an attached source has no readable text, ' +
-          'say so rather than guessing. Reply with questions only.',
+          `MODE: ${mode}. Read the full recent conversation and ask only for details that materially ` +
+          'change this plan. ASK mode assumes low-impact details. GRILL mode asks every material ' +
+          'unanswered detail, in tailored rounds with no total-round limit. Ask up to 6 questions now; ' +
+          'do not repeat answered questions. For a job change, check readiness gaps, application/interview ' +
+          'stage, weekly effort, and constraints. For a whole-day schedule, check wake/sleep times and ' +
+          'fixed commitments. If an attached source has no readable text, say so rather than guessing. ' +
+          'Reply with one [[TOOLS]] block of {"action":"ask","question":"…"} entries — one per question. ' +
+          'When a question is a CHOICE, include 3-5 SHORT "options" (and "multi":true when several can ' +
+          'apply) so the user can tap instead of typing. Do not propose any state change.',
       },
     ]
 
@@ -235,8 +257,15 @@ export function buildOpsGraph(args: OpsGraphArgs) {
       // A safe deterministic question is better than silently dropping a request.
     }
 
-    const { prose: answerProse } = splitProseAndTools(answer)
-    let questions = extractClarifyingQuestions(answerProse)
+    const { prose: answerProse, proposals: answerProps } = splitProseAndTools(answer)
+    // Prefer the model's `ask` entries — they can carry tap-able options; fall
+    // back to scraping `?` sentences from prose when no tools block came back.
+    const asked: ClarifyQuestion[] = answerProps
+      .filter((p) => p.action === 'ask')
+      .map((p) => readAskQuestion(p.args as Record<string, unknown>))
+      .filter((q): q is ClarifyQuestion => q !== null)
+    let questions: ClarifyQuestion[] =
+      asked.length > 0 ? asked : extractClarifyingQuestions(answerProse)
     if (questions.length === 0) {
       questions = scopedKind === 'plan_day'
         ? ['What time will you wake up and go to sleep, and what fixed commitments must the plan fit around?']
@@ -247,7 +276,9 @@ export function buildOpsGraph(args: OpsGraphArgs) {
           ]
         : ['What missing detail would change the plan most, and how much time can you realistically give it?']
     }
-    const prose = answerProse || questions.join('\n')
+    const prose =
+      answerProse ||
+      questions.map((q) => (typeof q === 'string' ? q : q.question)).join('\n')
     return {
       prose,
       proposals: [],
@@ -270,14 +301,22 @@ export function buildOpsGraph(args: OpsGraphArgs) {
     // proposal with no new questions means the coach is satisfied.
     if (clarify || !autoAnswer) {
       const questionsInProse = extractClarifyingQuestions(s.prose)
-      const askQuestions = proposals
+      const askQuestions: ClarifyQuestion[] = proposals
         .filter((proposal) => proposal.action === 'ask')
-        .map((proposal) => proposal.args.question)
-        .filter((question): question is string => typeof question === 'string' && question.trim().length > 0)
+        .map((proposal) => readAskQuestion(proposal.args as Record<string, unknown>))
+        .filter((question): question is ClarifyQuestion => question !== null)
+      // Ask questions that carry tap-able options are the ones worth showing as
+      // chips; prefer them over bare prose questions when they exist.
+      const askWithOptions = askQuestions.filter(
+        (q): q is { question: string; options?: string[]; multi?: boolean } =>
+          typeof q !== 'string' && (q.options?.length ?? 0) > 0,
+      )
       if (questionsInProse.length > 0 || clarifyingQuestions.length > 0 || askQuestions.length > 0) {
         proposals = proposals.filter((p) => p.action === 'navigate')
       }
-      if (clarifyingQuestions.length === 0) {
+      if (askWithOptions.length > 0) {
+        clarifyingQuestions = askWithOptions
+      } else if (clarifyingQuestions.length === 0) {
         clarifyingQuestions = questionsInProse.length > 0 ? questionsInProse : askQuestions
       }
       if (clarifyingQuestions.length > 0) {
@@ -345,7 +384,7 @@ export function buildOpsGraph(args: OpsGraphArgs) {
       prose,
       proposals,
       needsClarification,
-      clarifyingQuestions,
+      clarifyingQuestions: enrichQuestions(clarifyingQuestions),
       fullText: s.fullText,
     }
     if ((clarify || !autoAnswer) && prose) emit({ type: 'delta', content: prose })

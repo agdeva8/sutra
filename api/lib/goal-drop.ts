@@ -35,11 +35,6 @@ export interface GoalRef {
   goalTitle: string
 }
 
-export interface DropImpactItemCommitment {
-  id: string
-  text: string
-  due: string | null
-}
 export interface DropImpactItemMilestone {
   id: string
   title: string
@@ -56,11 +51,9 @@ export interface DropImpactItemBlock {
 export interface GoalDropImpact {
   goal_id: string
   goal_title: string
-  commitments: DropImpactItemCommitment[]
   milestones: DropImpactItemMilestone[]
   timetable_blocks: DropImpactItemBlock[]
   counts: {
-    commitments: number
     milestones: number
     timetable_blocks: number
   }
@@ -156,7 +149,7 @@ export async function computeGoalDropImpact(
   userId: string,
   ref: GoalRef,
 ): Promise<GoalDropImpact> {
-  const [goalRows, commitRows, mileRows, blockRows, allGoalRows, userRows] =
+  const [goalRows, mileRows, blockRows, allGoalRows, userRows] =
     await Promise.all([
       db
         .select({
@@ -170,21 +163,6 @@ export async function computeGoalDropImpact(
           and(eq(schema.goals.userId, userId), eq(schema.goals.id, ref.goalId)),
         )
         .limit(1),
-      db
-        .select({
-          id: schema.commitments.id,
-          text: schema.commitments.text,
-          due: schema.commitments.due,
-        })
-        .from(schema.commitments)
-        .where(
-          and(
-            eq(schema.commitments.userId, userId),
-            eq(schema.commitments.goalId, ref.goalId),
-            eq(schema.commitments.status, 'open'),
-          ),
-        )
-        .limit(500),
       db
         .select({
           id: schema.milestones.id,
@@ -261,11 +239,6 @@ export async function computeGoalDropImpact(
   return {
     goal_id: ref.goalId,
     goal_title: goal?.title ?? ref.goalTitle,
-    commitments: commitRows.slice(0, MAX_LIST).map((c: any) => ({
-      id: c.id,
-      text: c.text,
-      due: c.due ?? null,
-    })),
     milestones: mileRows.slice(0, MAX_LIST).map((m: any) => ({
       id: m.id,
       title: m.title,
@@ -279,7 +252,6 @@ export async function computeGoalDropImpact(
       end_time: hhmm(b.endTime),
     })),
     counts: {
-      commitments: commitRows.length,
       milestones: mileRows.length,
       timetable_blocks: blockRows.length,
     },
@@ -295,8 +267,6 @@ export async function computeGoalDropImpact(
 export function dropImpactSentence(impact: GoalDropImpact): string {
   const c = impact.counts
   const parts: string[] = []
-  if (c.commitments > 0)
-    parts.push(`${c.commitments} open commitment${c.commitments === 1 ? '' : 's'}`)
   if (c.milestones > 0)
     parts.push(`${c.milestones} milestone${c.milestones === 1 ? '' : 's'}`)
   if (c.timetable_blocks > 0)
@@ -351,22 +321,6 @@ export async function applyGoalDropCascade(
         and(eq(schema.goals.userId, userId), eq(schema.goals.id, ref.goalId)),
       )
 
-    // Close the goal's open commitments in place. Preserve any user note;
-    // append a short marker otherwise.
-    await tx
-      .update(schema.commitments)
-      .set({
-        status: 'done',
-        note: sql`CASE WHEN ${schema.commitments.note} IS NULL OR ${schema.commitments.note} = '' THEN 'goal dropped' ELSE ${schema.commitments.note} || ' | goal dropped' END`,
-      })
-      .where(
-        and(
-          eq(schema.commitments.userId, userId),
-          eq(schema.commitments.goalId, ref.goalId),
-          eq(schema.commitments.status, 'open'),
-        ),
-      )
-
     // Remove plan scaffolding (milestones + scheduled blocks).
     await tx
       .delete(schema.milestones)
@@ -413,8 +367,6 @@ function resultLine(
 ): string {
   const c = impact.counts
   const cleaned: string[] = []
-  if (c.commitments > 0)
-    cleaned.push(`${c.commitments} commitment${c.commitments === 1 ? '' : 's'}`)
   if (c.milestones > 0)
     cleaned.push(`${c.milestones} milestone${c.milestones === 1 ? '' : 's'}`)
   if (c.timetable_blocks > 0)

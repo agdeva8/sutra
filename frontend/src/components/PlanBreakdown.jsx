@@ -12,7 +12,7 @@ import { CalendarRange, ChevronDown, Layers, Target } from "lucide-react";
  *   Quarterly→ phase spans (each keeps its 20% timeline buffer)
  *   Monthly  → milestones (dated by the scheduler inside each phase)
  *   Weekly   → derived checkpoints covering each phase's effective window
- *   Daily    → the smallest next actions (commitments)
+ *   Daily    → the smallest next actions (daily steps)
  *
  * Pure presentational: reads `state.plan_items` / `state.goals`, no writes.
  * Styling uses the ui-ux contract tokens (--bg-secondary, --border, …).
@@ -142,7 +142,7 @@ function GoalPlan({ goal, items }) {
 
 export default function PlanBreakdown({ state }) {
   const planItems = state?.plan_items;
-  const goals = state?.goals;
+  const goals = (state?.goals || []).filter((g) => g.status !== "dropped");
 
   const byGoal = useMemo(() => {
     const map = new Map();

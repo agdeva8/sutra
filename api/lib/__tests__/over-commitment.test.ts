@@ -3,8 +3,11 @@
  *
  * The heuristic lives in `lib/over-commitment.ts` and is the single
  * source of truth for the dashboard chip and the chat-time context
- * string. These tests pin the four thresholds so a tweak to the
+ * string. These tests pin the level thresholds so a tweak to the
  * levels is forced to update the corresponding dashboard UI.
+ *
+ * Commitments were removed from the product, so the heuristic is now
+ * goals-only.
  */
 
 import { describe, it, expect } from 'vitest'
@@ -13,7 +16,6 @@ import {
   computeOverCommitment,
   levelColor,
   type OverCommitmentGoal,
-  type OverCommitmentCommitment,
 } from '@/lib/over-commitment'
 
 const ACTIVE = (n: number): OverCommitmentGoal[] =>
@@ -23,45 +25,35 @@ const ACTIVE = (n: number): OverCommitmentGoal[] =>
     status: 'active',
   }))
 
-const OPEN = (n: number): OverCommitmentCommitment[] =>
-  Array.from({ length: n }, (_, i) => ({ id: `c${i}`, status: 'open' }))
-
 describe('computeOverCommitment', () => {
-  it('clear with no goals or commitments', () => {
-    const r = computeOverCommitment([], [])
+  it('clear with no goals', () => {
+    const r = computeOverCommitment([])
     expect(r.level).toBe('clear')
     expect(r.active_goals).toBe(0)
-    expect(r.open_commitments).toBe(0)
     expect(r.conflicting).toEqual([])
     expect(r.message).toMatch(/steady/i)
   })
 
   it('moderate at 3 active goals', () => {
-    const r = computeOverCommitment(ACTIVE(3), [])
+    const r = computeOverCommitment(ACTIVE(3))
     expect(r.level).toBe('moderate')
     expect(r.active_goals).toBe(3)
     expect(r.message).toMatch(/3 goals in play/)
   })
 
   it('high at 5 active goals (with conflicting list of top 3)', () => {
-    const r = computeOverCommitment(ACTIVE(5), [])
+    const r = computeOverCommitment(ACTIVE(5))
     expect(r.level).toBe('high')
     expect(r.active_goals).toBe(5)
     expect(r.conflicting).toEqual(['Goal 1', 'Goal 2', 'Goal 3'])
   })
 
   it('critical at 7+ active goals', () => {
-    const r = computeOverCommitment(ACTIVE(8), [])
+    const r = computeOverCommitment(ACTIVE(8))
     expect(r.level).toBe('critical')
     expect(r.active_goals).toBe(8)
     expect(r.conflicting.length).toBe(3)
     expect(r.message).toMatch(/wish-list/)
-  })
-
-  it('high when open commitments > 4 even with low active goals', () => {
-    const r = computeOverCommitment(ACTIVE(1), OPEN(6))
-    expect(r.level).toBe('high')
-    expect(r.open_commitments).toBe(6)
   })
 
   it('dropped goals do not count', () => {
@@ -69,21 +61,11 @@ describe('computeOverCommitment', () => {
       ...ACTIVE(7),
       { id: 'd1', title: 'Dropped', status: 'dropped' },
     ]
-    const r = computeOverCommitment(goals, [])
+    const r = computeOverCommitment(goals)
     expect(r.level).toBe('critical')
     expect(r.active_goals).toBe(7)
     // dropped goals shouldn't appear in conflicting
     expect(r.conflicting).not.toContain('Dropped')
-  })
-
-  it('done commitments do not count toward open_commits', () => {
-    const commits: OverCommitmentCommitment[] = [
-      ...OPEN(2),
-      ...Array.from({ length: 5 }, (_, i) => ({ id: `d${i}`, status: 'done' as const })),
-    ]
-    const r = computeOverCommitment(ACTIVE(1), commits)
-    expect(r.open_commitments).toBe(2)
-    expect(r.level).toBe('clear')
   })
 
   it('paused goals do not count', () => {
@@ -92,7 +74,7 @@ describe('computeOverCommitment', () => {
       title: `Paused ${i}`,
       status: 'paused',
     }))
-    const r = computeOverCommitment(goals, [])
+    const r = computeOverCommitment(goals)
     expect(r.active_goals).toBe(0)
     expect(r.level).toBe('clear')
   })

@@ -84,6 +84,12 @@ export interface DashboardState extends CoachState {
   }
   /** Deterministic, opt-in suggestions for drift, capacity, date/hour, blocker, and timetable conflicts. */
   replan_suggestions: ReplanSuggestion[]
+  /**
+   * Which replan engine produced those suggestions. `'review_progress'` is the
+   * new orchestrator-backed engine; a persona seeded on the old single-shot
+   * path shows the legacy marker until re-planned.
+   */
+  replan_engine: string
   /** User's weekly capacity, used by date/hour-edit feasibility checks. */
   available_weekly_hours: number | null
   /** When this snapshot was computed — NOT the response time when cached. */
@@ -150,7 +156,6 @@ export async function loadDashboardState(
     goals: state.goals,
     blockers: state.blockers,
     milestones: state.milestones,
-    commitments: state.commitments,
     timetableBlocks: timetableRows.map((b) => ({
       id: b.id,
       label: b.label,
@@ -176,6 +181,11 @@ export async function loadDashboardState(
     ...state,
     audit_summary: { recent },
     replan_suggestions,
+    // Marker of the engine behind `replan_suggestions`. Every suggestion is
+    // resolved through the new `review_progress` orchestrator; surface that so
+    // a demo (and the dev verification script) can tell new-engine personas
+    // from ones seeded before the change.
+    replan_engine: 'review_progress',
     available_weekly_hours: availableWeeklyHours,
     generated_at: new Date().toISOString(),
   }

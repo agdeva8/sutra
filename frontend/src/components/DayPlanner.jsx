@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect } from "react";
 import { X, Plus, AlertOctagon, CheckCircle2, Circle, Milestone, Clock } from "lucide-react";
 import CenteredDialog from "./CenteredDialog";
 import AutoTextarea from "./AutoTextarea";
+import AddToDayDialog from "./AddToDayDialog";
 import { api } from "../lib/api";
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -33,18 +34,19 @@ const blockerCoversDay = (b, dayStart) => {
  *   - Timetable blocks: time-boxed slots (focus / routine / commitment /
  *     blocker) with label, start/end time, note.
  *   - Blockers: multi-day unavailability.
- *   - Commitments: goal-linked tasks with a done toggle.
  *   - Milestones: read-only.
  *
  * Props:
  *   day       — the selected Date (or null → render nothing)
- *   state     — the dashboard state (commitments / blockers / milestones)
+ *   state     — the dashboard state (blockers / milestones)
  *   onChange  — called after any mutation so the parent re-fetches state
  *   onClose   — close the panel
  */
-export default function DayPlanner({ day, state, onChange = () => {}, onClose, initialAddType = null, onInitialAddTypeHandled, embedded = false }) {
+export default function DayPlanner({ day, state, onChange = () => {}, onClose, embedded = false }) {
   const [blocks, setBlocks] = useState([]);
   const [saving, setSaving] = useState(false);
+  // The single unified add flow (time block / unavailable).
+  const [addOpen, setAddOpen] = useState(false);
 
   // Block dialog
   const [blockDialogOpen, setBlockDialogOpen] = useState(false);
@@ -64,10 +66,6 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, i
   const [blockerEnd, setBlockerEnd] = useState("");
   const [blockerNote, setBlockerNote] = useState("");
 
-  // Commitment dialog
-  const [commitmentOpen, setCommitmentOpen] = useState(false);
-  const [commitmentText, setCommitmentText] = useState("");
-
   const loadBlocks = useCallback(() => {
     api.timetable()
       .then((res) => setBlocks(res?.blocks || []))
@@ -75,52 +73,19 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, i
   }, []);
   useEffect(() => { loadBlocks(); }, [loadBlocks]);
 
-  useEffect(() => {
-    if (!day || !initialAddType) return;
-    const dateStr = fmtDate(day);
-    if (initialAddType === "block") {
-      setEditBlock(null);
-      setBlockLabel("");
-      setBlockKind("focus");
-      setBlockStart("09:00");
-      setBlockEnd("10:00");
-      setBlockNote("");
-      setBlockGoalId("");
-      setBlockDialogOpen(true);
-    } else if (initialAddType === "blocker") {
-      setEditBlocker(null);
-      setBlockerTitle("");
-      setBlockerStart(dateStr);
-      setBlockerEnd(dateStr);
-      setBlockerNote("");
-      setBlockerDialogOpen(true);
-    } else if (initialAddType === "commitment") {
-      setCommitmentText("");
-      setCommitmentOpen(true);
-    }
-    onInitialAddTypeHandled?.();
-  }, [day, initialAddType, onInitialAddTypeHandled]);
-
-  const addHour = (hhmm) => {
-    const [h, m] = hhmm.split(":").map(Number);
-    return `${String(Math.min(23, (h + 1) % 24)).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-  };
-
   if (!day) return null;
 
   const dateStr = fmtDate(day);
   const dayStart = new Date(day); dayStart.setHours(0, 0, 0, 0);
-  const commitments = state?.commitments || [];
   const blockers = state?.blockers || [];
   const milestones = state?.milestones || [];
-  const dayCommitments = commitments.filter((c) => c.due === dateStr);
   const dayBlockers = blockers.filter((b) => blockerCoversDay(b, dayStart));
   const dayBlocks = blocks
     .filter((b) => b.block_date === dateStr)
     .sort((a, b) => String(a.start_time || "").localeCompare(String(b.start_time || "")));
 
   // Plan tasks — per-day rows from the multi-horizon lattice (plan_items).
-  // Marked by a "Fulfils …" note; commitments are the other daily rows.
+  // Marked by a "Fulfils …" note.
   const planItems = state?.plan_items || [];
   const dayPlanTasks = planItems.filter(
     (i) => i.horizon === "daily" && (i.note || "").startsWith("Fulfils") && i.due_date === dateStr,
@@ -133,19 +98,9 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, i
   );
 
   const hasItems =
-    dayPlanTasks.length + dayMilestones.length + dayCommitments.length + dayBlockers.length + dayBlocks.length > 0;
+    dayPlanTasks.length + dayMilestones.length + dayBlockers.length + dayBlocks.length > 0;
 
   // --- blocks -------------------------------------------------------------
-  const openAddBlock = () => {
-    setEditBlock(null);
-    setBlockDialogOpen(true);
-    setBlockLabel("");
-    setBlockKind("focus");
-    setBlockStart("09:00");
-    setBlockEnd("10:00");
-    setBlockNote("");
-    setBlockGoalId("");
-  };
   const openEditBlock = (b) => {
     setEditBlock(b);
     setBlockDialogOpen(true);
@@ -178,14 +133,6 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, i
   };
 
   // --- blockers -----------------------------------------------------------
-  const openAddBlocker = () => {
-    setEditBlocker(null);
-    setBlockerDialogOpen(true);
-    setBlockerTitle("");
-    setBlockerStart(dateStr);
-    setBlockerEnd(dateStr);
-    setBlockerNote("");
-  };
   const openEditBlocker = (b) => {
     setEditBlocker(b);
     setBlockerDialogOpen(true);
@@ -213,26 +160,12 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, i
     catch (e) { console.error(e); } finally { setSaving(false); }
   };
 
-  // --- commitments --------------------------------------------------------
-  const toggleCommitment = async (c) => {
-    try {
-      await api.updateCommitment(c.id, { status: c.status === "done" ? "open" : "done" });
-      onChange();
-    } catch (e) { console.error(e); }
-  };
   const togglePlanTask = async (t) => {
     try {
       await api.updatePlanItem(t.id, { status: t.status === "done" ? "open" : "done" });
       onChange();
     } catch (e) { console.error(e); }
   };
-  const addCommitment = async () => {
-    if (!commitmentText.trim()) return;
-    setSaving(true);
-    try { await api.createCommitment({ text: commitmentText.trim(), due: dateStr, goal_id: null }); onChange(); setCommitmentText(""); setCommitmentOpen(false); }
-    catch (e) { console.error(e); } finally { setSaving(false); }
-  };
-
   return (
     <>
       <div data-testid={`day-planner-${dateStr}`} className={embedded ? "space-y-3" : "rounded-2xl bg-[var(--bg-secondary)] p-4 space-y-3"}>
@@ -331,49 +264,13 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, i
             </div>
           ))}
 
-          {dayCommitments.map((c) => (
-            <div key={c.id} className="flex items-center gap-1.5">
-              <button
-                type="button"
-                data-testid={`detail-commitment-toggle-${c.id}`}
-                onClick={() => toggleCommitment(c)}
-                aria-pressed={c.status === "done"}
-                aria-label={c.status === "done" ? "Mark not done" : "Mark done"}
-                className="shrink-0 inline-flex items-center justify-center h-11 w-11 -ml-3"
-              >
-                {c.status === "done" ? (
-                  <CheckCircle2 className="w-5 h-5 text-[var(--success)]" />
-                ) : (
-                  <Circle className="w-5 h-5 text-[var(--text-muted)]" />
-                )}
-              </button>
-              <span className={c.status === "done" ? "line-through text-[var(--text-muted)] text-[13px] truncate flex-1" : "text-[var(--text-secondary)] text-[13px] truncate flex-1"}>
-                {c.text}
-              </span>
-            </div>
-          ))}
-
-          <div className="flex flex-wrap gap-2 pt-1">
+          <div className="pt-1">
             <button
-              data-testid={`add-block-detail-${dateStr}`}
-              onClick={openAddBlock}
-              className="min-h-11 flex-1 basis-[30%] flex items-center justify-center gap-1.5 px-3 rounded-xl bg-[var(--accent)] text-[13px] font-semibold text-[var(--bg-primary)] hover:opacity-90 transition-opacity"
+              data-testid={`add-to-day-detail-${dateStr}`}
+              onClick={() => setAddOpen(true)}
+              className="min-h-11 w-full flex items-center justify-center gap-1.5 px-3 rounded-xl bg-[var(--accent)] text-[13px] font-semibold text-[var(--bg-primary)] hover:opacity-90 transition-opacity"
             >
-              <Clock className="w-4 h-4" /> Add block
-            </button>
-            <button
-              data-testid={`add-blocker-detail-${dateStr}`}
-              onClick={openAddBlocker}
-              className="min-h-11 flex-1 basis-[30%] flex items-center justify-center gap-1.5 px-3 rounded-xl bg-[var(--bg-tertiary)] text-[13px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
-            >
-              <AlertOctagon className="w-4 h-4" /> Blocker
-            </button>
-            <button
-              data-testid={`add-commitment-detail-${dateStr}`}
-              onClick={() => { setCommitmentOpen(true); setCommitmentText(""); }}
-              className="min-h-11 flex-1 basis-[30%] flex items-center justify-center gap-1.5 px-3 rounded-xl bg-[var(--bg-tertiary)] text-[13px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
-            >
-              <Plus className="w-4 h-4" /> Commitment
+              <Plus className="w-4 h-4" /> Add to this day
             </button>
           </div>
         </div>
@@ -500,37 +397,14 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, i
         </div>
       </CenteredDialog>
 
-      {/* Commitment dialog */}
-      <CenteredDialog
-        open={commitmentOpen}
-        onClose={() => { setCommitmentOpen(false); setCommitmentText(""); }}
-        title="Add a commitment"
-        subtitle={dateStr}
-        maxWidth="max-w-sm"
-      >
-        <div className="space-y-3">
-          <div>
-            <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)] mb-1">What do you want to commit to? *</label>
-            <input
-              data-testid="commitment-text-input"
-              type="text"
-              value={commitmentText}
-              onChange={(e) => setCommitmentText(e.target.value)}
-              placeholder="e.g. Draft intro paragraph"
-              onKeyDown={(e) => e.key === "Enter" && addCommitment()}
-              className="w-full px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--bg-primary)] text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] transition-colors"
-            />
-          </div>
-          <div className="flex gap-2">
-            <div className="ml-auto flex gap-2">
-              <button onClick={() => { setCommitmentOpen(false); setCommitmentText(""); }} disabled={saving} className="min-h-11 px-4 rounded-xl text-xs font-medium bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors">Cancel</button>
-              <button data-testid="commitment-save-btn" onClick={addCommitment} disabled={saving || !commitmentText.trim()} className="min-h-11 px-4 rounded-xl text-xs font-semibold bg-[var(--accent)] text-[var(--bg-primary)] hover:opacity-90 transition-opacity disabled:opacity-50">
-                {saving ? "Adding…" : "Add"}
-              </button>
-            </div>
-          </div>
-        </div>
-      </CenteredDialog>
+      {/* The ONE add flow — time block / unavailable range. */}
+      <AddToDayDialog
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        date={day}
+        state={state}
+        onCreated={onChange}
+      />
     </>
   );
 }

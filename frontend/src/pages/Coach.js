@@ -75,7 +75,6 @@ const NAV_TARGETS = {
   drop_goal: { panel: "state" },
   pause_goal: { panel: "state" },
   edit_goal: { panel: "state" },
-  commitments: { panel: "today" },
   today: { panel: "today" },
   timeline: { panel: "timeline" },
   sources: { panel: "sources" },
@@ -237,7 +236,7 @@ export default function Coach() {
     const frameTitle =
       act && FRAMES[act.type || "edit"]
         ? FRAMES[act.type || "edit"].title(act.goalTitle)
-        : `Add commitments for the "${act?.goalTitle || "goal"}" goal`;
+        : `Add steps for the "${act?.goalTitle || "goal"}" goal`;
     // Map the goal action to its real conversation kind so the follow-up
     // chat is NON-generic and drop/pause/edit-aware instead of a free-form
     // plan_day bucket (founder feedback: the drop flow opened a generic
@@ -312,6 +311,7 @@ export default function Coach() {
         kind: "review_progress",
         title: "Re-plan my remaining goals",
         helperText: `You freed ${freed}h/week by dropping "${goalTitle}". The coach will propose changes for you to confirm.`,
+        autoSend: true,
       },
     );
   };
@@ -324,6 +324,7 @@ export default function Coach() {
         ? `Re-plan: ${suggestion.goal_title}`
         : "Re-plan my goals",
       helperText: suggestion.message,
+      autoSend: true,
     });
   };
 
@@ -590,6 +591,7 @@ export default function Coach() {
           <div className="mb-4">
             <ReplanSuggestions
               suggestions={state?.replan_suggestions || []}
+              engine={state?.replan_engine}
               active={["state", "today", "timeline"].includes(panelView)}
               onReplan={openReplanSuggestion}
             />
@@ -670,6 +672,7 @@ export default function Coach() {
         onOpenSignIn={openSignIn}
         isGuest={isGuest}
         prefillMessage={chatPrefill}
+        autoSend={chatScope?.autoSend || false}
         scope={chatScope?.scope}
         refId={chatScope?.refId}
         kind={chatScope?.kind}

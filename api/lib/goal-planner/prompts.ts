@@ -28,6 +28,11 @@ export function intakePrompt(args: {
   maxRounds?: number
   /** Questions asked in prior rounds — must not be repeated. */
   priorQuestions?: string[]
+  /**
+   * True when the user already has `users.availability` set. Availability is
+   * asked ONCE (on the first goal); after that it's reused and never re-asked.
+   */
+  availabilityKnown?: boolean
 }): string {
   const round = args.round ?? 0
   const maxRounds = args.maxRounds ?? 2
@@ -40,7 +45,20 @@ QUESTIONS YOU ALREADY ASKED (do NOT repeat these or reworded versions — the
 user's latest message is their answers; treat each of these as RESOLVED):
 ${args.priorQuestions.map((q) => `- ${q}`).join('\n')}`
       : ''
-  return `${VOICE}
+  // Availability is captured ONCE (first goal). If we already know the user's
+  // weekly free time, never re-ask; if not, ask the four questions this turn.
+  const availabilityBlock = args.availabilityKnown
+    ? `- The user's weekly availability is already known. Do NOT ask about free days, hours per day, or recurring busy periods.`
+    : `
+AVAILABILITY (first goal — capture ONCE): we do not yet know when the user is
+free. In ASK/GRILL, include questions that capture it. Use the OBJECT form with
+short options so the user can tap:
+  - "Which days can you realistically put time into goals?" (multi: Mon…Sun)
+  - "Roughly how much on a weekday / on a weekend?" (options: under 30m | 30–60m | 1–2h | 2–4h | 4h+)
+  - "Any recurring periods you're usually slammed?" (multi: end of month | Mondays | mornings | evenings | none)
+  - "Any trips or deadlines coming up?" (plain string)
+Once the user answers, this persists — never ask it again on later goals.`
+  return `${VOICE}${availabilityBlock}
 
 You are stage 1 (Intake) of a planning pipeline. You ONLY classify and decide
 whether material details are missing. You do not plan or do capacity arithmetic.
@@ -159,7 +177,7 @@ Return a JSON object:
   "blockers":  [ { "title", "start_date", "end_date", "note" } ],       // ≤3
   "blocks": [ { "block_date", "start_time", "end_time", "label", "kind",
                  "goal_title?", "note?" } ],                               // ≤8
-  "commitments": [ { "goal_title", "text", "due", "phase" } ],          // ≤3
+  "availability": { "mon": 2, "tue": 2, ... } | omit,   // ONLY when just captured
   "prose": "one short paragraph (≤500 chars)"
 }
 
@@ -175,8 +193,10 @@ Rules:
   (milestone.phase MUST be a phase_objectives key). Cover the first days and
   weekly/monthly checkpoints; use quarter/year phases for longer goals. Do not
   pad the plan with duplicate or vague milestones.
-- Emit 1-2 commitments: the SMALLEST next actions in the next 1-4 days (setup
-  actions), and their "due" must be one of them.
+- Availability (captured ONCE): set "availability" to a weekday→free-hours map
+  (mon…sun) ONLY when the user just stated their weekly availability in this
+  conversation AND it was previously unknown. Otherwise OMIT the field — never
+  invent hours the user did not give.
 - Emit blockers ONLY if the user named them. Never invent a blocker.
 - If the user already did something, do not re-propose it.
 - For a job-change goal, base milestones and the first action on the user's
@@ -197,6 +217,23 @@ Rules:
   load-bearing constraint that, if it breaks, breaks the plan.
 - If intent is drop_goal / review_progress and no new goal is warranted, goal
   may be null and milestones may be empty.
+- For intent "review_progress" you are RE-PLANNING around a named change (a
+  blocker collision, drift, freed capacity, or a finished milestone). The user
+  asked a direct question — answer it. The prose MUST OPEN with the verdict in
+  plain words: state whether the plan changes ("No date change needed") or how
+  ("Shift the target to <date>"), then name why in one clause. Never return
+  observations only.
+- A review_progress plan MUST carry at least one concrete action so the user
+  has something to confirm even when no date moves:
+  * if dates or scope move, put the change on the goal (set_goal_dates, or
+    update_goal with the new target_date / weekly_hours / next_action);
+  * if nothing changes, still satisfy the intent with ONE add_commitment naming
+    the single next action that protects the plan (for example "Re-check
+    interview scheduling after the <blocking event> ends") or an update_goal
+    with a concrete next_action. "Accept the slip" is a real answer — pair it
+    with that action rather than prose alone.
+  * Reference existing goal titles exactly as they appear in LIVE STATE, and
+    never invent a blocker.
 
 ${reneg}
 
@@ -215,16 +252,21 @@ calls. Return:
  { "tools": [ { "action": "<action>", "args": { ... } } ] }   // up to 16 tools
 
 Fixed order when creating a goal: create_goal, then add_milestone ×N, then
-add_blocker ×N, then add_commitment ×N.
+add_blocker ×N.
 For a day plan, emit add_block ×N for the planned blocks.
+If the plan carries an "availability" object, ALSO emit a set_availability tool
+with { availability } — this is the once-per-account weekly-time capture.
 
 Allowed actions for intent "${args.intent}":
-- add_goal: create_goal, add_milestone, add_blocker, add_commitment, set_goal_dates
-- plan_day: add_block, add_commitment, complete_commitment, add_blocker
-- edit_goal: update_goal, set_goal_dates, add_milestone, add_blocker, add_commitment
+- add_goal: create_goal, add_milestone, add_blocker, set_availability, set_goal_dates
+- plan_day: add_block, add_blocker
+- edit_goal: update_goal, set_goal_dates, add_milestone, add_blocker
 - drop_goal: drop_goal, pause_goal
-- review_progress: update_goal, set_goal_dates, add_commitment,
-  complete_commitment, add_blocker, pause_goal, drop_goal
+- review_progress: update_goal, set_goal_dates, add_blocker, pause_goal, drop_goal
+
+For intent "review_progress", always emit the plan's concrete action(s) — the
+date/scope change and/or its blocker — even when no date moves. Return at least
+one tool; the plan always carries one.
 
 Renegotiation note (add_goal): when the RENEGOTIATION constraint block above
 requires shifting an existing goal (choice shift_existing_target), ALSO emit a
@@ -232,10 +274,11 @@ set_goal_dates tool for the existing goal being pushed — goal_title must be an
 existing goal from LIVE STATE, target_date later than today, keeping the new
 goal exactly as planned.
 
-Every add_milestone.add_goal reference and add_commitment.goal_title must match
-the plan goal title (or an existing goal's exact title). Every
-add_milestone.target_date / add_commitment.due must come from the plan. Every
-phase must be a phase_objectives key.
+Every add_milestone.goal_title must match the plan goal title (or an existing
+goal's exact title). Every add_milestone.target_date must come from the plan.
+Every phase must be a phase_objectives key — except when the plan has no goal (a
+review_progress turn), where "phase" is just a short non-empty label (e.g.
+"Active").
 
 Use these EXACT arg keys — do not rename or omit them:
 - create_goal: { title, horizon, why, first_action, start_date, target_date,
@@ -243,10 +286,10 @@ Use these EXACT arg keys — do not rename or omit them:
 - add_milestone: { goal_title, title, target_date, phase }
 - add_blocker: { title, start_date, end_date, note }
 - add_block: { block_date, start_time, end_time, label, kind, goal_title?, note? }
-- add_commitment: { goal_title, text, due, phase }
+- set_availability: { availability }
 
 Copy weekly_hours and phase_objectives VERBATIM from the plan goal. Every
-milestone and commitment must carry its phase.
+milestone must carry its phase.
 
 === PLAN ===
 ${JSON.stringify(args.plan)}`

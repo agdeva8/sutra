@@ -26,10 +26,6 @@ function input(over: Partial<SchedulerInput> = {}): SchedulerInput {
       { title: 'First 3 full loops', phase: 'Active', rationale: 'reps' },
       { title: 'Offer signed', phase: 'Active', rationale: 'target' },
     ],
-    commitments: [
-      { text: 'Block the daily 90-min slot', due: '2026-10-05', phase: 'Foundations' },
-      { text: 'Sketch OAuth flow', due: '2026-10-06', phase: 'Foundations' },
-    ],
     ...over,
   }
 }
@@ -88,17 +84,6 @@ describe('buildLattice (deterministic scheduler)', () => {
     expect(firstWeekly.title.length).toBeGreaterThan('Week 1 — '.length)
   })
 
-  it('reflects the daily commitments as commitment rows', () => {
-    const r = buildLattice(input())
-    // Commitments are the daily rows WITHOUT a per-day hour budget.
-    const commitments = r.items.filter(
-      (i) => i.horizon === 'daily' && !i.note.startsWith('Fulfils'),
-    )
-    expect(commitments).toHaveLength(2)
-    expect(commitments[0].title).toBe('Block the daily 90-min slot')
-    expect(commitments[0].due_date).toBe('2026-10-05')
-  })
-
   it('emits one plan task per calendar day, each fulfilling the week milestone', () => {
     const r = buildLattice(input())
     const tasks = r.items.filter(
@@ -109,11 +94,11 @@ describe('buildLattice (deterministic scheduler)', () => {
       expect(t.note).toMatch(/h$/)
       expect(t.due_date).toBe(t.start_date)
     }
-    // Commitments are the daily rows WITHOUT a "Fulfils" note.
-    const commitments = r.items.filter(
+    // Every daily row is a plan task (no commitment rows any more).
+    const nonFulfils = r.items.filter(
       (i) => i.horizon === 'daily' && !i.note.startsWith('Fulfils'),
     )
-    expect(commitments).toHaveLength(2)
+    expect(nonFulfils).toHaveLength(0)
   })
 
   it('emits one yearly row (the goal span) and quarterly rows per phase', () => {

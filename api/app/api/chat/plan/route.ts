@@ -194,7 +194,10 @@ export async function POST(req: NextRequest) {
     }),
     stateBuilder.loadState(userId),
     db
-      .select({ availableWeeklyHours: schema.users.availableWeeklyHours })
+      .select({
+        availableWeeklyHours: schema.users.availableWeeklyHours,
+        availability: schema.users.availability,
+      })
       .from(schema.users)
       .where(eq(schema.users.id, userId))
       .limit(1),
@@ -214,6 +217,8 @@ export async function POST(req: NextRequest) {
     .filter((g) => g.status === 'active')
     .map((g) => g.weeklyHours)
   const budgetHours = budgetRow[0]?.availableWeeklyHours ?? null
+  const availability =
+    (budgetRow[0]?.availability as Record<string, number> | undefined) ?? null
 
   const today = new Date().toISOString().slice(0, 10)
 
@@ -234,6 +239,7 @@ export async function POST(req: NextRequest) {
       today,
       existingGoalTitles,
       budgetHours,
+      availability,
       activeGoalWeeklyHours,
       threadId: conversationId,
       resume: pending ? message : undefined,

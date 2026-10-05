@@ -16,7 +16,7 @@ import { NextRequest, NextResponse } from 'next/server'
 
 import { auth } from '@/lib/auth'
 import { db } from '@/lib/db'
-import { auditLog, commitments, goals, messages, users } from '@/db/schema'
+import { auditLog, goals, messages, users } from '@/db/schema'
 import { GUEST_TOKEN_COOKIE, verifyGuestToken } from '@/lib/guest-token'
 import { resolveRequestUser } from '@/lib/request-user'
 
@@ -86,7 +86,7 @@ export async function GET(req: NextRequest) {
   const { userId, email, name } = user
 
   // Fetch all user data in parallel.
-  const [auditRows, messageRows, goalRows, commitmentRows] = await Promise.all([
+  const [auditRows, messageRows, goalRows] = await Promise.all([
     db
       .select()
       .from(auditLog)
@@ -102,11 +102,6 @@ export async function GET(req: NextRequest) {
       .from(goals)
       .where(eq(goals.userId, userId))
       .orderBy(goals.createdAt),
-    db
-      .select()
-      .from(commitments)
-      .where(eq(commitments.userId, userId))
-      .orderBy(commitments.createdAt),
   ])
 
   // Map to the legacy FastAPI response shape (snake_case keys).
@@ -141,18 +136,6 @@ export async function GET(req: NextRequest) {
         horizon: g.horizon,
         status: g.status,
         created_at: g.createdAt.toISOString(),
-      })),
-      commitments: commitmentRows.map((c) => ({
-        id: c.id,
-        text: c.text,
-        due:
-        c.due == null
-          ? null
-          : typeof c.due === 'string'
-            ? c.due
-            : (c.due as Date).toISOString().slice(0, 10),
-        status: c.status,
-        created_at: c.createdAt.toISOString(),
       })),
     },
     conversation,

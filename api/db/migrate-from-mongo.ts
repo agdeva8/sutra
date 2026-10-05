@@ -6,7 +6,6 @@
  *
  *   users       → users
  *   goals       → goals
- *   commitments → commitments
  *   milestones  → milestones
  *   blockers    → blockers
  *   messages    → messages            (+ proposals split from .proposals[])
@@ -77,7 +76,6 @@ import { env } from "@/lib/env";
 import {
   users,
   goals,
-  commitments,
   milestones,
   blockers,
   messages,
@@ -375,66 +373,6 @@ async function migrateGoals(mongo: Db): Promise<MigrateStats> {
   }
   log(
     `goals: done (inserted ${stats.inserted}, skipped ${stats.skipped}, failed ${stats.failed})`,
-  );
-  return stats;
-}
-
-async function migrateCommitments(mongo: Db): Promise<MigrateStats> {
-  const coll = mongo.collection("commitments");
-  const total = await coll.countDocuments();
-  log(`commitments: starting (${total} docs)`);
-
-  const stats: MigrateStats = { inserted: 0, skipped: 0, failed: 0 };
-  const alreadyMigrated = await loadMigratedIds("commitments");
-
-  const cursor = coll
-    .find({}, { projection: { _id: 0 } })
-    .batchSize(MONGO_BATCH);
-  let batch: any[] = [];
-  for await (const doc of cursor as unknown as AsyncIterable<MongoDoc>) {
-    const id: string | undefined = doc.id;
-    if (!id) {
-      stats.failed++;
-      continue;
-    }
-    if (alreadyMigrated.has(id)) {
-      stats.skipped++;
-      continue;
-    }
-    batch.push({
-      id,
-      userId: doc.user_id,
-      goalId: doc.goal_id || null,
-      goalTitle: doc.goal_title ?? "",
-      text: doc.text ?? "",
-      due: toDateOnly(doc.due),
-      status: doc.status ?? "open",
-      createdAt: toTimestamp(doc.created_at) ?? new Date(),
-    });
-    if (batch.length >= BATCH_SIZE) {
-      const { inserted } = await flushBatch({
-        table: commitments,
-        rows: batch,
-        collection: "commitments",
-        idKey: "id",
-      });
-      stats.inserted += inserted;
-      stats.skipped = batch.length - inserted;
-      batch = [];
-    }
-  }
-  if (batch.length > 0) {
-    const { inserted } = await flushBatch({
-      table: commitments,
-      rows: batch,
-      collection: "commitments",
-      idKey: "id",
-    });
-    stats.inserted += inserted;
-    stats.skipped = batch.length - inserted;
-  }
-  log(
-    `commitments: done (inserted ${stats.inserted}, skipped ${stats.skipped}, failed ${stats.failed})`,
   );
   return stats;
 }
@@ -944,7 +882,6 @@ async function main(): Promise<void> {
   try {
     results.users = await migrateUsers(dbHandle);
     results.goals = await migrateGoals(dbHandle);
-    results.commitments = await migrateCommitments(dbHandle);
     results.milestones = await migrateMilestones(dbHandle);
     results.blockers = await migrateBlockers(dbHandle);
     results.messages = await migrateMessages(dbHandle);

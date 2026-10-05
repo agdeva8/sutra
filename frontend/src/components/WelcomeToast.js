@@ -46,11 +46,11 @@ export default function WelcomeToast({ user, state, signedIn }) {
     // Compute the body — keep it tiny.
     const greeting = greetingFor(new Date());
     const Icon = greeting.icon;
-    const openCommits = (state.commitments || []).filter(
-      (c) => c.status === "open",
-    );
     const activeGoals = (state.goals || []).filter(
       (g) => g.status === "active",
+    );
+    const dueToday = (state.milestones || []).filter(
+      (m) => m.target_date === today && (m.status || "open") !== "done",
     );
     const name = user?.name?.split(" ")[0] || "";
     const personalised = name ? `${greeting.text}, ${name}` : greeting.text;
@@ -58,11 +58,11 @@ export default function WelcomeToast({ user, state, signedIn }) {
     let body = "";
     if (activeGoals.length === 0) {
       body = "Add your first goal and we'll plan it together.";
-    } else if (openCommits.length > 0) {
-      const firstThree = openCommits.slice(0, 3).map((c) => c.text);
-      body = `You have ${openCommits.length} open commitment${
-        openCommits.length === 1 ? "" : "s"
-      } today — top of the list: ${firstThree.join(" · ")}.`;
+    } else if (dueToday.length > 0) {
+      const firstThree = dueToday.slice(0, 3).map((m) => m.title);
+      body = `You have ${dueToday.length} milestone${
+        dueToday.length === 1 ? "" : "s"
+      } due today — top of the list: ${firstThree.join(" · ")}.`;
     } else {
       body = `Tracking ${activeGoals.length} active goal${activeGoals.length === 1 ? "" : "s"}. Tap the chat button when you're ready for a planning session.`;
     }

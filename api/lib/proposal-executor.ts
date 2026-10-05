@@ -213,10 +213,8 @@ export async function applyProposal(
       return applyAddBlocker(db, schema, userId, proposal)
     case 'add_block':
       return applyAddTimetableBlock(db, schema, userId, proposal)
-    case 'add_commitment':
-      return applyAddCommitment(db, schema, userId, proposal)
-    case 'complete_commitment':
-      return applyCompleteCommitment(db, schema, userId, proposal)
+    case 'set_availability':
+      return applySetAvailability(db, schema, userId, proposal)
     default:
       return { success: false, result: `Unknown action '${proposal.action}'` }
   }
@@ -709,123 +707,41 @@ async function applyAddTimetableBlock(
   }
 }
 
-async function applyAddCommitment(
+/**
+ * `set_availability` — persist the user's weekly free hours (weekday → hours).
+ * Captured once (first goal); the scheduler reads `users.availability`.
+ */
+async function applySetAvailability(
   db: any,
   schema: any,
   userId: string,
-  proposal: Proposal
+  proposal: Proposal,
 ): Promise<ApplyProposalResult> {
-  const args = proposal.args
-  const text: string = args.text ?? ''
-  const due: string | null = args.due ?? null
-  // Iteration 10 (Goal Planner) — phase name (key in goal.phase_objectives).
-  const phase: string = typeof args.phase === 'string' ? args.phase : ''
-
-  // Resolve parent goal (id or title). Same orphan-prevention logic as
-  // applyAddMilestone — without this, every commitment logged by the
-  // model came back with `goal_title=''`, so it never appeared under
-  // the goal card or on the timeline.
-  let goalId: string | null = null
-  let goalTitle: string = ''
-  const ref = await resolveGoalRef(db, schema, userId, args)
-  if (ref) {
-    goalId = ref.goalId
-    goalTitle = ref.goalTitle
-  }
-
-  await db.transaction(async (tx: any) => {
-    await tx.insert(schema.commitments).values({
-      id: newId('commit'),
-      userId,
-      goalId,
-      goalTitle,
-      text,
-      due,
-      phase,
-      status: 'open',
-    })
-    await tx.insert(schema.auditLog).values({
-      id: newId('audit'),
-      userId,
-      type: `confirm:${proposal.action}`,
-      summary: `Committed: ${text}${goalTitle ? ` -> ${goalTitle}` : ''}`,
-      payload: { proposal_id: proposal.id, args },
-    })
-    if (goalId) await writePlanItems(tx, schema, { userId, goalId, items: args.plan_items })
-  })
-
-  return {
-    success: true,
-    result: `Committed: ${text}${goalTitle ? ` -> ${goalTitle}` : ''}`,
-  }
-}
-
-async function applyCompleteCommitment(
-  db: any,
-  schema: any,
-  userId: string,
-  proposal: Proposal
-): Promise<ApplyProposalResult> {
-  const args = proposal.args
-  // The system prompt directs the model to identify a commitment by its
-  // text (`{"action":"complete_commitment","text":"<commitment text>"}`)
-  // — it doesn't have commitment IDs. Look up by id when present, else
-  // resolve by exact text match against the user's open commitments.
-  let commitmentId: string | undefined =
-    typeof args.commitment_id === 'string' ? args.commitment_id : undefined
-
-  const textRaw = typeof args.text === 'string' ? args.text.trim() : ''
-  if (!commitmentId && textRaw) {
-    const rows = await db
-      .select({ id: schema.commitments.id, text: schema.commitments.text })
-      .from(schema.commitments)
-      .where(
-        and(eq(schema.commitments.userId, userId), eq(schema.commitments.status, 'open'))
-      )
-      .limit(500)
-    const needle = textRaw.toLowerCase()
-    const exact = rows.find((r: { text: string }) => r.text.trim().toLowerCase() === needle)
-    if (exact) commitmentId = exact.id
-  }
-
-  if (!commitmentId) {
-    return {
-      success: false,
-      result: `No matching commitment for '${args.commitment_id ?? args.text ?? ''}'`,
+  const raw = (proposal.args?.availability ?? {}) as Record<string, unknown>
+  const allowed = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const
+  const availability: Record<string, number> = {}
+  for (const k of allowed) {
+    const v = raw[k]
+    if (typeof v === 'number' && Number.isFinite(v) && v >= 0) {
+      availability[k] = Math.min(24, v)
     }
   }
-
-  const rows = await db
-    .select({ id: schema.commitments.id, text: schema.commitments.text })
-    .from(schema.commitments)
-    .where(
-      and(
-        eq(schema.commitments.userId, userId),
-        eq(schema.commitments.id, commitmentId)
-      )
-    )
-    .limit(1)
-  if (!rows.length) {
-    return {
-      success: false,
-      result: `No matching commitment for '${commitmentId}'`,
-    }
-  }
-  const text = rows[0].text
 
   await db.transaction(async (tx: any) => {
     await tx
-      .update(schema.commitments)
-      .set({ status: 'done' })
-      .where(eq(schema.commitments.id, commitmentId!))
+      .update(schema.users)
+      .set({ availability })
+      .where(eq(schema.users.id, userId))
     await tx.insert(schema.auditLog).values({
       id: newId('audit'),
       userId,
       type: `confirm:${proposal.action}`,
-      summary: `Commitment '${text}' -> done`,
-      payload: { proposal_id: proposal.id, args: proposal.args },
+      summary: `Availability saved: ${Object.entries(availability)
+        .map(([d, h]) => `${d} ${h}h`)
+        .join(', ')}`,
+      payload: { proposal_id: proposal.id, availability },
     })
   })
 
-  return { success: true, result: `Commitment '${text}' -> done` }
+  return { success: true, result: 'Saved your weekly availability.' }
 }

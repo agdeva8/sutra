@@ -18,7 +18,7 @@ import 'server-only'
 import { and, eq, inArray } from 'drizzle-orm'
 
 import { db } from '@/lib/db'
-import { commitments, goals, milestones } from '@/db/schema'
+import { goals, milestones } from '@/db/schema'
 import { AUDIT_TYPES, writeAudit } from '@/lib/audit'
 import { computeDrift } from '@/lib/goal-planner/drift'
 
@@ -63,27 +63,15 @@ export async function recomputeGoalDrift(
   const targets = goalRows.filter((g) => g.status === 'active')
   if (targets.length === 0) return []
 
-  const [milestoneRows, commitmentRows] = await Promise.all([
-    db
-      .select({
-        goalId: milestones.goalId,
-        title: milestones.title,
-        targetDate: milestones.targetDate,
-        status: milestones.status,
-      })
-      .from(milestones)
-      .where(eq(milestones.userId, userId)),
-    db
-      .select({
-        goalId: commitments.goalId,
-        id: commitments.id,
-        text: commitments.text,
-        due: commitments.due,
-        status: commitments.status,
-      })
-      .from(commitments)
-      .where(eq(commitments.userId, userId)),
-  ])
+  const milestoneRows = await db
+    .select({
+      goalId: milestones.goalId,
+      title: milestones.title,
+      targetDate: milestones.targetDate,
+      status: milestones.status,
+    })
+    .from(milestones)
+    .where(eq(milestones.userId, userId))
 
   const transitions: DriftTransition[] = []
 
@@ -91,16 +79,7 @@ export async function recomputeGoalDrift(
     const ms = milestoneRows
       .filter((m) => m.goalId === g.id)
       .map((m) => ({ title: m.title, targetDate: m.targetDate, status: m.status }))
-    const cs = commitmentRows
-      .filter((c) => c.goalId === g.id)
-      .map((c) => ({
-        id: c.id,
-        text: c.text,
-        due: c.due,
-        status: c.status as 'open' | 'done',
-      }))
-
-    const { status, reasons } = computeDrift({ today, milestones: ms, commitments: cs })
+    const { status, reasons } = computeDrift({ today, milestones: ms })
     const from = g.driftStatus as DriftStatus
     if (status === from) continue
 

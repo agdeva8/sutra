@@ -1,10 +1,10 @@
 # Motivation Agent
 
-LLM-driven curation for the existing `MotivationCard`. Replaces the
-hand-curated catalogue in `api/app/api/motivation/recommend/route.ts`
-with a pipeline that searches the live web, critiques candidates
-against 10 parameters, and returns the top 3 only if they pass three
-gates (core-four, k-of-n, weighted total).
+LLM-driven curation for the existing `MotivationCard`. A pipeline that
+searches the live web, critiques candidates against 10 parameters, and
+returns the top 3 only if they pass three gates (core-four, k-of-n,
+weighted total). There is no hand-curated fallback: on a cold miss the
+card shows a "searching" line until the pipeline lands picks.
 
 ## Layout
 
@@ -52,26 +52,27 @@ All three gates must pass:
 
 | Var | Purpose |
 |---|---|
-| `MOTIVATION_AGENT_ENABLED` | Master switch. Default: prod=true, dev=false |
+| `MOTIVATION_AGENT_ENABLED` | Master switch. Default: on except `NODE_ENV=test` |
 | `TAVILY_API_KEY` | Required when the agent is enabled |
 | `EMERGENT_LLM_KEY` | Already used by `lib/emergent/llm.ts` |
 
 ## Rollout flag
 
-`MOTIVATION_AGENT_ENABLED` defaults to `false` in dev/test and `true`
-in production. Set it explicitly to override. v0 (dev only) →
-v1 (10% users via further rollout) → v2 (100%).
+`MOTIVATION_AGENT_ENABLED` is on by default everywhere except the
+test runner. Set it to `false` to disable the pipeline (the route then
+returns the empty "searching" response).
 
 ## Cost cap
 
 Hard ceiling $0.25 / call. Live-tracked by the orchestrator from
-token counts × published rates. On breach, short-circuit to the
-fallback catalogue.
+token counts × published rates. On breach, short-circuit to the empty
+"searching" response.
 
 ## Failover chain
 
 1. Cache hit (≤ 60m) → return immediately
-2. Pipeline success → return items
-3. Pipeline failure / cap breach / Tavily missing → built-in
-   fallback catalogue (3 items per bucket, hardcoded)
-4. Empty → `MotivationCard` renders nothing (no nag)
+2. Cache stale (≤ 24h) → return stale items, refresh in background
+3. Cache miss → return empty (`cache: 'miss'`), pipeline runs in
+   background; the card shows "Searching the web…" and polls
+4. Pipeline failure / cap breach / Tavily missing → empty response;
+   the card gives up after its poll cap and offers a retry

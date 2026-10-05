@@ -37,9 +37,6 @@ const plan: Plan = {
   ],
   blockers: [],
   blocks: [],
-  commitments: [
-    { goal_title: TITLE, text: 'Pick a resource', due: '2026-10-02', phase: 'Foundations' },
-  ],
   prose: 'The daily slot is the load-bearing constraint.',
 }
 
@@ -61,7 +58,6 @@ const schedMilestones = buildLattice({
     phase: m.phase,
     rationale: m.rationale,
   })),
-  commitments: plan.commitments.map((c) => ({ text: c.text, due: c.due, phase: c.phase })),
 }).milestones
 const MILE_DATE = new Map(schedMilestones.map((m) => [m.title, m.target_date]))
 
@@ -75,9 +71,36 @@ const emitOk: Emit = {
       action: 'add_milestone',
       args: { goal_title: TITLE, title: 'SD fundamentals', target_date: MILE_DATE.get('SD fundamentals')!, phase: 'Foundations' },
     },
+  ],
+}
+
+const REVIEW_GOAL = 'Switch to a new job within 3 months'
+
+/** An observation-only plan — schema-valid, but nothing to confirm. */
+const emptyPlan: Plan = {
+  goal: null,
+  milestones: [],
+  blockers: [],
+  blocks: [],
+  prose: 'The wedding only overlaps the final rounds.',
+}
+
+/** The corrected re-plan: no date move, but one confirmable constraint. */
+const reviewPlan: Plan = {
+  goal: null,
+  milestones: [],
+  blockers: [
+    { title: 'Wedding (Dec 16)', start_date: '2026-12-16', end_date: '2026-12-16', note: '' },
+  ],
+  blocks: [],
+  prose: 'No date change needed — the wedding only overlaps the final rounds.',
+}
+
+const reviewEmit: Emit = {
+  tools: [
     {
-      action: 'add_commitment',
-      args: { goal_title: TITLE, text: 'Pick a resource', due: '2026-10-02', phase: 'Foundations' },
+      action: 'add_blocker',
+      args: { title: 'Wedding (Dec 16)', start_date: '2026-12-16', end_date: '2026-12-16' },
     },
   ],
 }
@@ -86,11 +109,13 @@ function fakeComplete(opts: {
   intake?: unknown
   intakes?: unknown[]
   plan?: unknown
+  plans?: unknown[]
   emits?: unknown[]
   throwAt?: 'intake' | 'plan' | 'emit'
 }) {
   let emitIdx = 0
   let intakeIdx = 0
+  let planIdx = 0
   return (async (args: { schema: unknown }) => {
     const meta = { mode: 'object' as const }
     if (args.schema === IntakeSchema) {
@@ -100,7 +125,8 @@ function fakeComplete(opts: {
     }
     if (args.schema === PlanSchema) {
       if (opts.throwAt === 'plan') throw new Error('plan boom')
-      return { object: opts.plan, meta }
+      const object = opts.plans ? opts.plans[planIdx++] : opts.plan
+      return { object, meta }
     }
     if (args.schema === EmitSchema) {
       if (opts.throwAt === 'emit') throw new Error('emit boom')
@@ -120,6 +146,7 @@ function base(over: Partial<PlanPipelineArgs> = {}): PlanPipelineArgs {
     today: '2026-10-01',
     existingGoalTitles: [],
     budgetHours: 40,
+    availability: null,
     activeGoalWeeklyHours: [5],
     ...over,
   }
@@ -134,7 +161,7 @@ describe('runPlanPipeline', () => {
     )
     expect(res.kind).toBe('ok')
     if (res.kind !== 'ok') return
-    expect(res.tools).toHaveLength(3)
+    expect(res.tools).toHaveLength(2)
     expect(res.headroom?.decision).toBe('proceed')
     expect(res.modes).toEqual(['object', 'object', 'object'])
     expect(res.rejects).toEqual([])
@@ -170,6 +197,67 @@ describe('runPlanPipeline', () => {
     }
   })
 
+  it('never early-returns for scoped action intents — the turn must reach plan + emit', async () => {
+    // Regression: a blocker-collision re-plan was classified as a
+    // conversational shape and early-returned a bare framing line, so the
+    // user got an observation with no verdict and no action (twice). The
+    // same gap applied to edit_goal / plan_day.
+    const shapes = ['meta_question', 'routine_return', 'over_committed'] as const
+    for (const intent of ['review_progress', 'edit_goal', 'plan_day'] as const) {
+      for (const shape of shapes) {
+        const res = await runPlanPipeline(
+          base({
+            intent,
+            message: 'Re-plan around the wedding blocker.',
+            existingGoalTitles: [REVIEW_GOAL],
+            deps: {
+              complete: fakeComplete({
+                intake: { ...intakeOk, shape, framing_line: 'The wedding overlaps the final rounds.' },
+                plan: reviewPlan,
+                emits: [reviewEmit],
+              }),
+            },
+          }),
+        )
+        expect(res.kind, `${intent}/${shape}`).toBe('ok')
+        if (res.kind !== 'ok') continue
+        expect(res.tools.some((t) => t.action === 'add_blocker')).toBe(true)
+      }
+    }
+  })
+
+  it('re-asks Stage 3 once when a scoped action intent plans nothing, then recovers', async () => {
+    for (const intent of ['review_progress', 'edit_goal', 'plan_day'] as const) {
+      const res = await runPlanPipeline(
+        base({
+          intent,
+          message: 'Re-plan around the wedding blocker.',
+          existingGoalTitles: [REVIEW_GOAL],
+          deps: {
+            complete: fakeComplete({ intake: intakeOk, plans: [emptyPlan, reviewPlan], emits: [reviewEmit] }),
+          },
+        }),
+      )
+      expect(res.kind, intent).toBe('ok')
+      if (res.kind !== 'ok') continue
+      expect(res.tools.some((t) => t.action === 'add_blocker')).toBe(true)
+      expect(res.rejects.some((r) => r.stage === 'plan' && r.recovered)).toBe(true)
+    }
+  })
+
+  it('degrades to no_change if a scoped action intent still plans nothing after the retry', async () => {
+    const res = await runPlanPipeline(
+      base({
+        intent: 'review_progress',
+        message: 'Re-plan around the wedding blocker.',
+        existingGoalTitles: [REVIEW_GOAL],
+        deps: { complete: fakeComplete({ intake: intakeOk, plans: [emptyPlan, emptyPlan] }) },
+      }),
+    )
+    expect(res.kind).toBe('no_change')
+    if (res.kind === 'no_change') expect(res.prose).toBe(emptyPlan.prose)
+  })
+
   it('routes over_committed add_goal into headroom instead of early-returning', async () => {
     // Full plate: the pipeline must PLAN first, then let Stage 3.5 offer ways
     // to make room — not early-return with a clarifying question.
@@ -189,10 +277,13 @@ describe('runPlanPipeline', () => {
     expect(res.kind).toBe('renegotiate')
   })
 
-  it('over_committed on a non-add_goal intent still early-returns', async () => {
+  it('over_committed on a non-scoped-action intent (drop_goal) still early-returns', async () => {
+    // review_progress / edit_goal / plan_day are now exempt (they always
+    // plan); drop_goal keeps the conversational early-return and relies on
+    // the route's deterministic forced-drop net.
     const res = await runPlanPipeline(
       base({
-        intent: 'plan_day',
+        intent: 'drop_goal',
         deps: {
           complete: fakeComplete({
             intake: { ...intakeOk, shape: 'over_committed', framing_line: 'Plate is full.' },
@@ -348,7 +439,7 @@ describe('runPlanPipeline', () => {
       base({ threadId, message: 'I have not applied yet.', resume: 'I have not applied yet.', deps: { complete } }),
     )
     expect(third.kind).toBe('ok')
-    if (third.kind === 'ok') expect(third.tools).toHaveLength(3)
+    if (third.kind === 'ok') expect(third.tools).toHaveLength(2)
   })
 
   it('switching to auto bypasses a pending clarify and plans from the full history', async () => {

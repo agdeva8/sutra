@@ -33,17 +33,21 @@ import {
 export default function TrackerCard({ state, onOpenChat, onOpenToday }) {
   const data = useMemo(() => {
     const todayIso = localDateKey()
-    const todayCommits = (state?.commitments || []).filter(
-      (c) => c.due === todayIso || (c.due && c.due < todayIso && c.status === "open"),
+    const todayCommits = (state?.milestones || []).filter(
+      (m) =>
+        m.target_date === todayIso ||
+        (m.target_date && m.target_date < todayIso && (m.status || "open") !== "done"),
     )
-    const overdue = todayCommits.filter((c) => c.due && c.due < todayIso && c.status === "open")
+    const overdue = todayCommits.filter(
+      (m) => m.target_date && m.target_date < todayIso && (m.status || "open") !== "done",
+    )
     const upcomingToday = todayCommits.filter(
-      (c) => c.due === todayIso && c.status === "open",
+      (m) => m.target_date === todayIso && (m.status || "open") !== "done",
     )
-    const doneToday = (state?.commitments || []).filter(
-      (c) => c.status === "done" && c.due === todayIso,
+    const doneToday = (state?.milestones || []).filter(
+      (m) => (m.status || "") === "done" && m.target_date === todayIso,
     )
-    const allOpen = (state?.commitments || []).filter((c) => c.status === "open")
+    const allOpen = (state?.milestones || []).filter((m) => (m.status || "open") !== "done")
     const goalsActive = (state?.goals || []).filter((g) => g.status === "active")
     const goalsPaused = (state?.goals || []).filter((g) => g.status === "paused")
     const milestonesThisWeek = (state?.milestones || []).filter((m) => {
@@ -61,7 +65,7 @@ export default function TrackerCard({ state, onOpenChat, onOpenToday }) {
       : 0
 
     return {
-      todayCommits: todayCommits.slice().sort((a, b) => (a.due || "").localeCompare(b.due || "")),
+      todayCommits: todayCommits.slice().sort((a, b) => (a.target_date || "").localeCompare(b.target_date || "")),
       overdue,
       upcomingToday,
       doneToday,
@@ -110,7 +114,7 @@ export default function TrackerCard({ state, onOpenChat, onOpenToday }) {
                 </>
               ) : (
                 <>
-                  {data.todayCommits.length} commitment
+                  {data.todayCommits.length} milestone
                   {data.todayCommits.length === 1 ? "" : "s"} on the agenda today.
                 </>
               )}
@@ -182,7 +186,7 @@ export default function TrackerCard({ state, onOpenChat, onOpenToday }) {
             {/* Plan my day — opens the chat in interview mode (kind =
                 plan_day mints its own per-day conversation bucket). The
                 coach walks the user wake-time → bedtime, slotting
-                commitments into specific hours as it goes. */}
+                milestones into specific hours as it goes. */}
             <button
               data-testid="tracker-plan-day-cta"
               onClick={() =>
@@ -191,7 +195,7 @@ export default function TrackerCard({ state, onOpenChat, onOpenToday }) {
                   kind: "plan_day",
                   title: "Plan my day",
                   helperText:
-                    "We'll go hour by hour, from when I wake up to when I sleep, and turn my open commitments into real slots I can put on screen.",
+                    "We'll go hour by hour, from when I wake up to when I sleep, and turn my open milestones into real slots I can put on screen.",
                 })
               }
               className="min-h-11 flex items-center justify-center gap-2 px-4 py-2.5 rounded-md border border-[var(--border)] text-[var(--text-secondary)] font-medium text-sm hover:border-[var(--border-accent)] hover:text-[var(--accent)] transition-colors"
@@ -218,7 +222,7 @@ export default function TrackerCard({ state, onOpenChat, onOpenToday }) {
             <div className="text-sm text-[var(--text-muted)] leading-relaxed mt-1">
               {data.doneToday.length > 0
                 ? "Use the momentum — pick the next item."
-                : "Tiny is fine. One commitment done > none."}
+                : "Tiny is fine. One milestone done > none."}
             </div>
           </div>
 
@@ -319,7 +323,7 @@ function CompletionRing({ pct, done, total }) {
           {done} of {total} done
         </div>
         <div className="text-xs text-[var(--text-muted)] mt-0.5">
-          Today's commitments
+          Today's milestones
         </div>
       </div>
     </div>

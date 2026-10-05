@@ -153,7 +153,6 @@ describe('TestState', () => {
     expect(res.status).toBe(200)
     const d = await res.json()
     expect(d).toHaveProperty('goals')
-    expect(d).toHaveProperty('commitments')
     expect(d).toHaveProperty('over_commitment')
     const oc = d.over_commitment
     expect(oc).toHaveProperty('level')

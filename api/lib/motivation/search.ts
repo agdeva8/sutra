@@ -10,7 +10,7 @@
  *     so the SDK mostly wraps a single POST — not much to gain.
  *
  * Failure modes:
- *   - 401/403 / missing key  → return [] (caller falls back to catalogue)
+ *   - 401/403 / missing key  → return [] (caller returns empty "searching")
  *   - 429 rate limit         → return whatever we got, log + bail
  *   - Network error / timeout → return [] (caller falls back)
  *   - Per-query failure      → other queries still contribute

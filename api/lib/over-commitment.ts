@@ -34,11 +34,6 @@ export interface OverCommitmentGoal {
   status: 'active' | 'paused' | 'dropped'
 }
 
-export interface OverCommitmentCommitment {
-  id?: string
-  status: 'open' | 'done'
-}
-
 export interface OverCommitment {
   level: OverCommitmentLevel
   message: string
@@ -57,10 +52,8 @@ export interface OverCommitment {
  */
 export function computeOverCommitment(
   goalsList: OverCommitmentGoal[],
-  commitmentsList: OverCommitmentCommitment[],
 ): OverCommitment {
   const active = goalsList.filter((g) => g.status === 'active')
-  const openCommits = commitmentsList.filter((c) => c.status === 'open')
 
   let level: OverCommitmentLevel = 'clear'
   let message = 'A steady, focused load.'
@@ -73,11 +66,8 @@ export function computeOverCommitment(
     conflicting.push(...active.slice(0, 3).map((g) => g.title))
   } else if (n >= 5) {
     level = 'high'
-    message = `${n} goals and ${openCommits.length} promises in flight — your attention is stretched thin.`
+    message = `${n} goals in flight — your attention is stretched thin.`
     conflicting.push(...active.slice(0, 3).map((g) => g.title))
-  } else if (openCommits.length > 4) {
-    level = 'high'
-    message = `${openCommits.length} open promises across ${n} goals — more than a week really holds.`
   } else if (n >= 3) {
     level = 'moderate'
     message = `${n} goals in play. Doable, but only one can lead this week.`
@@ -88,7 +78,7 @@ export function computeOverCommitment(
     message,
     conflicting,
     active_goals: n,
-    open_commitments: openCommits.length,
+    open_commitments: 0,
   }
 }
 

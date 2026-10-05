@@ -37,7 +37,7 @@ Actors and externals:
 
 - **User** — Google-authenticated (Emergent OAuth) or **guest** (ephemeral token, migrates on sign-in).
 - **LLM providers** — reached through one OpenAI-compatible backend: **DeepSeek** when `DEEPSEEK_API_KEY` is set, else the **Emergent proxy** (gemini / openai / anthropic). See `api/lib/emergent/backend.ts:22`.
-- **Tavily** — web search for the motivation pipeline (optional; missing → catalogue fallback).
+- **Tavily** — web search for the motivation pipeline (optional; missing → empty "searching" response).
 - **Postgres (Supabase)** — all durable state via Drizzle.
 - **Object storage** — uploaded/linked **sources** (PDF/MD/TXT/CSV/JSON/images).
 - **Hosting** — Vercel, deploying from `api/` (`api/vercel.json`).
@@ -187,11 +187,11 @@ Two write models:
 flowchart LR
   REQ[request] --> BUCKET[detectBucket + auth]
   BUCKET --> FLAG{MOTIVATION_AGENT_ENABLED?}
-  FLAG -- no --> CAT[catalogue]
+  FLAG -- no --> EMPTY[empty "searching"]
   FLAG -- yes --> CACHE{cache?}
   CACHE -- "hit ≤60m" --> HIT[cached items]
   CACHE -- "stale ≤24h" --> STALE[stale items + background run]
-  CACHE -- miss --> MISS[catalogue now + background run]
+  CACHE -- miss --> MISS[empty "searching" + background run]
   STALE --> PIPE[runPipeline]
   MISS --> PIPE
   PIPE --> SIG[n_signals] --> SEARCH[n_search] --> FETCH[n_fetch] --> CRIT[n_critique] --> PICK[n_pick] --> FRAME[n_frame] --> CACHEW[n_cache]
@@ -222,7 +222,7 @@ Substantive writes and daily-log/commitment changes append to `audit_log` (`lib/
 ### Feature flags
 
 - `GOAL_PLANNER_ENABLED` — **default ON** (`lib/goal-planner/config.ts:35`); `GOAL_PLANNER_USER_ALLOWLIST` narrows rollout.
-- `MOTIVATION_AGENT_ENABLED` — **prod-on, dev/test-off** unless overridden.
+- `MOTIVATION_AGENT_ENABLED` — **on except `NODE_ENV=test`** unless overridden.
 - `GOAL_PLANNER_USE_OBJECT_MODE` — opt-in native json_schema.
 
 ---
@@ -238,7 +238,7 @@ Substantive writes and daily-log/commitment changes append to `audit_log` (`lib/
 | Renegotiation rounds | ≤2 | `lib/goal-planner/config.ts:62` |
 | Daily served-card cap | 20 | `lib/motivation/config.ts:118` |
 
-Observability: structured stage logging + `plan_rejects` / `motivation_rejects`. Rollout safety: flags above, with deterministic gates so a bad model run degrades to `no_change` / catalogue rather than bad state.
+Observability: structured stage logging + `plan_rejects` / `motivation_rejects`. Rollout safety: flags above, with deterministic gates so a bad model run degrades to `no_change` / an empty "searching" response rather than bad state.
 
 ---
 

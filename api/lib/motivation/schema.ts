@@ -198,18 +198,6 @@ export const RecommendationRequestSchema = z.object({
   stateHash: z.string().min(8),
   /** 1..3, default 3. */
   n: z.number().int().min(1).max(3).default(3),
-  /**
-   * Force a fresh pipeline run even if a cache row is fresh. The
-   * route passes this when the user hits the manual refresh button;
-   * the SWR poller never sets it. We bypass the cache write
-   * dedup-map for the *lookup* but still register the new pipeline
-   * in the in-flight map so a concurrent poll that arrives 200ms
-   * later can await the same run instead of starting a duplicate.
-   *
-   * Default false — keep current behaviour unless the caller
-   * explicitly opts in.
-   */
-  forceRefresh: z.boolean().default(false),
 })
 export type RecommendationRequest = z.infer<typeof RecommendationRequestSchema>
 

@@ -88,9 +88,3 @@ export { frameCandidate, fallbackFrame } from './frame'
 export { critiqueCandidate } from './critique'
 export { fetchCandidates } from './fetch'
 export { searchTavily } from './search'
-export {
-  CATALOGUE,
-  fallbackFrame as catalogueFallbackFrame,
-  pickFromCatalogue,
-  type CatalogueSeed,
-} from './catalogue'

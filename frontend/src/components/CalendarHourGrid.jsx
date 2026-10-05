@@ -5,7 +5,7 @@ import { CalendarCard } from "./CalendarCards";
  * HourGrid — Google-Calendar-style time grid for the Day/Week spans.
  *
  * Shown only when the user has planned timetable blocks. All-day items
- * (tasks/commitments/milestones) sit in an all-day row on top; the user's
+ * (tasks/milestones) sit in an all-day row on top; the user's
  * timeblocks are placed in their day/hour column. Clicking an empty slot
  * opens the add dialog for that day.
  */

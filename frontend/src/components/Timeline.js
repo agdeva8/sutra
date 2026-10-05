@@ -19,6 +19,8 @@ import {
   ChevronDown,
   Plus,
   Pencil,
+  Trash2,
+  Loader2,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -26,7 +28,6 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuSeparator,
 } from "./ui/dropdown-menu";
 import {
   Select,
@@ -37,8 +38,12 @@ import {
 } from "./ui/select";
 import { Popover, PopoverTrigger, PopoverContent } from "./ui/popover";
 import DayPlanner from "./DayPlanner";
+import AddToDayDialog from "./AddToDayDialog";
 import CenteredDialog from "./CenteredDialog";
-import { CardsGrid, WeekdayHeader, TargetGrid, WeekGrid, MonthGrid } from "./CalendarCards";
+import { showReplanNudge } from "./ReplanToast";
+import { CardsGrid, WeekGrid, MonthGrid } from "./CalendarCards";
+import CalendarMonthGrid from "./CalendarMonthGrid";
+import CalendarMonthNested, { GoalFilter } from "./CalendarMonthNested";
 import { HourGrid } from "./CalendarHourGrid";
 import { api } from "../lib/api";
 import { toast } from "sonner";
@@ -203,7 +208,6 @@ function scopeForItem(item) {
   const date = item.target_date || item.due || (item.date instanceof Date ? fmtIso(item.date) : "");
   const detail = [
     goalTitle ? `Goal: ${goalTitle}.` : "",
-    item.phase ? `Phase: ${item.phase}.` : "",
     item.note ? `${item.note}.` : "",
     date ? `Date: ${date}.` : "",
     item.start_date && item.end_date ? `Blocker window: ${item.start_date}–${item.end_date}.` : "",
@@ -261,6 +265,9 @@ const HORIZONS = [
 ];
 
 const DAY_MS = 86400000;
+
+/** "YYYY-Qn" identity for a date's quarter — used by the quarter picker. */
+const anonQuarter = (d) => `${d.getFullYear()}-Q${Math.floor(d.getMonth() / 3)}`;
 
 /* ------------------------------- date helpers ----------------------------- */
 
@@ -411,8 +418,11 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
   // The editable day planner (timetable blocks / blockers / commitments)
   // opens when a day is clicked in the calendar view.
   const [selectedDay, setSelectedDay] = useState(null);
-  const [quickAddType, setQuickAddType] = useState(null);
+  // Direct "add to your day" dialog (the unified add flow), separate from the
+  // day card that `selectedDay` opens.
+  const [addDay, setAddDay] = useState(null);
   const [selectedTimelineItem, setSelectedTimelineItem] = useState(null);
+  const [removing, setRemoving] = useState(false);
   // Option B — a gentle re-plan offer surfaced after a milestone's tasks all
   // complete. Never auto-fires; the user chooses.
   const [replanOffer, setReplanOffer] = useState(null);
@@ -454,11 +464,6 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
     },
     [onOpenChatWith, onOpenChat, onPrefill],
   );
-
-  const openQuickAdd = (type) => {
-    setSelectedDay(startOfDay(new Date()));
-    setQuickAddType(type);
-  };
 
   /* ---------- collect & normalize data from state ---------- */
 
@@ -594,7 +599,6 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
         id: p.id,
         title: p.title,
         note: p.note,
-        phase: p.phase,
         goalId: p.goal_id,
         status: p.status,
       });
@@ -639,8 +643,7 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
           openCommitsByGoal.get(goalId) ||
           openCommitsByGoal.get(it.goalTitle || it.goal_title || "") ||
           [];
-        const samePhase = cands.filter((c) => (c.phase || "") === (it.phase || ""));
-        commitment = (samePhase[0] || cands[0])?.text || "";
+        commitment = cands[0]?.text || "";
       }
       out.push({
         id: it.id,
@@ -666,14 +669,13 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
     () => ({
       goals: goals.length,
       milestones: milestones.length,
-      commitments: openCommitments.length,
       blockers: blockers.length,
       activity: recentActivity.length,
       drift: allItems.filter(
         (it) => it.kind !== "goal" && it.date < today && (it.status || "open") !== "done",
       ).length,
     }),
-    [goals, milestones, openCommitments, blockers, recentActivity, allItems, today],
+    [goals, milestones, blockers, recentActivity, allItems, today],
   );
 
   /* ---------- drill nav helpers ---------- */
@@ -777,7 +779,7 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
         calAnchor={calAnchor}
         setCalAnchor={setCalAnchor}
         today={today}
-        onQuickAdd={openQuickAdd}
+        onAddToDay={() => setAddDay(startOfDay(new Date()))}
       />
 
       {isEmpty ? (
@@ -798,6 +800,7 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
         <CalendarView
           allItems={allItems}
           cards={calendarCards}
+          monthCards={calendarCards}
           planItems={state?.plan_items || []}
           goals={goals}
           milestones={milestones}
@@ -813,19 +816,16 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
           onPrefill={onPrefill}
           onSelectDay={setSelectedDay}
           blocks={timetableBlocks}
-          onSelectSlot={(d) => {
-            if (d) setSelectedDay(startOfDay(d));
-            setQuickAddType("block");
-          }}
+          onSelectSlot={(d) => { if (d) setSelectedDay(startOfDay(d)); }}
         />
       )}
 
       {selectedDay && (
         <CenteredDialog
           open
-          onClose={() => { setSelectedDay(null); setQuickAddType(null); }}
-          title={`Add to ${selectedDay.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" })}`}
-          subtitle="Commitments, blockers, and time blocks for this day."
+          onClose={() => setSelectedDay(null)}
+          title={selectedDay.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" })}
+          subtitle="Everything planned for this day. Add commitments, time blocks, or unavailability."
           maxWidth="max-w-lg"
           testId="day-add-dialog"
         >
@@ -834,36 +834,55 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
               day={selectedDay}
               state={state}
               onChange={onChange}
-              onClose={() => { setSelectedDay(null); setQuickAddType(null); }}
-              initialAddType={quickAddType}
-              onInitialAddTypeHandled={() => setQuickAddType(null)}
+              onClose={() => setSelectedDay(null)}
               embedded
             />
           </div>
         </CenteredDialog>
       )}
+      <AddToDayDialog
+        open={!!addDay}
+        onClose={() => setAddDay(null)}
+        date={addDay}
+        state={state}
+        onCreated={onChange}
+      />
       <TimelineItemDetailsDialog
         item={selectedTimelineItem}
         state={state}
+        removing={removing}
         onClose={() => setSelectedTimelineItem(null)}
         onEdit={() => {
           if (selectedTimelineItem) openChat("", scopeForItem(selectedTimelineItem));
           setSelectedTimelineItem(null);
         }}
-        onAddBlocker={() => {
-          const d = selectedTimelineItem?.date;
-          setSelectedTimelineItem(null);
-          if (d) {
-            setSelectedDay(startOfDay(d));
-            setQuickAddType("blocker");
-          }
-        }}
-        onAddCommitment={() => {
-          const d = selectedTimelineItem?.date;
-          setSelectedTimelineItem(null);
-          if (d) {
-            setSelectedDay(startOfDay(d));
-            setQuickAddType("commitment");
+        onRemove={async (it) => {
+          setRemoving(true);
+          try {
+            await api.deleteBlocker(it.id);
+            setSelectedTimelineItem(null);
+            await onChange();
+            // Removing a constraint frees time — offer a re-plan right away
+            // (same nudge the drift/collision suggestions use).
+            showReplanNudge({
+              message: `Removed the blocker “${it.title}”. Want the coach to re-plan around the freed time?`,
+              onReplan: () =>
+                openChat(
+                  `I removed the blocker "${it.title}". Re-plan my schedule around the freed time.`,
+                  {
+                    scope: "review_progress",
+                    kind: "review_progress",
+                    title: "Re-planning",
+                    helperText: `Removed the blocker “${it.title}”.`,
+                    autoSend: true,
+                  },
+                ),
+            });
+          } catch (e) {
+            console.error(e);
+            toast.error("Couldn't remove that — try again.");
+          } finally {
+            setRemoving(false);
           }
         }}
         onToggle={async (it) => {
@@ -954,7 +973,7 @@ function HeaderStrip({
   calAnchor,
   setCalAnchor,
   today,
-  onQuickAdd,
+  onAddToDay,
 }) {
   const activeView = VIEW_TYPES.find((v) => v.key === viewType) || VIEW_TYPES[0];
   const ActiveIcon = activeView.Icon;
@@ -1079,6 +1098,7 @@ function HeaderStrip({
             anchor={calAnchor}
             setAnchor={setCalAnchor}
             today={today}
+            onAddToDay={onAddToDay}
           />
         ) : null}
 
@@ -1097,12 +1117,6 @@ function HeaderStrip({
             <span className="text-[var(--text-secondary)] tabular-nums">{stats.milestones}</span>
             <span className="hidden sm:inline" aria-hidden="true">milestones</span>
             <span className="sr-only">milestones</span>
-          </span>
-          <span className="flex items-center gap-1.5">
-            <Flag className="w-2.5 h-2.5 text-[var(--accent)]" aria-hidden="true" />
-            <span className="text-[var(--text-secondary)] tabular-nums">{stats.commitments}</span>
-            <span className="hidden sm:inline" aria-hidden="true">commitments</span>
-            <span className="sr-only">open commitments</span>
           </span>
           <span className="flex items-center gap-1.5">
             <AlertOctagon className="w-2.5 h-2.5 text-[var(--warning)]" aria-hidden="true" />
@@ -1135,6 +1149,7 @@ function HeaderStrip({
       {isNarrow && viewType === "calendar" && (
         <div className="flex justify-end items-center gap-2">
           <TimelineTodayButton onClick={() => setCalAnchor(startOfDay(new Date()))} />
+          {onAddToDay && <AddToDayButton onClick={onAddToDay} />}
         </div>
       )}
     </div>
@@ -1162,34 +1177,19 @@ function TimelineTodayButton({ onClick }) {
   );
 }
 
-function TimelineAddMenu({ onAdd }) {
+/** Add to day — opens the unified add dialog (commitment · time block · blocker). */
+function AddToDayButton({ onClick }) {
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          data-testid="timeline-add-trigger"
-          aria-label="Add to timeline"
-          className="font-medium inline-flex items-center gap-1.5 h-11 sm:h-9 px-2.5 rounded text-xs border border-[var(--border)] hover:border-[var(--border-accent)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
-          style={{ background: "var(--bg-secondary)" }}
-        >
-          <Plus className="h-3.5 w-3.5" aria-hidden="true" /> Add
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-48">
-        <DropdownMenuLabel>Add to today</DropdownMenuLabel>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem data-testid="timeline-add-block" onSelect={() => onAdd?.("block")}>
-          <Clock className="mr-2 h-4 w-4" aria-hidden="true" /> Time block
-        </DropdownMenuItem>
-        <DropdownMenuItem data-testid="timeline-add-commitment" onSelect={() => onAdd?.("commitment")}>
-          <Flag className="mr-2 h-4 w-4" aria-hidden="true" /> Commitment
-        </DropdownMenuItem>
-        <DropdownMenuItem data-testid="timeline-add-blocker" onSelect={() => onAdd?.("blocker")}>
-          <AlertOctagon className="mr-2 h-4 w-4" aria-hidden="true" /> Blocker
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <button
+      type="button"
+      data-testid="timeline-add-button"
+      onClick={onClick}
+      className="font-medium h-11 sm:h-9 px-3 rounded text-xs inline-flex items-center gap-1.5 bg-[var(--accent)] text-[var(--bg-primary)] hover:brightness-110 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg-primary)]"
+      title="Add to your day — commitment, time block, or unavailability"
+    >
+      <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+      Add
+    </button>
   );
 }
 
@@ -1197,7 +1197,7 @@ function TimelineAddMenu({ onAdd }) {
  * CalendarNav — span chips + prev/next/today for the Calendar view.
  * ========================================================================= */
 
-function CalendarNav({ span, setSpan, anchor, setAnchor, today, children }) {
+function CalendarNav({ span, setSpan, anchor, setAnchor, today, children, onAddToDay }) {
   const preset = CAL_SPANS.find((s) => s.key === span) || CAL_SPANS[2];
   const stepDays = preset.days;
   // Mobile-first (Wave B decision #5): below sm the span pills render as a
@@ -1207,8 +1207,9 @@ function CalendarNav({ span, setSpan, anchor, setAnchor, today, children }) {
   const isNarrow = !useMediaQuery("(min-width: 640px)");
   const showSpanSelect = isNarrow;
 
-  // Date picker opened from the month label — jump straight to a day
-  // instead of clicking prev/next across months.
+  // Period picker opened from the span label — the picker matches the CURRENT
+  // span (a Year label opens a year list, a Quarter label opens quarters, etc.)
+  // instead of always showing a day calendar.
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickMonth, setPickMonth] = useState(() => startOfDay(anchor));
 
@@ -1234,6 +1235,29 @@ function CalendarNav({ span, setSpan, anchor, setAnchor, today, children }) {
     setSpan("day");
     setPickerOpen(false);
   };
+  const pick = (d) => {
+    setAnchor(startOfDay(d));
+    setPickerOpen(false);
+  };
+  // Weeks (Mon-anchored) covering the picker's month, for the Week span.
+  const pickWeeks = useMemo(() => {
+    const first = startOfWeek(new Date(pickMonth.getFullYear(), pickMonth.getMonth(), 1));
+    const last = new Date(pickMonth.getFullYear(), pickMonth.getMonth() + 1, 0);
+    const out = [];
+    for (let w = new Date(first); w <= last; w = addDays(w, 7)) {
+      out.push(new Date(w));
+    }
+    return out;
+  }, [pickMonth]);
+
+  // A year strip ±6 from the anchored year — no endpoint, just a smooth jump.
+  const yearOptions = useMemo(() => {
+    const y = anchor.getFullYear();
+    const out = [];
+    for (let i = -6; i <= 6; i++) out.push(y + i);
+    return out;
+  }, [anchor]);
+
 
   const label = useMemo(() => {
     const a = anchor;
@@ -1327,7 +1351,7 @@ function CalendarNav({ span, setSpan, anchor, setAnchor, today, children }) {
               <button
                 type="button"
                 data-testid="timeline-month-label"
-                aria-label={`${label} — pick a day to jump to`}
+                aria-label={`${label} — pick a ${span === "quarter" ? "quarter" : span === "year" ? "year" : span} to jump to`}
                 className="inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 -mx-1.5 hover:bg-[var(--bg-tertiary)] hover:text-[var(--accent)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
               >
                 {label}
@@ -1336,66 +1360,216 @@ function CalendarNav({ span, setSpan, anchor, setAnchor, today, children }) {
             </PopoverTrigger>
           </h2>
           <PopoverContent align="center" className="w-[280px] p-3">
-            <div className="flex items-center justify-between mb-2">
-              <button
-                type="button"
-                onClick={() =>
-                  setPickMonth((m) => new Date(m.getFullYear(), m.getMonth() - 1, 1))
-                }
-                className="h-8 w-8 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-tertiary)] transition-colors"
-                title="Previous month"
-                aria-label="Previous month"
-              >
-                <ChevronLeft className="w-4 h-4" aria-hidden="true" />
-              </button>
-              <span className="text-sm font-semibold text-[var(--text-primary)]">
-                {fmtMonth(pickMonth)}
-              </span>
-              <button
-                type="button"
-                onClick={() =>
-                  setPickMonth((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1))
-                }
-                className="h-8 w-8 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-tertiary)] transition-colors"
-                title="Next month"
-                aria-label="Next month"
-              >
-                <ChevronRight className="w-4 h-4" aria-hidden="true" />
-              </button>
-            </div>
-            <div className="grid grid-cols-7 gap-0.5 mb-1" aria-hidden="true">
-              {DOW_SHORT.map((d, i) => (
-                <span
-                  key={`${d}-${i}`}
-                  className="h-6 flex items-center justify-center text-[10px] font-medium text-[var(--text-muted)]"
-                >
-                  {d}
-                </span>
-              ))}
-            </div>
-            <div className="grid grid-cols-7 gap-0.5">
-              {pickDays.map((d, i) =>
-                d ? (
+            {/* Year span → pick a year. */}
+            {span === "year" ? (
+              <div className="grid grid-cols-3 gap-1">
+                {yearOptions.map((y) => (
                   <button
-                    key={d.toISOString()}
+                    key={y}
                     type="button"
-                    onClick={() => jumpToDay(d)}
-                    className={`h-8 rounded text-xs tabular-nums transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
-                      sameDay(d, anchor)
+                    onClick={() => pick(new Date(y, 0, 1))}
+                    className={`h-9 rounded text-xs tabular-nums transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+                      y === anchor.getFullYear()
                         ? "bg-[var(--accent)] text-[var(--bg-primary)] font-semibold"
-                        : sameDay(d, today)
+                        : y === today.getFullYear()
                         ? "border border-[var(--accent)] text-[var(--accent)] font-semibold"
                         : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
                     }`}
-                    aria-label={`Jump to ${fmtMonth(d)} ${d.getDate()}`}
+                    aria-label={`Jump to ${y}`}
                   >
-                    {d.getDate()}
+                    {y}
                   </button>
+                ))}
+              </div>
+            ) : span === "quarter" || span === "month" ? (
+              /* Quarter → four quarters; Month → twelve months (of the picker year). */
+              <>
+                <div className="flex items-center justify-between mb-2">
+                  <button
+                    type="button"
+                    onClick={() => setPickMonth((m) => new Date(m.getFullYear() - 1, m.getMonth(), 1))}
+                    className="h-8 w-8 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-tertiary)] transition-colors"
+                    title="Previous year"
+                    aria-label="Previous year"
+                  >
+                    <ChevronLeft className="w-4 h-4" aria-hidden="true" />
+                  </button>
+                  <span className="text-sm font-semibold text-[var(--text-primary)]">{pickMonth.getFullYear()}</span>
+                  <button
+                    type="button"
+                    onClick={() => setPickMonth((m) => new Date(m.getFullYear() + 1, m.getMonth(), 1))}
+                    className="h-8 w-8 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-tertiary)] transition-colors"
+                    title="Next year"
+                    aria-label="Next year"
+                  >
+                    <ChevronRight className="w-4 h-4" aria-hidden="true" />
+                  </button>
+                </div>
+                {span === "quarter" ? (
+                  <div className="grid grid-cols-2 gap-1">
+                    {[0, 1, 2, 3].map((q) => {
+                      const y = pickMonth.getFullYear();
+                      const selected = anonQuarter(anchor) === `${y}-Q${q}`;
+                      const current = anonQuarter(today) === `${y}-Q${q}`;
+                      return (
+                        <button
+                          key={q}
+                          type="button"
+                          onClick={() => pick(new Date(y, q * 3, 1))}
+                          className={`h-9 rounded text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+                            selected
+                              ? "bg-[var(--accent)] text-[var(--bg-primary)] font-semibold"
+                              : current
+                              ? "border border-[var(--accent)] text-[var(--accent)] font-semibold"
+                              : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
+                          }`}
+                          aria-label={`Jump to Q${q + 1} ${y}`}
+                        >
+                          Q{q + 1} <span className="text-[10px] opacity-70">({MONTHS[q * 3]}–{MONTHS[q * 3 + 2]})</span>
+                        </button>
+                      );
+                    })}
+                  </div>
                 ) : (
-                  <span key={`pad-${i}`} className="h-8" aria-hidden="true" />
-                ),
-              )}
-            </div>
+                  <div className="grid grid-cols-3 gap-1">
+                    {MONTHS_SHORT.map((m, mi) => {
+                      const y = pickMonth.getFullYear();
+                      const selected = anchor.getFullYear() === y && anchor.getMonth() === mi;
+                      const current = today.getFullYear() === y && today.getMonth() === mi;
+                      return (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() => pick(new Date(y, mi, 1))}
+                          className={`h-9 rounded text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+                            selected
+                              ? "bg-[var(--accent)] text-[var(--bg-primary)] font-semibold"
+                              : current
+                              ? "border border-[var(--accent)] text-[var(--accent)] font-semibold"
+                              : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
+                          }`}
+                          aria-label={`Jump to ${MONTHS_FULL[mi]} ${y}`}
+                        >
+                          {m}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            ) : span === "week" ? (
+              /* Week span → the weeks of the picker month. */
+              <>
+                <div className="flex items-center justify-between mb-2">
+                  <button
+                    type="button"
+                    onClick={() => setPickMonth((m) => new Date(m.getFullYear(), m.getMonth() - 1, 1))}
+                    className="h-8 w-8 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-tertiary)] transition-colors"
+                    title="Previous month"
+                    aria-label="Previous month"
+                  >
+                    <ChevronLeft className="w-4 h-4" aria-hidden="true" />
+                  </button>
+                  <span className="text-sm font-semibold text-[var(--text-primary)]">{fmtMonth(pickMonth)}</span>
+                  <button
+                    type="button"
+                    onClick={() => setPickMonth((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1))}
+                    className="h-8 w-8 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-tertiary)] transition-colors"
+                    title="Next month"
+                    aria-label="Next month"
+                  >
+                    <ChevronRight className="w-4 h-4" aria-hidden="true" />
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 gap-1">
+                  {pickWeeks.map((w, i) => {
+                    const selected = startOfWeek(anchor).getTime() === w.getTime();
+                    const current = today >= w && today < addDays(w, 7);
+                    return (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => pick(w)}
+                        className={`h-9 rounded px-2 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+                          selected
+                            ? "bg-[var(--accent)] text-[var(--bg-primary)] font-semibold"
+                            : current
+                            ? "border border-[var(--accent)] text-[var(--accent)] font-semibold"
+                            : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
+                        }`}
+                        aria-label={`Jump to week of ${fmtDay(w)}`}
+                      >
+                        Week {i + 1} <span className="text-[10px] opacity-70">({fmtDay(w)} – {fmtDay(addDays(w, 6))})</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            ) : (
+              /* Day span → the day grid. */
+              <>
+                <div className="flex items-center justify-between mb-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPickMonth((m) => new Date(m.getFullYear(), m.getMonth() - 1, 1))
+                    }
+                    className="h-8 w-8 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-tertiary)] transition-colors"
+                    title="Previous month"
+                    aria-label="Previous month"
+                  >
+                    <ChevronLeft className="w-4 h-4" aria-hidden="true" />
+                  </button>
+                  <span className="text-sm font-semibold text-[var(--text-primary)]">
+                    {fmtMonth(pickMonth)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPickMonth((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1))
+                    }
+                    className="h-8 w-8 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-tertiary)] transition-colors"
+                    title="Next month"
+                    aria-label="Next month"
+                  >
+                    <ChevronRight className="w-4 h-4" aria-hidden="true" />
+                  </button>
+                </div>
+                <div className="grid grid-cols-7 gap-0.5 mb-1" aria-hidden="true">
+                  {DOW_SHORT.map((d, i) => (
+                    <span
+                      key={`${d}-${i}`}
+                      className="h-6 flex items-center justify-center text-[10px] font-medium text-[var(--text-muted)]"
+                    >
+                      {d}
+                    </span>
+                  ))}
+                </div>
+                <div className="grid grid-cols-7 gap-0.5">
+                  {pickDays.map((d, i) =>
+                    d ? (
+                      <button
+                        key={d.toISOString()}
+                        type="button"
+                        onClick={() => jumpToDay(d)}
+                        className={`h-8 rounded text-xs tabular-nums transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+                          sameDay(d, anchor)
+                            ? "bg-[var(--accent)] text-[var(--bg-primary)] font-semibold"
+                            : sameDay(d, today)
+                            ? "border border-[var(--accent)] text-[var(--accent)] font-semibold"
+                            : "text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]"
+                        }`}
+                        aria-label={`Jump to ${fmtMonth(d)} ${d.getDate()}`}
+                      >
+                        {d.getDate()}
+                      </button>
+                    ) : (
+                      <span key={`pad-${i}`} className="h-8" aria-hidden="true" />
+                    ),
+                  )}
+                </div>
+              </>
+            )}
           </PopoverContent>
         </Popover>
         <button
@@ -1408,7 +1582,10 @@ function CalendarNav({ span, setSpan, anchor, setAnchor, today, children }) {
           <ChevronRight className="w-3.5 h-3.5" aria-hidden="true" />
         </button>
         {!isNarrow && (
-          <TimelineTodayButton onClick={() => setAnchor(startOfDay(new Date()))} />
+          <>
+            <TimelineTodayButton onClick={() => setAnchor(startOfDay(new Date()))} />
+            {onAddToDay && <AddToDayButton onClick={onAddToDay} />}
+          </>
         )}
         {children}
       </div>
@@ -1669,7 +1846,7 @@ function StripView({ state, today, openChat, onSelectItem, onPrefill }) {
       const k = bucketFromDate(date, today);
       out[k].push({ kind, item, date });
     };
-    (state?.goals || []).forEach((g) => {
+    (state?.goals || []).filter((g) => g.status !== "dropped").forEach((g) => {
       const d = parse(g.target_date) || parse(g.start_date) || today;
       push("goal", g, d);
     });
@@ -1690,7 +1867,7 @@ function StripView({ state, today, openChat, onSelectItem, onPrefill }) {
   }, [state, today]);
 
   const totals = useMemo(() => {
-    const goals = state?.goals?.length || 0;
+    const goals = (state?.goals || []).filter((g) => g.status !== "dropped").length;
     const openCommitments = (state?.commitments || []).filter(
       (c) => c.status !== "done",
     ).length;
@@ -2262,6 +2439,7 @@ function WeekColumns({ days, items, goals, onSelectDay, onSelectItem }) {
 function CalendarView({
   allItems,
   cards,
+  monthCards = [],
   planItems = [],
   blocks = [],
   goals,
@@ -2281,6 +2459,9 @@ function CalendarView({
 }) {
   const preset = CAL_SPANS.find((s) => s.key === span) || CAL_SPANS[2];
   const days = preset.days;
+
+  // Month view goal filter — `null` means "all goals visible".
+  const [activeGoalIds, setActiveGoalIds] = useState(null);
 
   const { days: dayList, cells, itemsByDay } = useMemo(() => {
     const start =
@@ -2358,7 +2539,6 @@ function CalendarView({
         glyph,
         goalTitle: goal?.title || "",
         color: colorByGoal.get(p.goal_id) || GOAL_PALETTE[0],
-        phase: p.phase || "",
         hours: p.horizon === "weekly" && p.weekly_hours ? `${p.weekly_hours}h/wk` : "",
         when,
         date: p.due_date
@@ -2479,31 +2659,72 @@ function CalendarView({
     );
   }
 
-  // Month span → Google-Calendar month: a weekday header + one 7-day card row
-  // per week (the `weeks` memo already pads to whole Mon–Sun rows).
+  // Month span — goal box ▸ milestone boxes ▸ weekly task boxes, with a
+  // multi-select goal filter. Falls back to the flat month grid when there are
+  // no goals yet (commitments/blockers still need somewhere to show).
   if (span === "month") {
+    const colorByGoal = new Map((goals || []).map((g, i) => [g.id, GOAL_PALETTE[i % GOAL_PALETTE.length]]));
+    const goalItems = allItems
+      .filter((it) => it.kind === "goal")
+      .map((g) => ({ ...g, color: colorByGoal.get(g.id) || GOAL_PALETTE[0] }));
+    if (goalItems.length === 0) {
+      return (
+        <CalendarMonthGrid
+          anchor={anchor}
+          cards={monthCards}
+          today={today}
+          onSelectItem={onSelectItem}
+          onSelectDay={onSelectDay}
+        />
+      );
+    }
+    const allIds = goalItems.map((g) => g.id);
+    const selected = new Set(activeGoalIds ? allIds.filter((id) => activeGoalIds.has(id)) : allIds);
+    const toggleGoal = (id) => {
+      const next = new Set(selected);
+      if (next.has(id)) {
+        if (next.size === 1) return setActiveGoalIds(next); // keep at least one visible
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      setActiveGoalIds(next);
+    };
     return (
       <div className="space-y-2">
-        <WeekdayHeader />
-        <div className="space-y-px">
-          {weeks.map((week, i) => (
-            <CardsGrid
-              key={i}
-              days={week.map((c) => c.date)}
-              cards={cards || []}
-              onSelectDay={onSelectDay}
-              onSelectItem={onSelectItem}
-              minHeight={120}
-            />
-          ))}
-        </div>
+        <GoalFilter
+          goals={goalItems}
+          selected={selected}
+          onToggle={toggleGoal}
+          onAll={() => setActiveGoalIds(new Set(allIds))}
+        />
+        <CalendarMonthNested
+          anchor={anchor}
+          goals={goalItems}
+          milestones={milestones}
+          planItems={planItems}
+          blockers={blockers}
+          selectedGoalIds={selected}
+          onSelectItem={onSelectItem}
+          onSelectDay={onSelectDay}
+        />
       </div>
     );
   }
 
-  // 3-month span → a proper grid of week cells (Week 1 … N).
+  // 3-month span → month rows × week columns (Week 1 … N), limited to the
+  // weeks that actually fall inside this 90-day window. Without the filter
+  // every quarter/year showed the same full set of weekly targets.
   if (span === "quarter") {
-    return <WeekGrid items={planTargets.weekly} onSelectItem={onSelectItem} />;
+    const qStart = startOfDay(anchor);
+    const qEnd = addDays(qStart, days);
+    const weeksInWindow = planTargets.weekly.filter((p) => {
+      const s = parse(p.item?.start_date) || p.date;
+      if (!s) return false;
+      const e = parse(p.item?.end_date) || s;
+      return e >= qStart && s < qEnd;
+    });
+    return <WeekGrid items={weeksInWindow} onSelectItem={onSelectItem} start={qStart} end={qEnd} />;
   }
   // Year span → a Jan … Dec grid; each month cell lists its milestones.
   if (span === "year") {
@@ -2743,15 +2964,29 @@ function CalendarView({
           <div className="divide-y divide-[var(--border)]">
             {rows.map((r, ri) => {
               const wkLabel = `${MONTHS_SHORT[r.start.getMonth()]} ${r.start.getDate()}`;
+              // The week that contains today is tinted + labelled "now", same
+              // signal the month (today) and year (current week) views use.
+              const isTodayRow = today >= r.start && today <= r.end;
               return (
                 <div
                   key={ri}
                   data-testid={`timeline-cal-quarter-row-${ri}`}
+                  data-today={isTodayRow ? "true" : undefined}
                   className="grid grid-cols-[88px_1fr]"
-                  style={{ minHeight: `${rowHeight}px` }}
+                  style={{
+                    minHeight: `${rowHeight}px`,
+                    background: isTodayRow
+                      ? "color-mix(in srgb, var(--accent) 8%, var(--bg-primary))"
+                      : undefined,
+                  }}
                 >
-                  <div className="font-medium px-2 py-2 text-[12px] text-[var(--text-muted)] border-r border-[var(--border-accent)] bg-[color-mix(in_srgb,var(--bg-secondary)_30%,transparent)] flex items-center">
+                  <div
+                    className={`font-medium px-2 py-2 text-[12px] border-r border-[var(--border-accent)] bg-[color-mix(in_srgb,var(--bg-secondary)_30%,transparent)] flex items-center ${
+                      isTodayRow ? "text-[var(--accent)] font-semibold" : "text-[var(--text-muted)]"
+                    }`}
+                  >
                     {wkLabel}
+                    {isTodayRow && <span className="ml-1.5 text-[10px] font-normal opacity-70">now</span>}
                   </div>
                   <div
                     className="relative px-2 py-1.5"
@@ -3171,7 +3406,7 @@ function CalendarDayItem({ item, today, onSelectItem }) {
   );
 }
 
-function TimelineItemDetailsDialog({ item, state, onClose, onEdit, onAddBlocker, onAddCommitment, onToggle }) {
+export function TimelineItemDetailsDialog({ item, state, onClose, onEdit, onRemove, onToggle, removing = false }) {
   if (!item) return null;
   const goalId = item.kind === "goal" ? item.id : item.goal_id || item.goalId;
   const goal = (state?.goals || []).find((candidate) => candidate.id === goalId)
@@ -3182,7 +3417,6 @@ function TimelineItemDetailsDialog({ item, state, onClose, onEdit, onAddBlocker,
   const commitments = (state?.commitments || []).filter(
     (commitment) => goal && (commitment.goal_id === goal.id || commitment.goal_title === goal.title),
   );
-  const phases = Object.entries(goal?.phase_objectives || {});
   const dateLabel = (value) => {
     const date = value instanceof Date ? value : parse(String(value || ""));
     return date ? date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "";
@@ -3196,25 +3430,77 @@ function TimelineItemDetailsDialog({ item, state, onClose, onEdit, onAddBlocker,
   const isTask = item.kind === "task" || item.kind === "plan";
   const done = (item.status || "").toLowerCase() === "done";
   const doneLabel = item.kind === "commitment" ? "commitment" : isTask ? "task" : "item";
-  // For a task the middle of the hierarchy is the commitment it advances;
-  // for a commitment the middle is itself.
-  const commitmentTitle = isTask
-    ? (item.commitment || (item.note || "").replace(/^Fulfils\s*/, "").split("·")[0].replace(/[“”"]/g, "").trim())
-    : item.kind === "commitment"
-    ? item.title || item.text
+  const kindLabel =
+    item.kind === "goal"
+      ? "Goal"
+      : item.kind === "commitment"
+      ? "Commitment"
+      : item.kind === "milestone"
+      ? "Milestone"
+      : item.kind === "blocker"
+      ? "Blocker"
+      : isTask
+      ? "Task"
+      : "Item";
+  const kindGlyph =
+    item.kind === "commitment" ? "⚑" : item.kind === "milestone" ? "◆" : item.kind === "blocker" ? "▲" : "○";
+  // The chain is Task → Milestone → Goal. A task fulfils a milestone (the
+  // planner's "Fulfils <milestone>" note); the milestone belongs to the goal.
+  const fulfilsTitle = isTask
+    ? (item.milestone || (item.note || "").replace(/^Fulfils\s*/, "").split("·")[0].replace(/[“”"]/g, "").trim())
     : "";
-  const fulfils = isTask
-    ? (item.note || "").replace(/^Fulfils\s*/, "").split("·")[0].replace(/[“”"]/g, "").trim()
-    : "";
-  const hours = (() => {
-    const m = (item.note || "").match(/([\d.]+)h/);
-    if (m) return `${m[1]}h`;
-    if (item.kind === "task" && item.start && item.end && item.start !== item.end) {
-      const h = (startOfDay(item.end) - startOfDay(item.start)) / DAY_MS;
-      return h > 0 ? `${h}d` : "";
-    }
-    return "";
-  })();
+  const fulfilsMilestone = fulfilsTitle
+    ? milestones.find((m) => (m.title || "").trim() === fulfilsTitle) || null
+    : null;
+  const milestoneNode =
+    item.kind === "milestone"
+      ? { title: item.title || "", date: item.target_date || item.date }
+      : fulfilsTitle
+      ? { title: fulfilsTitle, date: fulfilsMilestone?.target_date || "" }
+      : null;
+  const goalTitle = goal?.title || item.goalTitle || item.goal_title || "";
+  const goalDate = goal?.target_date || "";
+
+  const itemKindColor =
+    item.kind === "goal"
+      ? "var(--success)"
+      : item.kind === "blocker"
+      ? "var(--danger)"
+      : item.kind === "milestone"
+      ? "var(--warning)"
+      : "var(--accent)";
+  // The chain rendered top-to-bottom: the item itself, the milestone it
+  // fulfils, then the goal it serves.
+  const chainRows = [
+    {
+      key: "self",
+      glyph: kindGlyph,
+      color: itemKindColor,
+      label: kindLabel,
+      value: item.title || item.text || "",
+      date: dateRange,
+    },
+  ];
+  if (item.kind !== "milestone" && milestoneNode) {
+    chainRows.push({
+      key: "milestone",
+      glyph: "◆",
+      color: "var(--warning)",
+      label: "Milestone",
+      value: milestoneNode.title,
+      date: milestoneNode.date ? dateLabel(milestoneNode.date) : "",
+    });
+  }
+  if (goalTitle && item.kind !== "goal") {
+    chainRows.push({
+      key: "goal",
+      glyph: "◉",
+      color: "var(--success)",
+      label: "Goal",
+      value: goalTitle,
+      date: goalDate ? dateLabel(goalDate) : "",
+    });
+  }
 
   return (
     <CenteredDialog
@@ -3223,42 +3509,88 @@ function TimelineItemDetailsDialog({ item, state, onClose, onEdit, onAddBlocker,
       title={item.title || item.text || "Timeline item"}
       maxWidth="max-w-lg"
       testId="timeline-item-details"
+      footer={
+        <>
+          {item.kind === "blocker" && onRemove && (
+            <button
+              type="button"
+              data-testid="timeline-item-remove"
+              onClick={() => onRemove(item)}
+              disabled={removing}
+              className="min-h-11 inline-flex items-center justify-center gap-2 rounded-xl border border-[color-mix(in_srgb,var(--danger)_40%,transparent)] px-4 text-sm font-medium text-[var(--danger)] hover:bg-[color-mix(in_srgb,var(--danger)_10%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--danger)] disabled:opacity-60"
+            >
+              {removing ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> Removing…
+                </>
+              ) : (
+                <>
+                  <Trash2 className="h-4 w-4" aria-hidden="true" /> Remove
+                </>
+              )}
+            </button>
+          )}
+          <button
+            type="button"
+            data-testid="timeline-item-edit-with-coach"
+            onClick={onEdit}
+            className="min-h-11 flex-1 inline-flex items-center justify-center gap-2 rounded-xl bg-[var(--accent)] px-4 text-sm font-semibold text-[var(--bg-primary)] hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+          >
+            <Pencil className="h-4 w-4" aria-hidden="true" /> Edit with coach
+          </button>
+        </>
+      }
     >
-      <div className="max-h-[55vh] space-y-4 overflow-y-auto pr-1">
-        {/* hierarchy — what this is, the commitment it advances, the goal */}
-        <div className="space-y-1.5">
-          <div className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
-            <span aria-hidden="true" className="text-[var(--accent)]">
-              {item.kind === "commitment" ? "⚑" : item.kind === "milestone" ? "◆" : item.kind === "blocker" ? "▲" : "○"}
-            </span>
-            {isTask ? "Task" : item.kind === "commitment" ? "Commitment" : item.kind === "milestone" ? "Milestone" : item.kind === "blocker" ? "Blocker" : "Item"}
-          </div>
-          {commitmentTitle && item.kind !== "commitment" && (
-            <div className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
-              <span aria-hidden="true" className="text-[var(--accent)]">⚑</span>
-              Commitment: <span className="text-[var(--text-primary)]">{commitmentTitle}</span>
-            </div>
-          )}
-          {(goal?.title || item.goalTitle || item.goal_title) && (
-            <div className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
-              <span aria-hidden="true" className="text-[var(--success)]">◉</span>
-              Goal: <span className="text-[var(--text-primary)]">{goal?.title || item.goalTitle || item.goal_title}</span>
-            </div>
-          )}
-          {fulfils && fulfils !== commitmentTitle && (
-            <p className="text-[11px] text-[var(--text-muted)]">Achieves &ldquo;{fulfils}&rdquo;{hours ? ` · ${hours}` : ""}</p>
-          )}
-          {dateRange && <p className="text-xs font-mono text-[var(--text-muted)]">{dateRange}</p>}
-        </div>
+      <div className="max-h-[48vh] space-y-5 overflow-y-auto pr-1">
+        {/* chain — Task ▸ Milestone ▸ Goal. Values wrap freely; dates sit on
+            the label row so a long title never fights the layout. */}
+        <ol role="list" className="space-y-0">
+          {chainRows.map((row, i) => (
+            <li key={row.key} role="listitem" className="flex gap-3">
+              <div className="flex flex-col items-center">
+                <span
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[13px] leading-none"
+                  style={{
+                    background: `color-mix(in srgb, ${row.color} 15%, transparent)`,
+                    color: row.color,
+                  }}
+                  aria-hidden="true"
+                >
+                  {row.glyph}
+                </span>
+                {i < chainRows.length - 1 && (
+                  <span className="my-1 w-px flex-1 bg-[var(--border)]" aria-hidden="true" />
+                )}
+              </div>
+              <div className="min-w-0 flex-1 pb-4">
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]">
+                    {row.label}
+                  </span>
+                  {row.date && (
+                    <span className="shrink-0 font-mono text-[11px] tabular-nums text-[var(--text-muted)]">
+                      {row.date}
+                    </span>
+                  )}
+                </div>
+                <p className="mt-0.5 text-[14px] leading-snug text-[var(--text-primary)]">{row.value}</p>
+              </div>
+            </li>
+          ))}
+        </ol>
 
-        {/* done checkbox — logs the item done */}
+        {/* done toggle — logs the item done */}
         {onToggle && (isTask || item.kind === "commitment" || item.kind === "milestone") && (
           <button
             type="button"
             data-testid="timeline-item-toggle-done"
             onClick={() => onToggle(item)}
             aria-pressed={done}
-            className="flex w-full items-center gap-2.5 rounded-xl border border-[var(--border)] px-3 py-2.5 text-left text-sm hover:bg-[var(--bg-tertiary)]"
+            className={`flex w-full items-center gap-2.5 rounded-xl border px-3.5 py-3 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+              done
+                ? "border-[color-mix(in_srgb,var(--success)_40%,transparent)] bg-[color-mix(in_srgb,var(--success)_8%,transparent)]"
+                : "border-[var(--border)] hover:bg-[var(--bg-tertiary)]"
+            }`}
           >
             {done ? (
               <CheckCircle2 className="h-5 w-5 shrink-0 text-[var(--success)]" aria-hidden="true" />
@@ -3271,81 +3603,61 @@ function TimelineItemDetailsDialog({ item, state, onClose, onEdit, onAddBlocker,
           </button>
         )}
 
-        {goal?.why && <p className="text-sm leading-relaxed text-[var(--text-secondary)]">{goal.why}</p>}
-        {goal?.next_action && (
-          <p className="rounded-lg bg-[var(--bg-secondary)] p-3 text-sm text-[var(--text-primary)]">
-            <span className="block text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]">Next action</span>
-            {goal.next_action}
-          </p>
+        {item.kind === "blocker" && item.note && (
+          <p className="text-sm leading-relaxed text-[var(--text-secondary)]">{item.note}</p>
         )}
-        {(item.phase) && (
-          <p className="text-xs text-[var(--text-secondary)]">Phase: <span className="text-[var(--text-primary)]">{item.phase}</span></p>
-        )}
-        {item.kind === "blocker" && item.note && <p className="text-sm text-[var(--text-secondary)]">{item.note}</p>}
-        {phases.length > 0 && (
-          <section className="space-y-2">
-            <h3 className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]">Phases</h3>
-            {phases.map(([name, objective]) => (
-              <div key={name} className="rounded-lg border border-[var(--border)] px-3 py-2">
-                <div className="text-xs font-semibold text-[var(--text-primary)]">{name}</div>
-                <div className="mt-1 text-xs leading-relaxed text-[var(--text-secondary)]">{objective}</div>
+
+        {/* goal context — labelled so the raw paragraph isn't a mystery */}
+        {(goal?.why || goal?.next_action) && (
+          <section className="space-y-3">
+            {goal?.why && (
+              <div>
+                <h3 className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]">
+                  Why this matters
+                </h3>
+                <p className="mt-1 text-sm leading-relaxed text-[var(--text-secondary)]">{goal.why}</p>
               </div>
-            ))}
+            )}
+            {goal?.next_action && (
+              <div className="rounded-xl bg-[var(--bg-secondary)] p-3.5">
+                <h3 className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]">
+                  Next action
+                </h3>
+                <p className="mt-1 text-sm leading-relaxed text-[var(--text-primary)]">{goal.next_action}</p>
+              </div>
+            )}
           </section>
         )}
+
         {item.kind === "goal" && milestones.length > 0 && (
           <section className="space-y-2">
             <h3 className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]">Milestones</h3>
-            {milestones.map((milestone) => (
-              <div key={milestone.id} className="flex items-baseline justify-between gap-3 text-xs">
-                <span className="text-[var(--text-primary)]">{milestone.title}</span>
-                <span className="shrink-0 text-[var(--text-muted)]">{milestone.phase || ""}{milestone.target_date ? ` · ${milestone.target_date}` : ""}</span>
-              </div>
-            ))}
+            <div className="divide-y divide-[var(--border)] overflow-hidden rounded-xl border border-[var(--border)]">
+              {milestones.map((milestone) => (
+                <div key={milestone.id} className="flex items-baseline justify-between gap-3 px-3 py-2.5 text-xs">
+                  <span className="min-w-0 text-[var(--text-primary)]">{milestone.title}</span>
+                  <span className="shrink-0 font-mono text-[11px] tabular-nums text-[var(--text-muted)]">
+                    {milestone.target_date ? dateLabel(milestone.target_date) : ""}
+                  </span>
+                </div>
+              ))}
+            </div>
           </section>
         )}
         {item.kind === "goal" && commitments.length > 0 && (
           <section className="space-y-2">
             <h3 className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]">Commitments</h3>
-            {commitments.map((commitment) => (
-              <div key={commitment.id} className="flex items-baseline justify-between gap-3 text-xs">
-                <span className="text-[var(--text-primary)]">{commitment.text}</span>
-                <span className="shrink-0 text-[var(--text-muted)]">{commitment.due || "No date"}</span>
-              </div>
-            ))}
+            <div className="divide-y divide-[var(--border)] overflow-hidden rounded-xl border border-[var(--border)]">
+              {commitments.map((commitment) => (
+                <div key={commitment.id} className="flex items-baseline justify-between gap-3 px-3 py-2.5 text-xs">
+                  <span className="min-w-0 text-[var(--text-primary)]">{commitment.text}</span>
+                  <span className="shrink-0 font-mono text-[11px] tabular-nums text-[var(--text-muted)]">
+                    {commitment.due ? dateLabel(commitment.due) : "No date"}
+                  </span>
+                </div>
+              ))}
+            </div>
           </section>
-        )}
-        <button
-          type="button"
-          data-testid="timeline-item-edit-with-coach"
-          onClick={onEdit}
-          className="min-h-11 w-full inline-flex items-center justify-center gap-2 rounded-xl bg-[var(--accent)] px-4 text-sm font-semibold text-[var(--bg-primary)] hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
-        >
-          <Pencil className="h-4 w-4" aria-hidden="true" /> Edit with coach
-        </button>
-        {(onAddBlocker || onAddCommitment) && (
-          <div className="flex gap-2">
-            {onAddCommitment && (
-              <button
-                type="button"
-                data-testid="timeline-item-add-commitment"
-                onClick={onAddCommitment}
-                className="min-h-11 flex-1 rounded-xl bg-[var(--bg-tertiary)] px-3 text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-              >
-                Add commitment
-              </button>
-            )}
-            {onAddBlocker && (
-              <button
-                type="button"
-                data-testid="timeline-item-add-blocker"
-                onClick={onAddBlocker}
-                className="min-h-11 flex-1 rounded-xl bg-[var(--bg-tertiary)] px-3 text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-              >
-                Add blocker
-              </button>
-            )}
-          </div>
         )}
       </div>
     </CenteredDialog>

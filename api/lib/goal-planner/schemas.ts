@@ -18,7 +18,6 @@ import {
   HORIZONS,
   MAX_BLOCKERS,
   MAX_CLARIFYING_QUESTIONS,
-  MAX_COMMITMENTS,
   MAX_MILESTONES,
   MAX_PLAN_BLOCKS,
   MAX_PHASES,
@@ -72,8 +71,7 @@ export const TOOL_ACTIONS = [
   'add_milestone',
   'add_blocker',
   'add_block',
-  'add_commitment',
-  'complete_commitment',
+  'set_availability',
 ] as const
 export const ToolActionSchema = z.enum(TOOL_ACTIONS)
 export type ToolAction = z.infer<typeof ToolActionSchema>
@@ -85,25 +83,11 @@ export const ALLOWED_ACTIONS: Record<Intent, readonly ToolAction[]> = {
   // fit, the user may choose to push an existing goal's timeline out. The
   // cross-validator still requires the referenced goal to exist and any
   // dates to come from the plan.
-  add_goal: ['create_goal', 'add_milestone', 'add_blocker', 'add_commitment', 'set_goal_dates'],
-  plan_day: ['add_block', 'add_commitment', 'complete_commitment', 'add_blocker'],
-  edit_goal: [
-    'update_goal',
-    'set_goal_dates',
-    'add_milestone',
-    'add_blocker',
-    'add_commitment',
-  ],
+  add_goal: ['create_goal', 'add_milestone', 'add_blocker', 'set_availability', 'set_goal_dates'],
+  plan_day: ['add_block', 'add_blocker'],
+  edit_goal: ['update_goal', 'set_goal_dates', 'add_milestone', 'add_blocker'],
   drop_goal: ['drop_goal', 'pause_goal'],
-  review_progress: [
-    'update_goal',
-    'set_goal_dates',
-    'add_commitment',
-    'complete_commitment',
-    'add_blocker',
-    'pause_goal',
-    'drop_goal',
-  ],
+  review_progress: ['update_goal', 'set_goal_dates', 'add_blocker', 'pause_goal', 'drop_goal'],
 }
 
 /* -------------------------------------------------------------------------- */
@@ -160,14 +144,6 @@ export const ACTION_ARG_SCHEMAS: Record<ToolAction, z.ZodTypeAny> = {
       path: ['end_time'],
       message: 'end_time must be after start_time',
     }),
-  add_commitment: z
-    .object({
-      goal_title: z.string().min(1),
-      text: z.string().min(1),
-      due: isoDate,
-      phase: z.string().min(1),
-    })
-    .passthrough(),
   update_goal: z
     .object({ goal_title: z.string().optional(), goal_id: z.string().optional() })
     .passthrough(),
@@ -180,8 +156,12 @@ export const ACTION_ARG_SCHEMAS: Record<ToolAction, z.ZodTypeAny> = {
   set_goal_dates: z
     .object({ goal_title: z.string().optional(), goal_id: z.string().optional() })
     .passthrough(),
-  complete_commitment: z
-    .object({ text: z.string().optional(), commitment_id: z.string().optional() })
+  // Captured ONCE when the user first states their weekly availability.
+  set_availability: z
+    .object({
+      // weekday → free hours; only mon…sun keys, 0–24.
+      availability: z.record(z.number().min(0).max(24)),
+    })
     .passthrough(),
 }
 
@@ -266,19 +246,14 @@ export const PlanBlockSchema = z
     message: 'end_time must be after start_time',
   })
 
-export const PlanCommitmentSchema = z.object({
-  goal_title: z.string().min(1),
-  text: z.string().min(1),
-  due: isoDate,
-  phase: z.string().min(1),
-})
-
 export const PlanSchema = z.object({
   goal: PlanGoalSchema.nullable(),
   milestones: z.array(PlanMilestoneSchema).max(MAX_MILESTONES),
   blockers: z.array(PlanBlockerSchema).max(MAX_BLOCKERS),
   blocks: z.array(PlanBlockSchema).max(MAX_PLAN_BLOCKS).default([]),
-  commitments: z.array(PlanCommitmentSchema).max(MAX_COMMITMENTS),
+  // Weekly availability (weekday → free hours), set ONLY when the user just
+  // provided it (first goal). Emitted as `set_availability` by Stage 4.
+  availability: z.record(z.number().min(0).max(24)).optional(),
   prose: z.string().min(1).max(500),
 })
 export type Plan = z.infer<typeof PlanSchema>
