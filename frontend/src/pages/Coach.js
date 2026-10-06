@@ -284,18 +284,38 @@ export default function Coach() {
       .map((g) => g.title);
     if (goalTitles.length === 0) return;
     const goalList = goalTitles.map((t) => `"${t}"`).join(", ");
+    // Name the actual source so the coach knows what to read — a bare
+    // "the source I changed" forced it to guess.
+    const { sourceName, changeType, sourceId } = boundaryConfirm || {};
+    const verb = changeType === "removed" ? "removed" : changeType === "reattached" ? "reattached" : "attached";
+    const sourceRef = sourceName ? ` "${sourceName}"` : "";
+    const prefillMessage =
+      changeType === "removed"
+        ? `I just ${verb} a source${sourceRef} from ${goalList}. Let's re-plan around that — re-check the milestones, dates and next steps without it.`
+        : `I just ${verb} a source${sourceRef} to ${goalList}. Let's re-plan around what's in it — read it and re-check the milestones, dates and next steps.`;
+    // Carry the attached source into the re-plan request so the planner can
+    // actually read it (sourceIds → ATTACHED SOURCES in the prompt).
+    const initialSources =
+      changeType !== "removed" && sourceId
+        ? [{ id: sourceId, original_filename: sourceName || "source", url: sourceName || "" }]
+        : [];
     setFocusedTask({
       title:
         goalTitles.length === 1
           ? `Re-plan "${goalTitles[0]}"`
           : `Re-plan ${goalTitles.length} goals`,
       subtitle: `A source change affects ${goalList}. Ask the coach to re-plan.`,
-      prefillMessage: `The source I just changed affects ${goalList}. Please re-plan.`,
+      prefillMessage,
+      initialSources,
       icon: Sparkles,
-      // Spec §10.7 — replan runs as its own plan_day bucket; the
-      // dialog mints the per-open refId.
-      scope: "generic",
-      kind: "plan_day",
+      // `review_progress` is the planner's "re-plan around a named change"
+      // intent: its intake NEVER asks clarifying questions and its plan stage
+      // is written to revise an existing goal. Using `plan_day` here re-ran
+      // the job-change discovery questions the goal already answered.
+      scope: "review_progress",
+      kind: "review_progress",
+      // Send on open — the user already chose "Re-plan", no second send.
+      autoSend: true,
     });
   };
 
@@ -360,6 +380,7 @@ export default function Coach() {
           setBoundaryConfirm({
             changeType: "added",
             sourceName: url,
+            sourceId: source.id,
             affectedGoals: [
               {
                 id: goal.id,
@@ -737,6 +758,7 @@ export default function Coach() {
         refId={focusedTask?.refId}
         kind={focusedTask?.kind}
         helperText={focusedTask?.helperText}
+        initialSources={focusedTask?.initialSources || []}
       />
     </div>
   );

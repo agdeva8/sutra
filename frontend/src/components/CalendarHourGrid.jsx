@@ -21,7 +21,8 @@ const toMin = (t) => {
 
 const ROW_PX = 40;
 
-export function HourGrid({ days, blocks, cards, onSelectItem, onSelectSlot }) {
+export function HourGrid({ days, blocks, cards, onSelectItem, onSelectSlot, today }) {
+  const todayKey = today ? iso(today) : null;
   const HOURS = Array.from({ length: 24 }, (_, h) => h);
   const blocksByDay = new Map();
   (blocks || []).forEach((b) => {
@@ -46,6 +47,7 @@ export function HourGrid({ days, blocks, cards, onSelectItem, onSelectSlot }) {
           <div
             key={iso(d)}
             className="sticky top-0 z-10 h-8 border-b border-l border-[var(--border)] bg-[var(--bg-primary)] px-2 text-center text-[11px] font-medium text-[var(--text-primary)]"
+            style={todayKey === iso(d) ? { backgroundColor: 'color-mix(in srgb, var(--accent) 12%, var(--bg-primary))' } : undefined}
           >
             {WEEKDAYS[d.getDay()]} {d.getDate()}
           </div>
@@ -91,6 +93,7 @@ export function HourGrid({ days, blocks, cards, onSelectItem, onSelectSlot }) {
                   key={`${iso(d)}-${h}`}
                   onClick={() => onSelectSlot?.(d, h)}
                   className="relative h-10 cursor-pointer border-b border-l border-[var(--border)] hover:bg-[color-mix(in_srgb,var(--accent)_6%,transparent)]"
+                  style={todayKey === iso(d) ? { backgroundColor: 'color-mix(in srgb, var(--accent) 9%, transparent)' } : undefined}
                 >
                   {starting.map((b) => {
                     const start = toMin(b.start_time);
@@ -102,7 +105,7 @@ export function HourGrid({ days, blocks, cards, onSelectItem, onSelectSlot }) {
                         key={b.id}
                         type="button"
                         onClick={(e) => e.stopPropagation()}
-                        style={{ top, height }}
+                        style={{ top, height, ...(b.color ? { backgroundColor: b.color, color: '#111827', borderLeft: '3px solid ' + (b.borderColor || b.color) } : {}) }}
                         className="absolute inset-x-0.5 overflow-hidden rounded bg-[color-mix(in_srgb,var(--accent)_22%,var(--bg-primary))] px-1 text-left text-[10px] text-[var(--text-primary)]"
                       >
                         <span className="block truncate font-medium">{b.label}</span>

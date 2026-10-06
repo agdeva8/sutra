@@ -14,6 +14,7 @@ import { z } from 'zod'
 
 import type { CompleteFn } from './orchestrator'
 import type { PlanItemRow } from './scheduler'
+import { solveHorizon, type HorizonTask } from './horizon-solver'
 import {
   schedulePlan,
   WEEKDAYS,
@@ -156,40 +157,94 @@ export async function decomposePlanItems(
   },
 ): Promise<PlanItemRow[]> {
   if (!opts.availability || Object.keys(opts.availability).length === 0) return rows
-  const weeklies = rows.filter((r) => r.horizon === 'weekly' && r.start_date)
+  const weeklies = rows.filter((r) => r.horizon === 'weekly' && r.start_date && r.end_date)
   if (weeklies.length === 0) return rows
 
-  const dailyRows: PlanItemRow[] = []
+  const blocked = new Set((opts.blockedDates ?? []).map((d) => d.slice(0, 10)))
+
+  // Phase 1 — LLM content: distinct steps per weekly checkpoint.
+  const tasks: HorizonTask[] = []
+  const meta = new Map<string, { weekly: PlanItemRow; title: string; hours: number }>()
+  let counter = 0
   for (const w of weeklies) {
+    const availableDays = WEEKDAYS.filter((d, i) => {
+      const date = isoAdd(w.start_date!, i)
+      return date <= w.end_date!.slice(0, 10) && !blocked.has(date) && (opts.availability[d] ?? 0) > 0
+    }) as Weekday[]
+    if (availableDays.length === 0) continue
+
+    let steps: DecomposeStep[]
     try {
-      const { days } = await decomposeAndScheduleWeek({
-        weekStart: w.start_date!,
-        weekLabel: w.title,
-        objective: w.note || undefined,
-        weeklyHours: w.weekly_hours ?? 0,
-        availability: opts.availability,
-        blockedDates: opts.blockedDates,
+      const { object } = await opts.complete({
         provider: opts.provider,
-        complete: opts.complete,
-      })
-      for (const d of days) {
-        dailyRows.push({
-          horizon: 'daily',
-          phase: w.phase,
-          title: d.title,
-          note: `Fulfils "${w.title}" · ${d.hours}h`,
-          start_date: d.date,
-          end_date: d.date,
-          due_date: d.date,
-          weekly_hours: null,
-        })
-      }
+        schema: DecomposeSchema,
+        prompt: decomposePrompt({
+          weekLabel: w.title,
+          objective: w.note || undefined,
+          availableDays,
+          weeklyHours: w.weekly_hours ?? 0,
+        }),
+      } as any)
+      steps = object.steps
     } catch {
-      /* fall through: keep the lattice's own daily rows for this week */
-      dailyRows.length = 0
-      return rows
+      steps = fallbackSteps(w.title, availableDays.length)
+    }
+    if (!steps.length) steps = fallbackSteps(w.title, availableDays.length)
+
+    const weeklyHours = w.weekly_hours ?? 0
+    const perStep = steps.length > 0 && weeklyHours > 0 ? round1(weeklyHours / steps.length) : 1
+    for (const s of steps) {
+      const hours = s.hours ?? perStep
+      const id = 'd' + counter++
+      tasks.push({
+        id,
+        title: s.title,
+        phase: w.phase,
+        windowStart: w.start_date!,
+        windowEnd: w.end_date!,
+        estHours: hours > 0 ? hours : 1,
+        priority: 3,
+        order: counter,
+      })
+      meta.set(id, { weekly: w, title: s.title, hours: hours > 0 ? hours : 1 })
     }
   }
+  if (tasks.length === 0) return rows
+
+  // Phase 2 — ONE plan-wide CP-SAT solve for every step across the plan.
+  const result = await solveHorizon({
+    availability: opts.availability,
+    blockedDates: opts.blockedDates,
+    tasks,
+  })
+
+  // Phase 3 — map to daily rows. Unplaced steps are kept at their window
+  // start so no work silently vanishes.
+  const dailyRows: PlanItemRow[] = []
+  const push = (m: { weekly: PlanItemRow; title: string }, date: string, hours: number, overflow: boolean) => {
+    dailyRows.push({
+      horizon: 'daily',
+      phase: m.weekly.phase,
+      title: m.title,
+      note: overflow
+        ? 'Fulfils "' + m.title + '" · ' + round1(hours) + 'h (over capacity)'
+        : 'Fulfils "' + m.title + '" · ' + round1(hours) + 'h',
+      start_date: date,
+      end_date: date,
+      due_date: date,
+      weekly_hours: null,
+    })
+  }
+  for (const slot of result.slots) {
+    const m = meta.get(slot.taskId)
+    if (m) push(m, slot.date, slot.hours, false)
+  }
+  for (const id of result.unscheduled) {
+    const m = meta.get(id)
+    const t = tasks.find((x) => x.id === id)
+    if (m && t) push(m, t.windowStart, t.estHours, true)
+  }
+  dailyRows.sort((a, b) => (a.start_date! < b.start_date! ? -1 : a.start_date! > b.start_date! ? 1 : 0))
 
   const nonDaily = rows.filter((r) => r.horizon !== 'daily')
   return [...nonDaily, ...dailyRows]

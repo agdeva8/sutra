@@ -163,18 +163,18 @@ export default function TrackerCard({ state, onOpenChat, onOpenToday }) {
             </button>
             {/* Primary CTA — the daily accountability read. Scoped so the
                 modal reads "About: Today's read" instead of the generic
-                header, and the composer stays EMPTY: the button already
-                says what this chat is for, so a canned paragraph in the
-                box would just be text the user has to delete first. */}
+                header. Sends the kickoff on open so the coach is already
+                talking (no blank empty-state for the user to break). */}
             <button
               data-testid="tracker-coach-cta"
               onClick={() =>
-                onOpenChat?.("", {
+                onOpenChat?.("Give me today's read.", {
                   scope: "generic",
                   kind: "review_progress",
                   title: "Today's read",
                   helperText:
                     "I'll walk you through what you committed to, what's slipping, and where the next hour should go — and propose anything worth dropping or postponing.",
+                  autoSend: true,
                 })
               }
               className="min-h-11 flex items-center justify-center gap-2 px-4 py-2.5 rounded-md border border-[var(--border)] text-[var(--text-secondary)] font-medium text-sm hover:border-[var(--border-accent)] hover:text-[var(--accent)] transition-colors"
@@ -184,18 +184,20 @@ export default function TrackerCard({ state, onOpenChat, onOpenToday }) {
             </button>
 
             {/* Plan my day — opens the chat in interview mode (kind =
-                plan_day mints its own per-day conversation bucket). The
-                coach walks the user wake-time → bedtime, slotting
-                milestones into specific hours as it goes. */}
+                plan_day mints its own per-day conversation bucket). Kicks
+                off on open so the coach immediately starts the
+                wake-time → bedtime interview instead of showing the
+                generic "You're chatting about Plan my day" empty state. */}
             <button
               data-testid="tracker-plan-day-cta"
               onClick={() =>
-                onOpenChat?.("", {
+                onOpenChat?.("Plan my day.", {
                   scope: "generic",
                   kind: "plan_day",
                   title: "Plan my day",
                   helperText:
                     "We'll go hour by hour, from when I wake up to when I sleep, and turn my open milestones into real slots I can put on screen.",
+                  autoSend: true,
                 })
               }
               className="min-h-11 flex items-center justify-center gap-2 px-4 py-2.5 rounded-md border border-[var(--border)] text-[var(--text-secondary)] font-medium text-sm hover:border-[var(--border-accent)] hover:text-[var(--accent)] transition-colors"

@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from "react";
 import { Sparkles, CircleDot, PauseCircle, CheckCircle2, Circle, Plus, Pencil, Trash2, Pause, Milestone, Paperclip, FileText, Link2, ExternalLink, X, MessageSquare, ArrowRight, BookImage } from "lucide-react";
-import { sourceDownloadUrl } from "../lib/api";
+import { api, sourceDownloadUrl } from "../lib/api";
 import AddGoalDialog from "./AddGoalDialog";
 import SourceActionDialog from "./SourceActionDialog";
+import LinkPreviewDialog from "./LinkPreviewDialog";
 import TrackerCard from "./TrackerCard";
 import GoalMemoryDialog from "./GoalMemoryDialog";
 
@@ -125,6 +126,20 @@ function SourcesChip({ goal, sources, onUpload, onAddLink, onDelete }) {
   const [open, setOpen] = useState(false);
   const [dialogMode, setDialogMode] = useState(null);
   const [dialogSource, setDialogSource] = useState(null);
+  // Links use the rich LinkPreviewDialog (LLM extract + ask + browse); files
+  // and delete keep the simpler SourceActionDialog.
+  const [linkOpen, setLinkOpen] = useState(false);
+  // Clicking an attached link opens the same dialog in "reopen" mode: page
+  // quick-info + what the coach read + edit, instead of a raw new tab.
+  const [exploringSource, setExploringSource] = useState(null);
+  const openSource = (s) => {
+    if (s.kind !== "link") return;
+    setExploringSource(s);
+    api
+      .getSource(s.id)
+      .then((full) => setExploringSource(full))
+      .catch(() => {});
+  };
   return (
     <div className="mt-1.5">
       <div className="flex items-center gap-1.5">
@@ -140,7 +155,7 @@ function SourcesChip({ goal, sources, onUpload, onAddLink, onDelete }) {
           </button>
         )}
         <IconBtn testid={`goal-upload-${goal.id}`} title="Attach a file to this goal" onClick={() => setDialogMode("upload")}><Plus className="w-3.5 h-3.5" /></IconBtn>
-        <IconBtn testid={`goal-link-${goal.id}`} title="Add a link as a source" onClick={() => setDialogMode("link")}><Link2 className="w-3 h-3" /></IconBtn>
+        <IconBtn testid={`goal-link-${goal.id}`} title="Add a link as a source" onClick={() => setLinkOpen(true)}><Link2 className="w-3 h-3" /></IconBtn>
         {sources.length === 0 && (
           <span className="text-[10px] text-[var(--text-muted)] font-mono uppercase tracking-wider ml-1">attach a source</span>
         )}
@@ -150,9 +165,21 @@ function SourcesChip({ goal, sources, onUpload, onAddLink, onDelete }) {
           {sources.map((s) => (
             <div key={s.id} className="flex items-center gap-1.5 text-[11px] text-[var(--text-secondary)]">
               {s.kind === "link" ? <Link2 className="w-3 h-3 shrink-0" /> : <FileText className="w-3 h-3 shrink-0" />}
-              <a href={s.kind === "link" ? s.url : sourceDownloadUrl(s.id)} target="_blank" rel="noreferrer" className="truncate hover:text-[var(--accent)] flex items-center gap-1">
-                {s.original_filename} <ExternalLink className="w-2.5 h-2.5" />
-              </a>
+              {s.kind === "link" ? (
+                <button
+                  type="button"
+                  data-testid={`goal-view-source-${s.id}`}
+                  onClick={() => openSource(s)}
+                  title="What the coach read from this link"
+                  className="truncate hover:text-[var(--accent)] flex items-center gap-1 min-h-11 text-left"
+                >
+                  {s.original_filename} <ExternalLink className="w-2.5 h-2.5" />
+                </button>
+              ) : (
+                <a href={sourceDownloadUrl(s.id)} target="_blank" rel="noreferrer" className="truncate hover:text-[var(--accent)] flex items-center gap-1">
+                  {s.original_filename} <ExternalLink className="w-2.5 h-2.5" />
+                </a>
+              )}
               <button
                 data-testid={`goal-delete-source-${s.id}`}
                 onClick={() => { setDialogSource(s); setDialogMode("delete"); }}
@@ -175,6 +202,25 @@ function SourcesChip({ goal, sources, onUpload, onAddLink, onDelete }) {
         onUploadFile={onUpload}
         onAddLink={onAddLink}
         onDeleteSource={onDelete}
+      />
+      <LinkPreviewDialog
+        open={linkOpen}
+        onClose={() => setLinkOpen(false)}
+        title={goal.title ? `Add a link to "${goal.title}"` : "Add a link as a source"}
+        goalContext={goal.title}
+        onAttach={async (excerpt, linkUrl) => {
+          await onAddLink(linkUrl, goal.id, { text: excerpt });
+        }}
+      />
+      {/* Reopen an attached link — quick-info + what the coach read, no ask chat. */}
+      <LinkPreviewDialog
+        open={!!exploringSource}
+        existingSource={exploringSource}
+        showAsk={false}
+        title={goal.title ? `Add a link to "${goal.title}"` : "Add a link as a source"}
+        goalContext={goal.title}
+        onClose={() => setExploringSource(null)}
+        onSaved={() => setExploringSource(null)}
       />
     </div>
   );

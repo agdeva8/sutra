@@ -118,18 +118,13 @@ function splitWeek(week, cards) {
   return { singlesByDay, multi, lanes: laneEnds.length };
 }
 
-function SpanBar({ track, onSelectItem }) {
+function SpanBar({ track }) {
   const { card } = track;
   return (
-    <button
-      type="button"
+    <div
       data-testid={`month-bar-${card.item?.kind || "item"}-${card.id}-${track.startCol}`}
-      onClick={(e) => {
-        e.stopPropagation();
-        onSelectItem?.(card.item);
-      }}
-      aria-label={card.title}
-      className="flex h-7 w-full items-center gap-1.5 overflow-hidden rounded-[3px] px-2 text-left text-[11px] font-medium text-[var(--text-primary)] transition-[filter] hover:brightness-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--accent)]"
+      aria-hidden="true"
+      className="pointer-events-none flex h-7 w-full items-center gap-1.5 overflow-hidden rounded-[3px] px-2 text-left text-[11px] font-medium text-[var(--text-primary)]"
       style={{
         background: `color-mix(in srgb, ${card.color} 16%, var(--bg-primary))`,
         boxShadow: `inset 3px 0 0 0 ${card.color}`,
@@ -145,7 +140,7 @@ function SpanBar({ track, onSelectItem }) {
           ▸
         </span>
       )}
-    </button>
+    </div>
   );
 }
 

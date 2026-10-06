@@ -347,44 +347,17 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
     onAnswerClarification(lines.join("\n"));
   };
 
-  // --- Attach: link composer -------------------------------------------------
-  // The link button used to be `onClick={onAddLink}`, which passed the click
-  // EVENT as the url — the caller then stored that event object as
-  // `original_filename` and React crashed with "Objects are not valid as a
-  // React child". It now opens a real input so a url is the only thing that
-  // ever reaches onAddLink.
-  const [linkOpen, setLinkOpen] = useState(false);
-  const [linkValue, setLinkValue] = useState("");
-
-  const closeLink = () => {
-    setLinkOpen(false);
-    setLinkValue("");
-  };
-
-  // Iteration 9 — URL pre-check. Instead of silently POSTing the link
-  // to /api/sources/link, open the LinkPreviewDialog which calls
-  // /api/sources/link/preview and shows the user what the coach will
-  // be able to read before committing. The actual POST happens when
-  // the user clicks "Attach" / "Attach anyway" in the dialog.
-  const [previewUrl, setPreviewUrl] = useState("");
+  // --- Attach: link ----------------------------------------------------------
+  // The dialog owns the URL-entry step (see LinkPreviewDialog) so the chat
+  // composer, the goal card, and Add Goal all share ONE link flow: paste →
+  // preview → "what the coach will read" → ask → attach. The old inline row
+  // was a second, thinner entry point that drifted from the goal card's.
   const [previewOpen, setPreviewOpen] = useState(false);
 
-  const submitLink = () => {
-    const url = linkValue.trim();
-    if (!url) return;
-    setPreviewUrl(url);
-    setPreviewOpen(true);
-    // Don't close yet — wait until the user decides in the dialog.
-  };
+  const closePreview = () => setPreviewOpen(false);
 
-  const closePreview = () => {
-    setPreviewOpen(false);
-    setPreviewUrl("");
-    closeLink();
-  };
-
-  const attachFromPreview = async (excerpt) => {
-    await onAddLink(previewUrl, "", { text: excerpt });
+  const attachFromPreview = async (excerpt, attachedUrl) => {
+    await onAddLink(attachedUrl, "", { text: excerpt });
   };
 
   // --- Attach: drag & drop ---------------------------------------------------
@@ -918,53 +891,6 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
         {voiceSupported && voiceListening && (
           <SpeechWave text={input} />
         )}
-        {showSources && linkOpen && (
-          <form
-            id="chat-link-row"
-            data-testid="chat-link-form"
-            onSubmit={(e) => {
-              e.preventDefault();
-              submitLink();
-            }}
-            className="mb-2 flex items-center gap-2 border border-[var(--border-accent)] bg-[var(--bg-secondary)] px-2.5 py-1.5"
-          >
-            <Link2 className="w-4 h-4 text-[var(--accent)] shrink-0" aria-hidden="true" />
-            <input
-              type="text"
-              inputMode="url"
-              data-testid="chat-link-input"
-              value={linkValue}
-              onChange={(e) => setLinkValue(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  closeLink();
-                }
-              }}
-              placeholder="Paste a link — https://…"
-              aria-label="Link to attach as a source"
-              autoFocus
-              className="flex-1 min-w-0 bg-transparent px-1 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none rounded"
-            />
-            <button
-              type="submit"
-              data-testid="chat-link-submit"
-              disabled={!linkValue.trim()}
-              className="min-h-11 px-3 rounded bg-[var(--accent)] text-[var(--bg-primary)] text-xs font-medium disabled:opacity-40 hover:opacity-90 transition-opacity shrink-0"
-            >
-              Attach
-            </button>
-            <button
-              type="button"
-              data-testid="chat-link-cancel"
-              onClick={closeLink}
-              aria-label="Cancel adding a link"
-              className="min-h-11 min-w-11 inline-flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors shrink-0 rounded"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          </form>
-        )}
         {/* Composer — Iteration 9+ final. The textarea + the action row
             below are ONE visual box: the wrapper owns the border and
             the focus highlight, the textarea has no outline of its own.
@@ -1023,13 +949,12 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
                   </button>
                   <button
                     data-testid="chat-attach-link"
-                    onClick={() => setLinkOpen((v) => !v)}
-                    aria-expanded={linkOpen}
-                    aria-controls="chat-link-row"
+                    onClick={() => setPreviewOpen(true)}
+                    aria-expanded={previewOpen}
                     title="Add a link as a source"
                     aria-label="Add a link as a source"
                     className={`h-11 w-9 flex items-center justify-center transition-colors shrink-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] rounded ${
-                      linkOpen
+                      previewOpen
                         ? "text-[var(--accent)] bg-[color-mix(in_srgb,var(--accent)_12%,transparent)]"
                         : "text-[var(--text-muted)] hover:text-[var(--accent)]"
                     }`}
@@ -1080,7 +1005,6 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
       <LinkPreviewDialog
         open={previewOpen}
         onClose={closePreview}
-        url={previewUrl}
         onAttach={attachFromPreview}
         goalContext={goalContext}
       />

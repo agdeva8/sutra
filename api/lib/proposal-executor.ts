@@ -45,6 +45,7 @@ import { randomUUID } from 'node:crypto'
 import { and, eq, inArray, isNull } from 'drizzle-orm'
 
 import { applyGoalDropCascade, resolveGoalRef } from '@/lib/goal-drop'
+import { relayGoalPlan } from '@/lib/plan-relay'
 
 /* -------------------------------------------------------------------------- */
 /* Types                                                                      */
@@ -408,6 +409,10 @@ async function applyUpdateGoal(
     })
   })
 
+  // Re-plan: re-lay this goal's multi-horizon plan_items with the solver so a
+  // scope/date change never leaves a stale or duplicated lattice behind.
+  await relayGoalPlan(userId, goalId).catch(() => {})
+
   return {
     success: true,
     result: `Updated goal '${ref.goalTitle}'`,
@@ -547,6 +552,9 @@ async function applySetGoalDates(
       },
     })
   })
+
+  // Re-plan: move the plan_items onto the new timeline with the solver.
+  await relayGoalPlan(userId, ref.goalId).catch(() => {})
 
   return {
     success: true,

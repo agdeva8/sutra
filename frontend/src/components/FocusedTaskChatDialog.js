@@ -68,6 +68,10 @@ export default function FocusedTaskChatDialog({
   refId = null,
   kind = null,
   helperText = "",
+  // Sources already attached before the chat opened (e.g. the link that
+  // triggered a boundary re-plan). Seeded so the planner request carries
+  // their ids → the coach can read the excerpt.
+  initialSources = [],
 }) {
   // Chat-internal state — fully isolated.
   const [messages, setMessages] = useState([]);
@@ -118,7 +122,7 @@ export default function FocusedTaskChatDialog({
       setPendingClarifications(null);
       setHistoryLoaded(false);
       setDropReplan(null);
-      setSources([]);
+      setSources(Array.isArray(initialSources) ? initialSources : []);
       setRenegotiation(null);
       setBusyChoice(null);
       clearRenegotiation();

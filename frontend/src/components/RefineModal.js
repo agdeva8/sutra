@@ -37,10 +37,10 @@ const DEFAULT_REFINE_CHIPS = ["Try again from scratch", "Different framing", "Sm
 /**
  * RefineModal — records a refinement NOTE on a proposal.
  *
- * Iteration 9+ (founder feedback): clicking Refine does NOT call the LLM.
- * The note is stored on the card; clicking Refine again reopens this
- * modal pre-filled so the user can update it. All refinements are applied
- * at once from the pinned "Refine goals" button.
+ * Iteration 9+ ; later: clicking Refine does NOT call the LLM directly.
+ * The note is stored on the card, then the parent auto-sends a re-propose
+ * carrying the card's current values + the note. Clicking Refine again
+ * reopens this modal pre-filled so the user can update it.
  *
  * Props:
  *   open, onClose, proposalTitle, proposalAction, proposalActionKey
@@ -103,7 +103,7 @@ export default function RefineModal({
       onClose={onClose}
       icon={Pencil}
       title={proposalTitle ? `Refine "${proposalTitle}"` : "Refine this"}
-      subtitle={`What should change about this ${proposalAction}? It's saved on the card — apply all your refinements together with the "Refine goals" button.`}
+      subtitle={`What should change about this ${proposalAction}? I'll re-propose the plan with it right away.`}
       maxWidth="max-w-xl"
       testId="refine-modal"
     >

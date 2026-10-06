@@ -23,7 +23,7 @@ import { useDialogBack } from "../hooks/useDialogBack";
 import { usePlanSend, renegotiationChoiceLabel, clearRenegotiation } from "../hooks/use-plan-send";
 import { toast } from "sonner";
 import { api, API } from "../lib/api";
-import { readDraftBucket, writeDraftBucket } from "../hooks/useDraftPersistence";
+import { readDraftBucket, writeDraftBucket, clearDraftBucket } from "../hooks/useDraftPersistence";
 
 /**
  * CATEGORIES — hero cards for picking a goal area.
@@ -192,6 +192,10 @@ export default function AddGoalDialog({
   const [sources, setSources] = useState([]);
   const autoResumePendingRef = useRef(false);
   const reusedDraftRef = useRef(false);
+  // Set to the source's label when a source is attached while a plan is
+  // already on screen. The effect below fires the re-propose once `sources`
+  // has committed (so the planner's request actually carries the new id).
+  const autoReplanRef = useRef(false);
   const previousModeRef = useRef({ autoAnswer: initialAutoAnswer, grillMe: initialGrillMe });
   const sendRef = useRef(null);
 
@@ -298,7 +302,7 @@ export default function AddGoalDialog({
     applyPlan,
   });
 
-  const send = async (text) => {
+  const send = async (text, { showUser = true } = {}) => {
     const trimmed = text.trim();
     if (!trimmed || sending) return;
     setSending(true);
@@ -307,7 +311,9 @@ export default function AddGoalDialog({
     const streamId = `stream_${++streamIdRef.current}`;
     setMessages((prev) => [
       ...prev,
-      { id: localUserId, role: "user", content: trimmed, proposals: [] },
+      // Auto re-plans (source attached mid-plan) run without a fabricated
+      // "You" bubble — only the coach's rebuilt proposal is shown.
+      ...(showUser ? [{ id: localUserId, role: "user", content: trimmed, proposals: [] }] : []),
       { id: streamId, role: "assistant", content: "", proposals: [], streaming: true },
     ]);
 
@@ -403,6 +409,19 @@ export default function AddGoalDialog({
     }
   }, [autoAnswer, grillMe, pendingClarifications, sending]);
 
+  // Source attached while a plan is on screen → rebuild the plan with the
+  // new source. Deferred to this effect so `sources` has committed and the
+  // planner's request actually includes the new source id.
+  useEffect(() => {
+    const name = autoReplanRef.current;
+    if (!name || sending) return;
+    autoReplanRef.current = false;
+    sendRef.current?.(
+      `I just attached ${typeof name === "string" ? `"${name}"` : "a source"} — read it and re-propose the plan so the goal, milestones and tasks reflect what it says.`,
+      { showUser: false },
+    );
+  }, [sources, sending]);
+
   const onRenegotiationChoice = (choice) => {
     setBusyChoice(choice);
     setRenegotiation(null);
@@ -481,6 +500,18 @@ export default function AddGoalDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, onStepBack]);
 
+  // True when the transcript already holds a confirmable plan. Attaching a
+  // source in that state should rebuild the plan so its insights shape the
+  // goal/milestones/tasks — not just ground the (already-sent) proposal.
+  const hasPlanOnScreen = messages.some(
+    (m) =>
+      m.role === "assistant" &&
+      !m.streaming &&
+      (m.proposals || []).some(
+        (p) => (p.status || "pending") === "pending" && p.action !== "ask" && p.action !== "navigate",
+      ),
+  );
+
   const handleUploadFile = async (file) => {
     try {
       // Coach.uploadFile returns the created server source — use its real
@@ -495,6 +526,7 @@ export default function AddGoalDialog({
           url: created.url || file.name,
         },
       ]);
+      if (hasPlanOnScreen) autoReplanRef.current = created.original_filename || file.name;
     } catch {}
   };
 
@@ -510,6 +542,7 @@ export default function AddGoalDialog({
           url: created.url || url,
         },
       ]);
+      if (hasPlanOnScreen) autoReplanRef.current = created.original_filename || created.url || url;
     } catch {}
   };
 
@@ -542,6 +575,10 @@ export default function AddGoalDialog({
         const resp = await api.confirm(messageId, proposal.id);
         freshState = resp?.state || freshState;
         confirmedIds.push(proposal.id);
+        // Finalized: the goal exists now, so drop the resumable draft.
+        // Without this, reopening Add Goal replays the old transcript and
+        // wrongly offers "You have an unfinished plan from earlier."
+        if (proposal.action === "create_goal") clearDraftBucket("add_goal");
         setMessages((prev) =>
           prev.map((message) =>
             message.id !== messageId
@@ -614,6 +651,62 @@ export default function AddGoalDialog({
     return null;
   };
 
+  // One line per proposal carrying its CURRENT values, so the re-propose knows
+  // exactly what changed from what — not just a bare note.
+  const describeProposal = (p) => {
+    const a = p.args || {};
+    const fields = [
+      a.title && `title="${a.title}"`,
+      a.target_date && `target_date=${a.target_date}`,
+      a.horizon && `horizon=${a.horizon}`,
+      a.description && `description="${a.description}"`,
+      a.why && `why="${a.why}"`,
+      a.first_action && `first_action="${a.first_action}"`,
+    ].filter(Boolean);
+    return `${(p.action || "change").replace(/_/g, " ")}${fields.length ? ` — current: ${fields.join(", ")}` : ""}`;
+  };
+
+  // `override` lets a just-saved edit (not yet in `messages`) be included:
+  // { id, field: "refinement" | "rejection", value }. Scoped to the ONE plan
+  // message being changed so refinements from earlier iterations don't repeat.
+  const buildChangeMessage = (override = null) => {
+    let target = null;
+    if (override) {
+      target = messages.find((m) => (m.proposals || []).some((p) => p.id === override.id)) || null;
+    }
+    if (!target) {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m.role === "assistant" && !m.streaming && (m.proposals || []).length > 0) {
+          target = m;
+          break;
+        }
+      }
+    }
+    const ps = target?.proposals || [];
+    const refinements = [];
+    const rejections = [];
+    for (const p of ps) {
+      const isOverride = override?.id === p.id;
+      const refinement = isOverride && override.field === "refinement" ? override.value : p.refinement;
+      const rejected = isOverride && override.field === "rejection" ? true : p.status === "rejected";
+      const rejection = isOverride && override.field === "rejection" ? override.value : p.rejection;
+      if (refinement) refinements.push(`- ${describeProposal(p)} → change to: ${refinement}`);
+      if (rejected) rejections.push(`- ${describeProposal(p)}${rejection ? ` → reason: ${rejection}` : ""}`);
+    }
+    if (!refinements.length && !rejections.length) return "";
+    const lines = [];
+    if (refinements.length) {
+      lines.push("Change these (keep every other detail exactly as-is):");
+      lines.push(...refinements);
+    }
+    if (rejections.length) {
+      lines.push("Drop or rework these:");
+      lines.push(...rejections);
+    }
+    return `Re-propose the plan applying ALL of these changes at once. Return the full goal + milestones again with the changes applied.\n\n${lines.join("\n")}`;
+  };
+
   const onOpenRefine = (proposal) => {
     setRefiningProposal(proposal);
   };
@@ -623,9 +716,8 @@ export default function AddGoalDialog({
 
   const submitRefine = (thought) => {
     if (!refiningProposal) return;
-    // Local-only: store the note and CLEAR any rejection (a card is either
-    // refined or rejected, never both). Applied in a batch from the pinned
-    // "Refine goals" button.
+    // Store the note (a card is either refined or rejected, never both) and
+    // immediately re-propose so the user never has to press "Apply changes".
     const id = refiningProposal.id;
     setMessages((prev) =>
       prev.map((m) => ({
@@ -635,6 +727,8 @@ export default function AddGoalDialog({
         ),
       })),
     );
+    const msg = buildChangeMessage({ id, field: "refinement", value: thought });
+    if (msg) sendRef.current?.(msg, { showUser: false });
   };
 
   // Revert: clear the saved refinement / rejection from a card.
@@ -668,6 +762,8 @@ export default function AddGoalDialog({
       throw new Error("Couldn't find the original proposal to reject.");
     }
     await reject(messageId, rejectingProposal.id, reason);
+    const msg = buildChangeMessage({ id: rejectingProposal.id, field: "rejection", value: reason });
+    if (msg) sendRef.current?.(msg, { showUser: false });
   };
 
   const clearChat = async () => {
@@ -689,6 +785,7 @@ export default function AddGoalDialog({
   // stay so a user with a mouse can still act inline.
   const pinnedAction = (() => {
     if (input.trim().length > 0) return null;
+    if (sending) return null;
     // Find the latest assistant message with proposals.
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
@@ -759,23 +856,9 @@ export default function AddGoalDialog({
     if (!pinnedAction) return;
 
     if (pinnedAction.variant === "refine") {
-      // Batch: send every saved refinement + rejection to the LLM once.
-      const ps = pinnedAction.proposals || [];
-      const labelFor = (p) => p.args?.title || p.args?.text || p.title || p.action || "item";
-      const refined = ps.filter((p) => p.refinement);
-      const rejected = ps.filter((p) => p.status === "rejected");
-      const lines = [];
-      if (refined.length) {
-        lines.push("Refine these (keep everything else):");
-        refined.forEach((p) => lines.push(`- ${labelFor(p)}: ${p.refinement}`));
-      }
-      if (rejected.length) {
-        lines.push("Drop or rework these:");
-        rejected.forEach((p) => lines.push(`- ${labelFor(p)}${p.rejection ? `: ${p.rejection}` : ""}`));
-      }
-      send(
-        `Re-propose the plan applying ALL of these notes at once. Return the full goal + milestones again with the changes applied.\n\n${lines.join("\n")}`,
-      );
+      // Fallback only — saves usually auto-send now. Same proper prompt.
+      const msg = buildChangeMessage();
+      if (msg) send(msg);
       return;
     }
 

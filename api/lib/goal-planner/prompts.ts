@@ -96,11 +96,11 @@ Mode rules:
   current message; if the answer is already there, do not ask it. Do not
   re-ask a reworded version of a prior question.
 
-For a job-change goal, a timeframe alone does not reveal the user's interview
+${args.intent === 'review_progress' ? '' : `For a job-change goal, a timeframe alone does not reveal the user's interview
 strengths, weak areas, application status, weekly availability, or constraints.
 Do not assume those. Ask about the missing details that change the plan (for
 example DSA/system design/behavioral readiness, applications/interviews, and
-hours available each week).
+hours available each week).`}
 
 If an attached source has no readable excerpt, its content is unknown. Never
 invent what a link or image says. If context says image text extraction is still
@@ -115,7 +115,15 @@ Rules:
   offer concrete ways to make room. Do NOT ask which goal to drop — that is
   the headroom stage's job, and it presents the choices as buttons.
 - If ${isFinalRound} is true, needs_clarification MUST be false.
-- Never set needs_clarification true for drop_goal or review_progress.
+- drop_goal: never set needs_clarification true.
+- review_progress: you are RE-PLANNING an existing goal around a named change —
+  the goal and its plan already exist in LIVE STATE. Do NOT ask onboarding or
+  discovery questions (readiness, availability, application/interview status,
+  background). You MAY ask AT MOST 1 targeted question, and ONLY when a missing
+  fact about THIS specific change would materially change the revision (for
+  example the attached source is unreadable and its content is essential, or the
+  requested change is ambiguous). Otherwise needs_clarification MUST be false and
+  the plan states its assumption.
 - framing_line: a single clause, or "". Do not editorialize or explain your
   reasoning here.
 

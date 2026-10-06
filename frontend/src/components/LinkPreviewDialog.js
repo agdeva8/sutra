@@ -46,8 +46,12 @@ import { api } from "../lib/api";
  *              actual POST /api/sources/link call. When a curated excerpt
  *              exists it is passed so the attach can store it.
  */
-export default function LinkPreviewDialog({ open, onClose, url = "", onAttach, goalContext = "", existingSource = null, onSaved }) {
+export default function LinkPreviewDialog({ open, onClose, url = "", onAttach, goalContext = "", existingSource = null, onSaved, title = "", showAsk = true }) {
   const isExisting = !!existingSource;
+  // When opened without a URL (goal card, chat composer) the dialog first
+  // asks for one, then runs the same preview → extract → ask → attach flow.
+  const [feedUrl, setFeedUrl] = useState(url || "");
+  const [urlInput, setUrlInput] = useState("");
   const [status, setStatus] = useState("idle"); // "idle" | "checking" | "ok" | "fail"
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState("");
@@ -62,10 +66,19 @@ export default function LinkPreviewDialog({ open, onClose, url = "", onAttach, g
   const [saving, setSaving] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);
 
+  // Seed the working URL from the prop on each open; clear the entry field.
   useEffect(() => {
     if (!open) return;
-    // Existing-source (reopen) mode: no preview fetch — seed from the stored
-    // excerpt so the user sees what the coach already read and can edit it.
+    setFeedUrl(url || "");
+    setUrlInput("");
+  }, [open, url]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    // Existing-source (reopen) mode: seed from the stored excerpt so the
+    // user sees what the coach read and can edit it. Also fetch the page's
+    // quick-info so the reopen card matches the attach card.
     if (existingSource) {
       setStatus("ok");
       setError("");
@@ -80,15 +93,31 @@ export default function LinkPreviewDialog({ open, onClose, url = "", onAttach, g
       } catch {
         /* keep empty */
       }
-      setPreview({
+      const seed = {
         url: existingSource.url,
         host,
         title: existingSource.original_filename || existingSource.url,
-      });
-      return;
+      };
+      setPreview(seed);
+      api
+        .previewLink(existingSource.url)
+        .then((data) => {
+          if (cancelled || !data?.ok) return;
+          setPreview((prev) => ({
+            ...(prev || seed),
+            title: data.title || prev?.title || seed.title,
+            description: data.description || prev?.description,
+            image: data.image || prev?.image,
+            host: data.host || prev?.host || seed.host,
+            final_url: data.final_url || prev?.final_url,
+          }));
+        })
+        .catch(() => {});
+      return () => {
+        cancelled = true;
+      };
     }
-    if (!url) return;
-    let cancelled = false;
+    if (!feedUrl) return;
     setStatus("checking");
     setPreview(null);
     setError("");
@@ -98,7 +127,7 @@ export default function LinkPreviewDialog({ open, onClose, url = "", onAttach, g
     setPasteError("");
     setBrowseOpen(false);
     api
-      .previewLink(url)
+      .previewLink(feedUrl)
       .then((data) => {
         if (cancelled) return;
         setPreview(data);
@@ -113,7 +142,7 @@ export default function LinkPreviewDialog({ open, onClose, url = "", onAttach, g
           // 200 but empty body — usually a client-rendered login shell.
           setGated(true);
         } else {
-          runExtract({ url: data.final_url || url });
+          runExtract({ url: data.final_url || feedUrl });
         }
       })
       .catch((e) => {
@@ -125,7 +154,7 @@ export default function LinkPreviewDialog({ open, onClose, url = "", onAttach, g
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, url, existingSource]);
+  }, [open, feedUrl, existingSource]);
 
   const runExtract = async (body) => {
     setAnalysis({ status: "loading" });
@@ -183,7 +212,7 @@ export default function LinkPreviewDialog({ open, onClose, url = "", onAttach, g
     if (attaching) return;
     setAttaching(true);
     try {
-      await onAttach?.(curatedExcerpt());
+      await onAttach?.(curatedExcerpt(), feedUrl);
       onClose?.();
     } catch (e) {
       setError(typeof e?.message === "string" ? e.message : "Couldn't attach that link.");
@@ -238,12 +267,46 @@ export default function LinkPreviewDialog({ open, onClose, url = "", onAttach, g
       open={open}
       onClose={attaching ? undefined : onClose}
       icon={Link2}
-      title="Add this link as a source?"
-      subtitle={url}
+      title={title || "Add this link as a source?"}
+      subtitle={feedUrl || (isExisting ? existingSource?.url : "") || "Paste any URL — we'll preview what's there first."}
       maxWidth="max-w-xl"
       testId="link-preview-dialog"
     >
       <div className="space-y-3" data-testid="link-preview-status">
+        {/* Entry step — only when the caller didn't already supply a URL. */}
+        {!isExisting && !feedUrl && (
+          <form
+            data-testid="link-preview-entry"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const next = urlInput.trim();
+              if (next) setFeedUrl(next);
+            }}
+            className="space-y-2"
+          >
+            <div className="flex items-center gap-2">
+              <input
+                data-testid="link-preview-url-input"
+                type="url"
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                placeholder="https://…"
+                aria-label="Link URL"
+                autoFocus
+                className="flex-1 min-w-0 bg-[var(--bg-primary)] border border-[var(--border)] rounded px-3 py-3 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--border-accent)]"
+              />
+              <button
+                type="submit"
+                data-testid="link-preview-run"
+                disabled={!urlInput.trim()}
+                className="inline-flex items-center gap-1.5 h-11 px-3 text-xs border border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--border-accent)] hover:text-[var(--text-primary)] rounded transition-colors disabled:opacity-50"
+              >
+                <Link2 className="w-3 h-3" aria-hidden="true" /> Preview
+              </button>
+            </div>
+          </form>
+        )}
+
         {status === "checking" && (
           <div className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
             <Loader2 className="w-4 h-4 animate-spin text-[var(--accent)]" aria-hidden="true" />
@@ -260,6 +323,11 @@ export default function LinkPreviewDialog({ open, onClose, url = "", onAttach, g
                   <div className="text-sm font-medium text-[var(--text-primary)] truncate">
                     {preview?.title || existingSource.url}
                   </div>
+                  {preview?.description && (
+                    <p className="mt-1 text-xs text-[var(--text-secondary)] line-clamp-3">
+                      {preview.description}
+                    </p>
+                  )}
                   <div className="mt-2 text-[10px] uppercase tracking-widest text-[var(--text-muted)]">
                     {preview?.host || "Link"}
                   </div>
@@ -300,10 +368,11 @@ export default function LinkPreviewDialog({ open, onClose, url = "", onAttach, g
               )}
             </div>
 
-            <LinkAskPanel url={existingSource.url} text={pastedText} goalContext={goalContext} />
+            {showAsk && <LinkAskPanel url={existingSource.url} text={pastedText} goalContext={goalContext} />}
             <p className="text-xs text-[var(--text-muted)]">
-              Edit the content the coach keeps, or ask follow-ups — both change how this source is used
-              for the goal.
+              {showAsk
+                ? "Edit the content the coach keeps, or ask follow-ups — both change how this source is used for the goal."
+                : "This is what the coach read from the page and uses for this goal. Edit it to change what it keeps."}
             </p>
           </div>
         )}
@@ -380,7 +449,7 @@ export default function LinkPreviewDialog({ open, onClose, url = "", onAttach, g
                     </ul>
                   </div>
                 )}
-                <LinkAskPanel url={preview.final_url || preview.url} text={askText} suggestions={suggestFromExtract(analysis)} goalContext={goalContext} />
+                {showAsk && <LinkAskPanel url={preview.final_url || preview.url} text={askText} suggestions={suggestFromExtract(analysis)} goalContext={goalContext} />}
                 <p className="text-xs text-[var(--text-muted)]">
                   Ask the coach about the page before attaching — the final answer can guide AskPlanner on this goal.
                 </p>
@@ -487,7 +556,7 @@ export default function LinkPreviewDialog({ open, onClose, url = "", onAttach, g
           </div>
         )}
 
-        {!isExisting && (status === "ok" || gated) && (preview?.final_url || preview?.url || url) && (
+        {!isExisting && (status === "ok" || gated) && (preview?.final_url || preview?.url || feedUrl) && (
           <div data-testid="link-preview-browse" className={browseOpen ? "space-y-2" : ""}>
             <button
               type="button"
@@ -507,7 +576,7 @@ export default function LinkPreviewDialog({ open, onClose, url = "", onAttach, g
                     {preview?.host || "Live page"}
                   </span>
                   <a
-                    href={preview?.final_url || preview?.url || url}
+                    href={preview?.final_url || preview?.url || feedUrl}
                     target="_blank"
                     rel="noreferrer noopener"
                     className="inline-flex items-center gap-1 text-[11px] text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors min-h-6"
@@ -532,8 +601,8 @@ export default function LinkPreviewDialog({ open, onClose, url = "", onAttach, g
                   <>
                     <iframe
                       data-testid="link-preview-browse-frame"
-                      title={`Preview of ${preview?.host || url}`}
-                      src={preview?.final_url || preview?.url || url}
+                      title={`Preview of ${preview?.host || feedUrl}`}
+                      src={preview?.final_url || preview?.url || feedUrl}
                       className="w-full h-[300px] sm:h-[380px] rounded border border-[var(--border)] bg-white"
                       referrerPolicy="no-referrer"
                     />
@@ -637,7 +706,7 @@ export default function LinkPreviewDialog({ open, onClose, url = "", onAttach, g
                 </>
               )}
             </button>
-          ) : (
+          ) : feedUrl ? (
             <button
               type="button"
               data-testid="link-preview-attach"
@@ -658,7 +727,7 @@ export default function LinkPreviewDialog({ open, onClose, url = "", onAttach, g
                 </>
               )}
             </button>
-          )}
+          ) : null}
         </div>
       </div>
     </CenteredDialog>
