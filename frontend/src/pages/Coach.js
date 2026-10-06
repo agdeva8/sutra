@@ -46,6 +46,7 @@ import ActionPromptModal, { FRAMES } from "../components/ActionPromptModal";
 import SourceActionDialog from "../components/SourceActionDialog";
 import GoalBoundaryConfirmDialog from "../components/GoalBoundaryConfirmDialog";
 import FocusedTaskChatDialog from "../components/FocusedTaskChatDialog";
+import PlanWorkspace from "../components/PlanWorkspace";
 import ReplanSuggestions from "../components/ReplanSuggestions";
 import ReplanToast from "../components/ReplanToast";
 import ChatModal from "../components/ChatModal";
@@ -82,6 +83,29 @@ const NAV_TARGETS = {
   motivation: { panel: "motivation" },
 };
 
+function buildPlanWorkspaceProps(state) {
+  const goals = (state?.goals || []).filter((g) => g.status !== "dropped");
+  const milestones = state?.milestones || [];
+  const levelOf = { yearly: "year", quarterly: "quarter", monthly: "month", weekly: "week", daily: "day" };
+  const depth = { year: 0, quarter: 1, month: 2, week: 3, day: 4 };
+  const plans = goals.map((g) => {
+    const items = (state?.plan_items || []).filter((it) => it.goal_id === g.id);
+    const nodes = items.map((it) => ({
+      id: it.id, level: levelOf[it.horizon] || "day", title: it.title, note: it.note || "",
+      start_date: it.start_date, end_date: it.end_date,
+      hours: typeof it.hours === "number" ? it.hours : it.weekly_hours,
+      done: it.status === "done",
+    })).sort((a, b) => (depth[a.level] ?? 9) - (depth[b.level] ?? 9) || (a.start_date || "").localeCompare(b.start_date || ""));
+    return { id: "plan-" + g.id, goal: g, milestones: milestones.filter((m) => m.goal_id === g.id), nodes };
+  }).filter((p) => p.nodes.length > 0 || p.milestones.length > 0);
+  return {
+    plans,
+    goals,
+    milestones,
+    blockers: (state?.blockers || []).map((b) => ({ id: b.id, title: b.title, start_date: b.start_date, end_date: b.end_date })),
+    blocks: (state?.timetableBlocks || []).map((b) => ({ id: b.id, label: b.label, block_date: b.block_date, start_time: b.start_time, end_time: b.end_time, kind: b.kind || "focus", goal_id: b.goal_id })),
+  };
+}
 export default function Coach() {
   const { user, setUser, loading, logout } = useAuth();
   const isGuest = !!user?.is_guest;
@@ -599,7 +623,7 @@ export default function Coach() {
                     active
                       ? "text-[var(--accent)] border-b-2 border-[var(--accent)]"
                       : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                  }`}
+                  }${s.deprecated ? " opacity-50" : ""}`}
                 >
                   <Icon className="w-3.5 h-3.5 shrink-0" /> {s.shortLabel || s.label}
                 </Link>
@@ -613,7 +637,7 @@ export default function Coach() {
             <ReplanSuggestions
               suggestions={state?.replan_suggestions || []}
               engine={state?.replan_engine}
-              active={["state", "today", "timeline"].includes(panelView)}
+              active={["state", "today", "timeline", "plan"].includes(panelView)}
               onReplan={openReplanSuggestion}
             />
           </div>
@@ -627,6 +651,8 @@ export default function Coach() {
               />
             ) : panelView === "motivation" ? (
               <Motivation state={state} />
+            ) : panelView === "plan" ? (
+              <PlanWorkspace {...buildPlanWorkspaceProps(state)} />
             ) : panelView === "state" ? (
               <TrackingDashboard
                 state={state}

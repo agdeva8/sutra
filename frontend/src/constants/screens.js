@@ -29,9 +29,10 @@ import {
  */
 export const SCREENS = [
   { key: "home", label: "Overview", to: "/", Icon: LayoutDashboard },
-  { key: "state", label: "Goals", to: "/?panel=state", Icon: Target },
-  { key: "today", label: "Today", to: "/?panel=today", Icon: CalendarDays },
-  { key: "timeline", label: "Timeline", to: "/?panel=timeline", Icon: CalendarClock },
+  { key: "plan", label: "Plan", to: "/?panel=plan", Icon: Target },
+  { key: "state", label: "Goals", deprecated: true, to: "/?panel=state", Icon: Target },
+  { key: "today", label: "Today", deprecated: true, to: "/?panel=today", Icon: CalendarDays },
+  { key: "timeline", label: "Timeline", deprecated: true, to: "/?panel=timeline", Icon: CalendarClock },
   { key: "memories", label: "Memories", to: "/?panel=memories", Icon: ImageIcon },
   { key: "sources", label: "Sources", to: "/?panel=sources", Icon: FileText },
   { key: "motivation", label: "Curated for you", shortLabel: "Curated", to: "/?panel=motivation", Icon: Sparkles },

@@ -158,3 +158,5 @@ export function PlanWorkspace(props) {
     </div>
   );
 }
+
+export default PlanWorkspace;

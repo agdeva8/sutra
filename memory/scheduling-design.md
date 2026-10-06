@@ -1,6 +1,6 @@
 # Design — Availability capture + solver-native multi-horizon scheduling
 
-**Status:** draft for founder review (not built). Companion to `memory/PRD.md` (Iteration 10 Goal Planner) and `memory/AGENT_BUILDER.md`.
+**Status:** SUPERSEDED. As-built design lives in `memory/HLD-goal-planner.md` / `memory/LLD-goal-planner.md` (Oct 2026). Key deltas from this doc: the CP-SAT solver is invoked *deterministically* by the pipeline (not an LLM tool) and owns **week→day** placement (`horizon-solver.ts`); month/quarter stay structural (`buildLattice`); re-planning re-lays `plan_items` via `plan-relay.ts` (replace-on-write).
 
 **One line:** the LLM owns *meaning* (goal → phases → milestones, with 1–5 priority) and *task content*; a deterministic **CP-SAT solver** is exposed as a **single tool** the LLM calls in the graph to lay the plan out top-down **month → week → day** under availability/capacity/deadline constraints. Small changes re-solve silently; only infeasibility or a scope change escalates to a user-confirmed replan.
 

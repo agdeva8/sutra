@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { CalendarRange, ChevronDown, Layers, Target } from "lucide-react";
 
 /**
- * PlanBreakdown — the multi-horizon execution dashboard panel.
+ * @deprecated Superseded by PlanWorkspace / PlanHierarchy (Plan tab). — the multi-horizon execution dashboard panel.
  *
  * Renders a goal's persisted `plan_items` lattice (written by the proposal
  * executor on confirm) as a single coherent trajectory across all five
