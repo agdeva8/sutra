@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <!-- Rounded Squircle Background in Deep Ink -->
+  <rect width="32" height="32" rx="7.5" fill="#1F1B16"/>
+
+  <!-- Halo / Wisdom Glow — centred on (16, 14) so the visual centre
+       of mass of the whole mark lands at the squircle's geometric
+       centre (16, 16) instead of hugging the top edge. The lotus base
+       sits 4px lower than before to balance the visual weight. -->
+  <circle cx="16" cy="11" r="5" fill="url(#haloGlow)" opacity="0.45"/>
+  <circle cx="16" cy="11" r="4" stroke="#F2C795" stroke-width="0.8" opacity="0.35"/>
+
+  <!-- Guru Head & Topknot — moved DOWN 1.5px (cx=16, cy=11 → cy=12.5)
+       so the head doesn't crowd the top edge of the squircle. -->
+  <circle cx="16" cy="12.5" r="2.2" fill="#F7F2E7"/>
+  <circle cx="16" cy="9.5" r="1.1" fill="#F7F2E7"/>
+
+  <!-- Seated Torso & Mudra Arms — moved down 1px so the head sits in
+       the optical centre of the squircle. Width kept identical. -->
+  <path d="M 12 17.5 C 13.5 16, 18.5 16, 20 17.5 L 21 22.5 C 18 23.5, 14 23.5, 11 22.5 Z" fill="#F7F2E7" opacity="0.95"/>
+  <path d="M 12 17.5 C 10.5 19.5, 9.8 21.5, 11.5 22" stroke="#F7F2E7" stroke-width="1.2" stroke-linecap="round"/>
+  <path d="M 20 17.5 C 21.5 19.5, 22.2 21.5, 20.5 22" stroke="#F7F2E7" stroke-width="1.2" stroke-linecap="round"/>
+  <circle cx="11.5" cy="22" r="0.75" fill="#F2C795"/>
+  <circle cx="20.5" cy="22" r="0.75" fill="#F2C795"/>
+
+  <!-- Lotus Base (Folded legs) — centred at y=24.5, padding trimmed
+       so the mark reads as a centred silhouette in the squircle. -->
+  <path d="M 8 25 C 12 27 12 27 16 27 C 20 27 20 27 24 25 C 22 28 10 28 8 25 Z" fill="#F7F2E7" opacity="0.85"/>
+
+  <!-- The Infinite Thread (Lemniscate Figure-8) — moved DOWN so its
+       centre is at (16, 22) (the optical centre of the lotus base),
+       not (16, 19.5) like before. Same shape. -->
+  <path d="M 16 20 C 12.5 16.5, 6 17, 6 21 C 6 25, 12.5 25.5, 16 22 C 19.5 18.5, 26 17.5, 26 21 C 26 24.5, 19.5 24.5, 16 20 Z"
+        stroke="url(#threadGrad)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 16 20 C 12.5 16.5, 6 17, 6 21 C 6 25, 12.5 25.5, 16 22 C 19.5 18.5, 26 17.5, 26 21 C 26 24.5, 19.5 24.5, 16 20 Z"
+        stroke="#FFF8EE" stroke-width="0.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.75"/>
+
+  <defs>
+    <radialGradient id="haloGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#F2C795"/>
+      <stop offset="100%" stop-color="#C97B3F" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="threadGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F2C795"/>
+      <stop offset="50%" stop-color="#C97B3F"/>
+      <stop offset="100%" stop-color="#F2C795"/>
+    </linearGradient>
+  </defs>
+</svg>

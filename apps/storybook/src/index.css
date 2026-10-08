@@ -1,0 +1,399 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Dark is the app default, so scrollbars, form controls, and the
+   * native selection color must render dark rather than the
+   * platform light default. `.light` flips it back below. */
+  color-scheme: dark;
+  /* User-chosen base font size — read from localStorage in
+   * public/index.html's pre-paint script and written onto this
+   * variable on <html>. All rem-based Tailwind utilities
+   * (text-xs … text-3xl) scale against this, so a single
+   * preference rescales every text run on every screen without
+   * any per-component changes. 16px matches the platform default;
+   * Settings lets the user pick 14/15/17/18 too. */
+  --sutra-font-scale: 16px;
+  /* Apple-clean dark mode: near-black surfaces, Apple's dark system blue
+   * accent (#0A84FF). Pure black for the deepest surface; Apple
+   * system gray 6 (#1C1C1E) for raised cards; gray 5 (#2C2C2E) for
+   * chips. Text ladder mirrors Apple's HIG: white primary, ~92%
+   * secondary, ~60% muted. */
+  --bg-primary:   #000000;
+  --bg-secondary: #1C1C1E;
+  --bg-tertiary:  #2C2C2E;
+  --border:       #38383A;
+  --border-accent:#48484A;
+  --text-primary: #FFFFFF;
+  --text-secondary:#EBEBF5;
+  --text-muted:   #98989D;
+  --accent:       #0A84FF;
+  --warning:      #FF9F0A;
+  /* Dark ink for text on saturated amber/green fills (white fails there).
+   * Stays dark in BOTH themes. */
+  --on-warning:   #0B0B0C;
+  --danger:       #FF453A;
+  --success:      #30D158;
+  --tool-bg:      #1C1C1E;
+  --popover: 0 0% 7%;
+  --popover-foreground: 0 0% 100%;
+}
+
+.light {
+  color-scheme: light;
+  /* Apple-clean light mode: pure white surfaces, Apple's system blue
+   * accent (#007AFF). Same HIG text ladder: #1D1D1F primary (Apple's
+   * "label"), #6E6E73 secondary, #86868B tertiary ("placeholder
+   * text"). Apple's semantic colors are taken straight from
+   * HIG/system colors. */
+  --bg-primary:   #FFFFFF;
+  --bg-secondary: #F5F5F7;
+  --bg-tertiary:  #EFEFF1;
+  --border:       #D2D2D7;
+  --border-accent:#A1A1A6;
+  --text-primary: #1D1D1F;
+  --text-secondary:#6E6E73;
+  --text-muted:   #86868B;
+  --accent:       #007AFF;
+  --warning:      #FF9500;
+  --on-warning:   #3A2400;
+  --danger:       #FF3B30;
+  --success:      #34C759;
+  --tool-bg:      #F5F5F7;
+  --popover: 0 0% 100%;
+  --popover-foreground: 0 0% 11%;
+}
+
+* {
+  border-color: var(--border);
+}
+
+/* Pin the root font-size to the user-chosen scale. Set on `html`
+ * (not `body`) so Tailwind's rem-based text utilities inherit the
+ * scale directly — `text-sm` becomes 14 × (scale/16) without us
+ * touching a single component. */
+html {
+  font-size: var(--sutra-font-scale);
+}
+
+/* Mobile-native tap hygiene. Scoped to interactive elements only —
+ * NOT to html/body, so pinch-zoom keeps working (disabling zoom is an
+ * accessibility anti-pattern). `manipulation` removes the ~300ms
+ * double-tap-to-zoom delay on mobile web, and the explicit
+ * tap-highlight stops the default gray flash on every tap, which is
+ * the single loudest "this is a webview" tell on iOS/Android. */
+button,
+a,
+[role="button"],
+[role="tab"],
+[role="menuitem"],
+input,
+textarea,
+select,
+label {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Pressed feedback for touch. Without this, every control that only
+ * declares `hover:` gives NO response to a finger — `hover` does not
+ * exist on touch, so the tap feels dead. One blanket `:active` rule
+ * covers all 30+ controls instead of trusting a per-component class.
+ *
+ * Scoped to `:active` only, so it can't overwrite the resting
+ * transition each component declares (`.transition-colors` etc. still
+ * run when not pressed). `transform` is listed alongside `opacity` so
+ * the few controls with an explicit `active:scale-[0.98]` keep
+ * animating that scale rather than snapping it.
+ *
+ * 100ms sits inside the 80-150ms window for perceived instant
+ * response; the release has no rule of its own so it snaps back
+ * faster than it went down, which is the correct direction. */
+button:not(:disabled):active,
+a[href]:active,
+[role="button"]:active,
+[role="tab"]:active,
+[role="menuitem"]:active {
+  opacity: 0.85;
+  transition: opacity 100ms ease, transform 100ms ease;
+}
+
+/* iOS Safari auto-zooms the whole viewport the instant a form control
+ * with font-size < 16px takes focus — the screen jumps and the user has
+ * to pinch back out. Every input and textarea here is `text-sm` (14px),
+ * `text-xs` (12px) or `text-[11px]`, so on a phone merely tapping a
+ * field zoomed the app. That is the single loudest "this is a webview"
+ * symptom on iOS.
+ *
+ * Gate on the `sm` breakpoint so only phones are forced up to the
+ * platform minimum; the compact desktop dialogs keep their 12–14px
+ * rhythm. Checkboxes and radios are excluded — they are sized by their
+ * own utilities, not by font-size, and inflating them would break the
+ * layout of the timetable and filter chips. */
+@media (max-width: 639px) {
+  input:not([type="checkbox"]):not([type="radio"]),
+  textarea,
+  select {
+    /* iOS Safari's zoom-prevention floor is 16px, but with the
+     * user-chosen text scale `1rem` can be 17-18px. Take the larger
+     * of the two so the floor still holds at small scales AND the
+     * form controls grow with the rest of the text at large scales. */
+    font-size: max(16px, 1rem);
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  /* Apple system stack — renders SF Pro on Apple devices, Segoe UI on
+   * Windows, Roboto on Android, so the app inherits the platform's
+   * native reading face (which is what "Apple-like" means in practice).
+   * Falls back to Helvetica/Arial for anything exotic. */
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display',
+    'Segoe UI', Roboto, 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  letter-spacing: -0.01em;
+}
+
+/* Apple's type system uses one family for everything. Keep the display
+ * and mono hooks so existing markup still resolves, but point them at
+ * the platform faces rather than the old Space Grotesk / Plex / JetBrains
+ * imports. */
+.font-display { font-family: inherit; letter-spacing: -0.02em; }
+.font-mono { font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace; letter-spacing: 0; }
+
+::selection {
+  background: var(--accent);
+  color: var(--bg-primary);
+}
+
+/* Apple-style overlay scrollbar: thin, no track, only the thumb, and
+ * it fades in over content rather than reserving a gutter. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-muted) 45%, transparent);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-muted) 70%, transparent);
+  background-clip: padding-box;
+}
+
+/* Focus visibility for accessibility */
+*:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@keyframes gc-fade-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.gc-fade-up { animation: gc-fade-up 0.28s ease-out both; }
+
+@keyframes gc-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.gc-fade-in { animation: gc-fade-in 0.18s ease-out both; }
+
+@keyframes gc-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.gc-skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--bg-secondary) 0%,
+    var(--bg-tertiary) 50%,
+    var(--bg-secondary) 100%
+  );
+  background-size: 200% 100%;
+  animation: gc-shimmer 1.4s ease-in-out infinite;
+  border-radius: 4px;
+}
+
+@keyframes gc-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+.gc-caret { animation: gc-blink 1s step-end infinite; }
+
+/* ── Coach markdown (MarkdownMessage) ────────────────────────────────────
+   Renders the coach's GFM output (tables, lists, code, links) with the app
+   tokens. Tables get a horizontal-scroll wrapper so a wide table scrolls
+   instead of breaking the chat layout. */
+.gc-md { color: inherit; overflow-wrap: anywhere; }
+.gc-md > :first-child { margin-top: 0; }
+.gc-md > :last-child { margin-bottom: 0; }
+.gc-md p { margin: 0.5rem 0; }
+.gc-md h1, .gc-md h2, .gc-md h3, .gc-md h4 {
+  margin: 1rem 0 0.5rem;
+  font-family: var(--font-sans, system-ui, sans-serif);
+  font-weight: 600;
+  font-size: 1rem;
+  line-height: 1.35;
+  color: var(--text-primary);
+}
+.gc-md ul, .gc-md ol { margin: 0.5rem 0; padding-left: 1.25rem; }
+.gc-md ul { list-style: disc; }
+.gc-md ol { list-style: decimal; }
+.gc-md li { margin: 0.15rem 0; }
+.gc-md li > ul, .gc-md li > ol { margin: 0.15rem 0; }
+.gc-md a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.gc-md strong { font-weight: 600; color: var(--text-primary); }
+.gc-md blockquote {
+  margin: 0.5rem 0;
+  padding-left: 0.75rem;
+  border-left: 2px solid var(--border);
+  color: var(--text-secondary);
+}
+.gc-md hr { margin: 0.75rem 0; border: 0; border-top: 1px solid var(--border); }
+.gc-md code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85em;
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+.gc-md pre {
+  margin: 0.5rem 0;
+  padding: 0.75rem;
+  overflow-x: auto;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.gc-md pre code { background: transparent; padding: 0; font-size: 0.82rem; }
+.gc-md-table-wrap { margin: 0.75rem 0; width: 100%; overflow-x: auto; }
+.gc-md table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-sans, system-ui, sans-serif);
+  font-size: 0.85rem;
+}
+.gc-md th, .gc-md td {
+  border: 1px solid var(--border);
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  vertical-align: top;
+}
+.gc-md th { background: var(--bg-secondary); font-weight: 600; color: var(--text-primary); white-space: nowrap; }
+.gc-md td { color: var(--text-secondary); }
+.gc-md img { max-width: 100%; border-radius: 8px; }
+
+
+/* Safe-area-aware FAB positioning for iOS Safari (home indicator) */
+.gc-safe-bottom {
+  bottom: max(1.5rem, env(safe-area-inset-bottom));
+}
+
+/* Sonner toaster — keep below the modal stack (z-60) so toasts can't
+   intercept clicks on the chat close X or other modal controls. */
+section[aria-label="Notifications alt+T"] {
+  z-index: 50 !important;
+  pointer-events: none;
+}
+section[aria-label="Notifications alt+T"] > * {
+  pointer-events: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* Horizon strip (TimelineVariantB) — hide horizontal scrollbar while
+   preserving native touch/wheel scroll and snap behavior. */
+.gc-strip-body {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.gc-strip-body::-webkit-scrollbar {
+  display: none;
+}
+
+/* --- Route transitions (react-view-transitions) --------------------------
+   Directional push/pop for the two routes: / <-> /settings. This is the web
+   equivalent of a navigation-stack slide, so the app reads as moving between
+   sections rather than swapping to an unrelated page.
+
+   Typed (nav-forward / nav-back) rather than a bare cross-fade: Coach ->
+   Settings is hierarchical (it has a "Back to Coach" control), so direction
+   carries meaning. The browser back button carries no type, so it resolves to
+   `default: "none"` and swaps silently — no false depth implied. */
+:root {
+  --duration-exit: 150ms;
+  --duration-enter: 210ms;
+  --duration-move: 400ms;
+}
+
+@keyframes gc-nav-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes gc-nav-slide {
+  from { translate: var(--slide-offset); }
+  to { translate: 0; }
+}
+
+/* Forward: incoming slides in from the right, outgoing exits left. */
+::view-transition-old(.nav-forward) {
+  --slide-offset: -60px;
+  animation:
+    var(--duration-exit) ease-in both gc-nav-fade reverse,
+    var(--duration-move) ease-in-out both gc-nav-slide reverse;
+}
+::view-transition-new(.nav-forward) {
+  --slide-offset: 60px;
+  animation:
+    var(--duration-enter) ease-out var(--duration-exit) both gc-nav-fade,
+    var(--duration-move) ease-in-out both gc-nav-slide;
+}
+
+/* Back: mirrored — incoming from the left, outgoing exits right. */
+::view-transition-old(.nav-back) {
+  --slide-offset: 60px;
+  animation:
+    var(--duration-exit) ease-in both gc-nav-fade reverse,
+    var(--duration-move) ease-in-out both gc-nav-slide reverse;
+}
+::view-transition-new(.nav-back) {
+  --slide-offset: -60px;
+  animation:
+    var(--duration-enter) ease-out var(--duration-exit) both gc-nav-fade,
+    var(--duration-move) ease-in-out both gc-nav-slide;
+}
+
+/* The generic reduced-motion block above only reaches *::before/::after —
+   view-transition pseudo-elements hang off the root and are not matched by
+   it, so they need their own guard or routes keep sliding for those users. */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(*),
+  ::view-transition-new(*),
+  ::view-transition-group(*) {
+    animation-duration: 0s !important;
+    animation-delay: 0s !important;
+  }
+}
+
+/* --- Apple-like radius scale ---------------------------------------------
+   iOS/macOS surfaces use noticeably softer corners than Tailwind's
+   defaults (8–12px on controls, ~16–22px on cards and sheets). Rather
+   than editing hundreds of call-sites, override the base radius
+   utilities once here — they sit after `@tailwind utilities`, so they
+   win at equal specificity. `rounded-full`, `rounded-none`, and the
+   directional variants (`rounded-t-*` …) are intentionally untouched
+   so pills, avatars, and sheet tops keep their own shapes. */
+.rounded-sm { border-radius: 6px; }
+.rounded    { border-radius: 8px; }
+.rounded-md { border-radius: 10px; }
+.rounded-lg { border-radius: 12px; }
+.rounded-xl { border-radius: 14px; }
