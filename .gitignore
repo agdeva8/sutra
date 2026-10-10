@@ -25,3 +25,6 @@ storybook-static/
 
 # OS
 .DS_Store
+
+# graphify — generated graph output, rebuilt by the hook
+graphify-out/
