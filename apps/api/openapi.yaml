@@ -1,0 +1,2925 @@
+openapi: 3.1.0
+
+info:
+  title: GoalCoach API
+  version: 2.0.0
+  summary: The HTTP boundary between apps/web and apps/api.
+  description: |
+    Every route `apps/web` may call, and every shape it will get back. `apps/web`
+    talks to `apps/api` and to nothing else.
+
+    ## Where the planner routes are served
+
+    `apps/web` never calls `apps/agent`. The planner routes below — `/plan/run`,
+    `/plan/stream`, `/plan/confirm`, `/plan/change`, `/plan/staleness`,
+    `/chat/plan`, `/chat/stream` — are `apps/api` routes like any other. `apps/api`
+    serves them by calling the agent **in-process**, importing its graph. The agent
+    is a library, not a service: it has no HTTP surface of its own, and no second
+    spec to drift out of sync with this one.
+
+    ## How this file was derived
+
+    Three sources, cross-checked:
+
+    1. `apps/agent/app/contracts/schemas.py` — the v2 pydantic vocabulary. Where a
+       shape exists there, this file copies it verbatim; that module stays the
+       source of truth and this file is generated-by-hand to match.
+    2. `apps/storybook/src/lib/api.js` + `src/mock/backend.js` — the v1 frontend,
+       byte-identical to the app it was copied from. This is the proof of what
+       the UI *actually* calls and *actually* parses.
+    3. `docs/architecture/HLD-planning-agent.md` — the v2 planner surface
+       (`/plan/*`), which the v1 frontend has no equivalent of.
+
+    ## The one locked boundary (HLD §3)
+
+    **The LLM owns meaning. Code owns dates.** No model the LLM fills carries a
+    date field — `HorizonTask`, `DecomposeStep` and `MilestoneSpec` reject one at
+    validation time. Every date on this wire comes from the CP-SAT solver. If you
+    are adding a request or response field that is a date on a *task*, you are
+    breaking the invariant, not extending it.
+
+    ## Two things v1 got wrong that v2 must not repeat
+
+    - **Two backends.** v1 split this surface across a Python FastAPI agent and a
+      Next.js BFF. v2 is one FastAPI app — `apps/api` — which the frontend talks
+      to; the planner is delegated to `apps/agent` in-process. HLD §18 rules out
+      Next.js. Every path below is therefore owned by one service.
+    - **Non-uniform envelopes.** v1 mixed bare arrays and wrapped objects for no
+      reason. This file documents the split as it *is* (see `x-envelope` on each
+      operation) rather than pretending it is uniform — the frontend already
+      tolerates both, so changing it now is a breaking change with no upside.
+
+  contact:
+    name: GoalCoach
+  license:
+    name: Proprietary
+
+# ---------------------------------------------------------------------------
+# Contract notes — every place the three sources disagree.
+# ---------------------------------------------------------------------------
+x-contract-notes:
+  description: |
+    Points where the v1 agent, the v1 BFF, and the storybook frontend do not
+    agree. Each is a decision the implementer must make; none is resolved here,
+    because resolving them silently is how the v1 drift happened.
+  notes:
+    - id: sse-frame-name
+      severity: high
+      note: |
+        Three spellings of the same frame. The v1 Python agent emits
+        `{"type":"text_delta","content":…}`; the v1 BFF emits
+        `{"type":"delta","content":…}`; HLD §12 specifies
+        `{"type":"delta","text":…}`.
+        **The frontend parses `content`, not `text`** (`ChatModal.js`), so HLD §12
+        as written would render an empty stream. This file specifies `delta` +
+        `content` — the BFF spelling — and HLD §12 should be corrected to match.
+
+    - id: stream-done-frame
+      severity: medium
+      note: |
+        The v1 agent forwards a `stream_done` frame carrying the full text; the
+        BFF never sends it. The frontend does not read it. Omitted here.
+
+    - id: tools-and-clarification-frames
+      severity: medium
+      note: |
+        The BFF sends `tools` and `needs_clarification` frames; the agent sends
+        neither. The frontend handles both. Kept here — v2 needs them for the
+        proposal card and the HITL clarify interrupt (HLD §10).
+
+    - id: ref-id-absent
+      severity: medium
+      note: |
+        The v1 agent's `POST /api/chat/plan` response never carries `ref_id`
+        (pydantic drops it); the BFF's does. The frontend reads it to route the
+        proposal to the right conversation bucket. Required in v2.
+
+    - id: disabled-planner-shape
+      severity: medium
+      note: |
+        Agent returns `{"detail":"disabled"}`; BFF returns `{"status":"disabled"}`.
+        The frontend checks for `disabled` on either. v2 uses
+        `{"status":"disabled"}` — `detail` collides with the error envelope.
+
+    - id: state-shape-drift
+      severity: high
+      note: |
+        `GET /api/state` differs between the two services. The agent has
+        `budget_hours` + `availability` and lacks `audit_summary`,
+        `replan_suggestions`, `replan_engine`, `available_weekly_hours`,
+        `generated_at`. The BFF is the inverse. The frontend reads the BFF's set.
+        This file specifies the union, with the agent-only fields optional.
+
+    - id: chat-history-shape
+      severity: high
+      note: |
+        Agent: `{"messages":[{role,content}], "conversation_id": str}`.
+        BFF: a **bare array** of `{id,user_id,role,content,provider,proposals,created_at}`.
+        The frontend consumes the bare array. Specified as bare array.
+
+    - id: tools-confirm-shape
+      severity: high
+      note: |
+        Agent: `{"success": bool, "result": str}` — no `state`.
+        BFF: `{"ok": true, "result": str, "state": …}`, and 422 with
+        `{"ok": false, "result": …}` when the executor fails.
+        The frontend reads `ok` and re-renders from `state`. Specified as the BFF
+        shape, including the 422-not-500 convention for executor failure.
+
+    - id: empty-path-registration
+      severity: low
+      note: |
+        `/api/state` and `/api/facts` are registered with an empty path string in
+        v1, so the URL is exactly `/api/state` with **no trailing slash**. A
+        router that adds one will 307. Keep the exact path.
+
+    - id: blockers-envelope
+      severity: medium
+      note: |
+        The BFF returns `{"blockers":[…]}`; the storybook fixture returns a bare
+        array; the client tolerates both
+        (`Array.isArray(res) ? res : res?.blockers`). Specified as bare array —
+        matching `/audit`, `/timetable` and `/sources`.
+
+    - id: over-commitment-level
+      severity: medium
+      note: |
+        Unsettled enum. The client maps `clear|moderate|high|critical`; the
+        fixtures emit `low` and `medium`. Both silently degrade to `clear`, so a
+        real "moderate" reads as fine. Specified as the client's four values;
+        fixtures must be corrected.
+
+    - id: headroom-casing
+      severity: low
+      note: |
+        `headroom.budgetHours` is camelCase while `headroom.free` and
+        `headroom.total` are not. Specified as-is to avoid a silent break; fix in
+        a later pass, not this one.
+
+    - id: grill-vs-clarify
+      severity: medium
+      note: |
+        `POST /chat/plan` sends `grillMe`; `POST /chat/stream` sends `clarify` for
+        the same concept. Specified with both names on their respective
+        operations, flagged as a rename candidate.
+
+    - id: auth-me-bare
+      severity: low
+      note: |
+        `GET /auth/me` returns the user bare; `/auth/guest` and `/auth/session`
+        return `{user}`. Kept, because the client already branches on it.
+
+    - id: proposal-nesting
+      severity: medium
+      note: |
+        Proposals arrive nested under `args` in the tool frame but flat in
+        `chat/history`. `ToolConfirmationPrompt.js:89-93` is the only place that
+        reconciles them. Specified as a union (`args` optional) so both parse.
+
+    - id: plan-item-envelope
+      severity: medium
+      note: |
+        `plan_items` is snake_case and plural. `POST /plan-items` returns
+        `{plan_item}` wrapped, with **HTTP 200 not 201**; `PATCH` returns the item
+        bare. Asymmetric, but the client depends on it.
+
+    - id: timetable-blocks
+      severity: low
+      note: |
+        `state.timetableBlocks` (`Coach.js:109`) is read by the client and served
+        by nothing — not by `/state`, not by `/timetable`. Either add it to
+        `State` or delete the read; do not leave it dangling.
+
+    - id: motivation-cache-is-a-switch
+      severity: medium
+      note: |
+        `GET /motivation/recommend`'s `cache` field is not telemetry — it is a
+        polling switch. Anything other than `"hit"` keeps the client polling for
+        60s. A miss that never warms is a request storm.
+
+    - id: audit-export-content-type
+      severity: low
+      note: |
+        Unresolved. The mock serves `text/markdown`; the button says "Export
+        JSON". Specified as `text/markdown` (what is served), flagged.
+
+    - id: no-csrf-token
+      severity: high
+      note: |
+        There is no CSRF token anywhere in v1 — cookie-only auth with
+        `credentials: "include"` on every call. v2 must either keep that and rely
+        on `SameSite=Lax` + an origin check, or add a token. This file assumes the
+        former (no token parameter is declared) and the server must enforce the
+        origin check, because the spec cannot.
+
+# ---------------------------------------------------------------------------
+servers:
+  - url: /
+    description: Same origin. `apps/web` calls `/api/*` with no host prefix.
+  - url: http://localhost:8000
+    description: Local dev, `apps/agent` directly.
+
+tags:
+  - name: auth
+    description: Cookie sessions. Guest and authenticated.
+  - name: preferences
+    description: Model provider and user settings.
+  - name: state
+    description: The dashboard snapshot — one call renders the whole app.
+  - name: planning
+    description: |
+      The v2 planner (HLD §4/§6). Run the graph, confirm a plan, record a change.
+      This is the surface v1 had no equivalent of.
+  - name: chat
+    description: Conversational turns, streaming and not.
+  - name: tools
+    description: Confirm and reject a pending proposal.
+  - name: goals
+    description: Goals and their milestone overlays.
+  - name: plan-items
+    description: Rows of `plan_items`. Solver-written; read-mostly.
+  - name: blockers
+    description: Dates the user cannot work.
+  - name: timetable
+    description: Fixed commitments — the immovable part of the week.
+  - name: sources
+    description: Files, links and notes attached to a goal.
+  - name: memories
+    description: Facts the coach has learned about the user.
+  - name: motivation
+    description: Contextual nudges, matched to the user's current state.
+  - name: audit
+    description: The append-only ledger of what the system did.
+  - name: ops
+    description: Liveness and readiness.
+
+security:
+  - cookieAuth: []
+
+paths:
+
+  # -------------------------------------------------------------------------
+  # ops
+  # -------------------------------------------------------------------------
+  /health:
+    get:
+      tags: [ops]
+      summary: Liveness.
+      security: []
+      operationId: health
+      responses:
+        "200":
+          description: Process is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: ok
+
+  /ready:
+    get:
+      tags: [ops]
+      summary: Readiness — DB reachable, LLM key present.
+      security: []
+      operationId: ready
+      responses:
+        "200":
+          description: Ready to serve.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ready:
+                    type: boolean
+                  detail:
+                    type: string
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  # -------------------------------------------------------------------------
+  # auth
+  # -------------------------------------------------------------------------
+  /auth/me:
+    get:
+      tags: [auth]
+      summary: The current user, or 401.
+      operationId: authMe
+      x-envelope: bare
+      responses:
+        "200":
+          description: |
+            The user object **bare** — not wrapped. `/auth/guest` and
+            `/auth/session` wrap it. See `x-contract-notes#auth-me-bare`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /auth/guest:
+    post:
+      tags: [auth]
+      summary: Mint a guest session.
+      operationId: authGuest
+      security: []
+      x-envelope: wrapped
+      responses:
+        "200":
+          description: A guest user and its cookies.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user:
+                    $ref: "#/components/schemas/User"
+
+  /auth/session:
+    post:
+      tags: [auth]
+      summary: Exchange a provider token for a session.
+      operationId: authSession
+      security: []
+      x-envelope: wrapped
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                provider:
+                  type: string
+                  examples: [google, github]
+                token:
+                  type: string
+      responses:
+        "200":
+          description: The authenticated user.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user:
+                    $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Clear the session cookies.
+      operationId: authLogout
+      responses:
+        "200":
+          description: Always succeeds, even with no session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Ok"
+
+  /auth/dev-login:
+    get:
+      tags: [auth]
+      summary: Dev-only persona login.
+      description: 404 in every non-dev environment.
+      operationId: authDevLoginGet
+      security: []
+      parameters:
+        - name: persona
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Logged in as the persona.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user:
+                    $ref: "#/components/schemas/User"
+        "404":
+          description: Dev login disabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      tags: [auth]
+      summary: Dev-only persona login (form post).
+      operationId: authDevLoginPost
+      security: []
+      responses:
+        "200":
+          description: Logged in as the persona.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user:
+                    $ref: "#/components/schemas/User"
+        "404":
+          description: Dev login disabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /auth/personas:
+    get:
+      tags: [auth]
+      summary: Seeded dev personas.
+      operationId: authPersonas
+      responses:
+        "200":
+          description: Personas, empty outside dev.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [personas]
+                properties:
+                  personas:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Persona"
+
+  "/auth/personas/{userId}":
+    get:
+      tags: [auth]
+      summary: One persona by id.
+      operationId: authPersona
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "200":
+          description: The persona.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Persona"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # -------------------------------------------------------------------------
+  # preferences
+  # -------------------------------------------------------------------------
+  /preferences/models:
+    get:
+      tags: [preferences]
+      summary: Available model providers.
+      operationId: listModels
+      responses:
+        "200":
+          description: The model catalog.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [models]
+                properties:
+                  models:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ModelOption"
+
+  /preferences:
+    put:
+      tags: [preferences]
+      summary: Update user preferences.
+      operationId: updatePreferences
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PreferencesPatch"
+      responses:
+        "200":
+          description: The updated user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+
+  # -------------------------------------------------------------------------
+  # state
+  # -------------------------------------------------------------------------
+  /state:
+    get:
+      tags: [state]
+      summary: The whole dashboard, in one call.
+      description: |
+        Exactly `/api/state` — **no trailing slash**. v1 registers this route with
+        an empty path string; a router that normalises the slash will 307.
+      operationId: getState
+      responses:
+        "200":
+          description: |
+            Union of the v1 agent's and v1 BFF's shapes. `budget_hours` and
+            `availability` are agent-only and therefore optional.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/State"
+
+  # -------------------------------------------------------------------------
+  # planning — the v2 surface
+  # -------------------------------------------------------------------------
+  /plan/run:
+    post:
+      tags: [planning]
+      summary: Run the planning graph to completion.
+      description: |
+        The non-streaming entry point (HLD §4). Runs the 10-node graph and returns
+        one terminal `PipelineResult`.
+
+        `kind` tells the caller what to do:
+        - `ok` — a plan was produced; `plan_items` is populated.
+        - `early` — a question is needed first; `questions` is populated.
+        - `no_change` — the plan already satisfied the request.
+        - `renegotiate` — the request cannot fit; `proposals` carries the options.
+        - `clarify` — the graph interrupted; resume via `/plan/run` with the same
+          `thread_id` and `answers`.
+      operationId: planRun
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlanRunRequest"
+      responses:
+        "200":
+          description: The terminal result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PipelineResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /plan/stream:
+    post:
+      tags: [planning]
+      summary: Run the planning graph, streaming progress.
+      description: |
+        Same graph as `/plan/run`, framed as SSE. Frames are the same union as
+        `/chat/stream`; a planner run additionally emits `plan` and `review`
+        progress frames before its terminal `done`.
+      operationId: planStream
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlanRunRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/EventStream"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /plan/confirm:
+    post:
+      tags: [planning]
+      summary: Commit a produced plan.
+      description: |
+        The confirm half of the HITL interrupt (HLD §10). Writes `plan_items`,
+        bumps `goals.plan_generation`, and appends to `plan_changes`.
+      operationId: planConfirm
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [thread_id]
+              properties:
+                thread_id:
+                  type: string
+                  description: The `thread_id` from the run being confirmed.
+                goal_id:
+                  type: string
+                  description: Optional — omit to confirm every goal in the run.
+                accepted:
+                  type: boolean
+                  default: true
+                  description: |
+                    `false` records the rejection and writes nothing. The client
+                    uses this for the modal's cancel, so the run is not orphaned.
+      responses:
+        "200":
+          description: Committed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+                  plan_items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PlanItemRow"
+                  generation:
+                    type: integer
+                    description: The new `goals.plan_generation`.
+        "409":
+          description: |
+            The thread is stale — its baseline generation no longer matches.
+            The client must re-run rather than force the write.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /plan/change:
+    post:
+      tags: [planning]
+      summary: Record and apply a replan change.
+      description: |
+        HLD §9. Body is `{action, goal_id, before, after}` where `action` is the
+        single `ReplanAction` — v1 had nine tool actions; v2 has one
+        intent-discriminated action.
+
+        The response's `tier` decides the surface (PRD D2): `slim` applies
+        silently behind a toaster, `escalate` needs the confirm modal. The
+        `adjustments` on the result are the toaster copy — **backend-driven**, so
+        the frontend never composes a sentence about a change.
+      operationId: planChange
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlanChangeRequest"
+      responses:
+        "200":
+          description: The recorded change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChangeResult"
+        "409":
+          description: |
+            Generation mismatch — the plan moved under the client. Re-read
+            `/plan/staleness` and re-issue.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /plan/staleness:
+    get:
+      tags: [planning]
+      summary: How much has changed since the last confirmed plan.
+      description: |
+        Feeds the counter on the refresh button (PRD D1). `total` is the number
+        the badge shows; `label` is the sentence beside it.
+      operationId: planStaleness
+      parameters:
+        - name: goal_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The rollup.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StalenessRollup"
+
+  # -------------------------------------------------------------------------
+  # chat
+  # -------------------------------------------------------------------------
+  /chat/stream:
+    post:
+      tags: [chat]
+      summary: One conversational turn, streamed.
+      description: |
+        SSE. One `delta` frame per chunk, then exactly one terminal frame.
+
+        The client accumulates `content` from `delta` frames and ignores
+        everything else until a terminal frame arrives. See
+        `x-contract-notes#sse-frame-name` — HLD §12 spells the delta field `text`
+        and the client reads `content`.
+      operationId: chatStream
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatStreamRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/EventStream"
+
+  /chat/history:
+    get:
+      tags: [chat]
+      summary: The conversation for one bucket.
+      operationId: chatHistory
+      x-envelope: bare
+      parameters:
+        - name: refId
+          in: query
+          required: false
+          description: Scope the history to one goal or commitment.
+          schema:
+            type: string
+        - name: kind
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: scope
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [goal, commitment, milestone, blocker, generic]
+      responses:
+        "200":
+          description: |
+            A **bare array** — not `{messages: […]}`. The v1 agent wrapped it and
+            the frontend broke on the wrapper. See
+            `x-contract-notes#chat-history-shape`.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ChatMessage"
+    delete:
+      tags: [chat]
+      summary: Clear one bucket.
+      operationId: chatHistoryDelete
+      parameters:
+        - name: refId
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Cleared.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Ok"
+
+  /chat/plan:
+    post:
+      tags: [chat]
+      summary: Run the planner from a chat turn.
+      description: |
+        The conversational entry into the graph. Slower than `/chat/stream` — the
+        client opts into a 60s timeout for this call specifically.
+
+        `grillMe` here and `clarify` on `/chat/stream` are the same concept under
+        two names. See `x-contract-notes#grill-vs-clarify`.
+      operationId: chatPlan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatPlanRequest"
+      responses:
+        "200":
+          description: |
+            A `PipelineResult`. When the planner is disabled the server returns
+            `{"status":"disabled"}` instead — the client branches on that before
+            reading any other field.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/PipelineResult"
+                  - $ref: "#/components/schemas/PlannerDisabled"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /chat/refine:
+    post:
+      tags: [chat]
+      summary: Refine a pending proposal in place.
+      operationId: chatRefine
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message:
+                  type: string
+                  description: The user's correction.
+                proposal:
+                  $ref: "#/components/schemas/Proposal"
+                refId:
+                  type: string
+      responses:
+        "200":
+          description: The refined proposal.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Proposal"
+
+  # -------------------------------------------------------------------------
+  # tools
+  # -------------------------------------------------------------------------
+  /tools/confirm:
+    post:
+      tags: [tools]
+      summary: Confirm a pending proposal.
+      description: |
+        Executor failure is **422, not 500** — the request was well-formed and the
+        action was refused, which is not a server fault.
+      operationId: toolsConfirm
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ToolActionRequest"
+      responses:
+        "200":
+          description: Applied. `state` is the fresh dashboard snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ToolActionResult"
+        "422":
+          description: The executor refused.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, result]
+                properties:
+                  ok:
+                    type: boolean
+                    const: false
+                  result:
+                    type: string
+                    description: Human-readable reason, shown verbatim.
+
+  /tools/reject:
+    post:
+      tags: [tools]
+      summary: Reject a pending proposal.
+      operationId: toolsReject
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ToolActionRequest"
+      responses:
+        "200":
+          description: Rejected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ToolActionResult"
+
+  # -------------------------------------------------------------------------
+  # goals / milestones
+  # -------------------------------------------------------------------------
+  /goals:
+    get:
+      tags: [goals]
+      summary: All goals.
+      operationId: listGoals
+      responses:
+        "200":
+          description: |
+            Note — the storybook build reads goals from `/state`, not from here.
+            Verify a caller exists before implementing.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Goal"
+
+  "/goals/{id}":
+    get:
+      tags: [goals]
+      summary: One goal.
+      operationId: getGoal
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: The goal.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Goal"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /milestones:
+    get:
+      tags: [goals]
+      summary: All milestones.
+      operationId: listMilestones
+      responses:
+        "200":
+          description: |
+            As with `/goals`, the storybook reads these from `/state`.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Milestone"
+
+  "/milestones/{id}":
+    patch:
+      tags: [goals]
+      summary: Update a milestone.
+      description: |
+        A milestone is an **outcome checkpoint** — an overlay chip, not a plan
+        level (HLD §8.1). Moving one escalates the replan tier, because it is a
+        commitment to the user rather than a scheduling detail.
+      operationId: updateMilestone
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                target_date:
+                  $ref: "#/components/schemas/Date"
+                status:
+                  $ref: "#/components/schemas/MilestoneStatus"
+      responses:
+        "200":
+          description: The updated milestone.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Milestone"
+
+  # -------------------------------------------------------------------------
+  # plan items
+  # -------------------------------------------------------------------------
+  /plan-items:
+    post:
+      tags: [plan-items]
+      summary: Add a plan item.
+      description: |
+        Returns **200 with the row wrapped in `{plan_item}`** — not 201, and not
+        bare. `PATCH` on the same resource returns the row bare. Asymmetric; the
+        client depends on both.
+      operationId: createPlanItem
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlanItemWrite"
+      responses:
+        "200":
+          description: The created row.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [plan_item]
+                properties:
+                  plan_item:
+                    $ref: "#/components/schemas/PlanItem"
+
+  "/plan-items/{id}":
+    patch:
+      tags: [plan-items]
+      summary: Update a plan item — tick it, rename it, move it.
+      operationId: updatePlanItem
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlanItemWrite"
+      responses:
+        "200":
+          description: The updated row, bare.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlanItem"
+
+  # -------------------------------------------------------------------------
+  # blockers
+  # -------------------------------------------------------------------------
+  /blockers:
+    get:
+      tags: [blockers]
+      summary: Dates the user cannot work.
+      operationId: listBlockers
+      x-envelope: bare
+      responses:
+        "200":
+          description: |
+            A bare array. The v1 BFF wrapped this in `{blockers}`; the client
+            tolerates both. See `x-contract-notes#blockers-envelope`.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Blocker"
+    post:
+      tags: [blockers]
+      summary: Add a blocker.
+      description: |
+        A blocker is a hard constraint: the solver treats every date in its range
+        as zero-capacity. It is not a preference.
+      operationId: createBlocker
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BlockerWrite"
+      responses:
+        "200":
+          description: The created blocker.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Blocker"
+
+  "/blockers/{id}":
+    put:
+      tags: [blockers]
+      summary: Update a blocker.
+      operationId: updateBlocker
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BlockerWrite"
+      responses:
+        "200":
+          description: The updated blocker.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Blocker"
+    delete:
+      tags: [blockers]
+      summary: Delete a blocker.
+      operationId: deleteBlocker
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Ok"
+
+  # -------------------------------------------------------------------------
+  # timetable
+  # -------------------------------------------------------------------------
+  /timetable:
+    get:
+      tags: [timetable]
+      summary: Fixed commitments.
+      description: |
+        The immovable part of the week. Distinct from a blocker: a blocker removes
+        capacity for a date range, a timetable block occupies specific hours.
+      operationId: listTimetable
+      x-envelope: bare
+      responses:
+        "200":
+          description: A bare array.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TimeBlock"
+    post:
+      tags: [timetable]
+      summary: Add a block.
+      operationId: createBlock
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TimeBlockWrite"
+      responses:
+        "200":
+          description: The created block.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TimeBlock"
+
+  "/timetable/{id}":
+    put:
+      tags: [timetable]
+      summary: Update a block.
+      operationId: updateBlock
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TimeBlockWrite"
+      responses:
+        "200":
+          description: The updated block.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TimeBlock"
+    delete:
+      tags: [timetable]
+      summary: Delete a block.
+      operationId: deleteBlock
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Ok"
+
+  # -------------------------------------------------------------------------
+  # sources
+  # -------------------------------------------------------------------------
+  /sources:
+    get:
+      tags: [sources]
+      summary: Files, links and notes.
+      operationId: listSources
+      x-envelope: bare
+      parameters:
+        - name: goal_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: A bare array.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Source"
+
+  /sources/upload:
+    post:
+      tags: [sources]
+      summary: Upload a file.
+      description: |
+        `multipart/form-data`, field name `file`. The response is the created row
+        **bare** — unlike `/plan-items`, which wraps.
+      operationId: uploadSource
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                goal_id:
+                  type: string
+      responses:
+        "200":
+          description: |
+            The created row. `text_pending` is `true` until extraction finishes —
+            the client shows a spinner on that flag.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Source"
+
+  /sources/link:
+    post:
+      tags: [sources]
+      summary: Attach a URL.
+      operationId: addSourceLink
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url:
+                  type: string
+                  format: uri
+                goal_id:
+                  type: string
+      responses:
+        "200":
+          description: The created source.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Source"
+
+  /sources/link/preview:
+    post:
+      tags: [sources]
+      summary: Fetch title and summary for a URL, without saving it.
+      operationId: previewLink
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url:
+                  type: string
+                  format: uri
+      responses:
+        "200":
+          description: The preview.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LinkPreview"
+
+  /sources/link/extract:
+    post:
+      tags: [sources]
+      summary: Pull the readable text out of a URL.
+      operationId: extractLink
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url:
+                  type: string
+                  format: uri
+      responses:
+        "200":
+          description: The extracted text.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LinkExtract"
+
+  /sources/link/ask:
+    post:
+      tags: [sources]
+      summary: Ask a question about a linked source.
+      description: SSE. Same frame union as `/chat/stream`.
+      operationId: askLink
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message:
+                  type: string
+                source_id:
+                  type: string
+                url:
+                  type: string
+                  format: uri
+      responses:
+        "200":
+          $ref: "#/components/responses/EventStream"
+
+  "/sources/{id}":
+    get:
+      tags: [sources]
+      summary: One source.
+      operationId: getSource
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: The source.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Source"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [sources]
+      summary: Update a source.
+      operationId: updateSource
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                goal_id:
+                  type: string
+                is_deleted:
+                  type: boolean
+      responses:
+        "200":
+          description: The updated source.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Source"
+    delete:
+      tags: [sources]
+      summary: Soft-delete a source.
+      description: |
+        Sets `is_deleted`. The row survives, because `memories.source_id` and
+        audit entries reference it.
+      operationId: deleteSource
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Ok"
+
+  "/sources/{id}/download":
+    get:
+      tags: [sources]
+      summary: Download the original bytes.
+      operationId: downloadSource
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: The file.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # -------------------------------------------------------------------------
+  # memories
+  # -------------------------------------------------------------------------
+  /memories:
+    get:
+      tags: [memories]
+      summary: What the coach has learned.
+      operationId: listMemories
+      x-envelope: wrapped
+      responses:
+        "200":
+          description: |
+            **Wrapped**, unlike `/audit`, `/blockers`, `/timetable` and
+            `/sources`, which are bare. This inconsistency is v1's; it is
+            documented rather than fixed because the client branches on it.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [memories]
+                properties:
+                  memories:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Memory"
+    post:
+      tags: [memories]
+      summary: Add a memory.
+      operationId: createMemory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                source_id:
+                  type: string
+      responses:
+        "200":
+          description: The created memory.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Memory"
+
+  "/memories/{id}":
+    delete:
+      tags: [memories]
+      summary: Forget a memory.
+      operationId: deleteMemory
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Ok"
+
+  # -------------------------------------------------------------------------
+  # motivation
+  # -------------------------------------------------------------------------
+  /motivation/recommend:
+    get:
+      tags: [motivation]
+      summary: A nudge matched to the user's current state.
+      operationId: recommendMotivation
+      responses:
+        "200":
+          description: |
+            `cache` is a **polling switch, not telemetry** — anything other than
+            `"hit"` keeps the client polling for 60 seconds. A miss that never
+            warms is a request storm. See
+            `x-contract-notes#motivation-cache-is-a-switch`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MotivationRecommendation"
+
+  # -------------------------------------------------------------------------
+  # audit
+  # -------------------------------------------------------------------------
+  /audit:
+    get:
+      tags: [audit]
+      summary: The append-only ledger.
+      operationId: listAudit
+      x-envelope: bare
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+      responses:
+        "200":
+          description: A bare array.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AuditEntry"
+
+  /audit/export:
+    get:
+      tags: [audit]
+      summary: Export the ledger as a file.
+      description: |
+        Serves `text/markdown` in v1, while the button that calls it says "Export
+        JSON". One of the two is wrong; see
+        `x-contract-notes#audit-export-content-type`.
+      operationId: exportAudit
+      responses:
+        "200":
+          description: The export.
+          content:
+            text/markdown:
+              schema:
+                type: string
+
+  # -------------------------------------------------------------------------
+  # daily log
+  # -------------------------------------------------------------------------
+  /daily_log:
+    post:
+      tags: [state]
+      summary: Record what actually happened today.
+      description: |
+        The execution layer, distinct from the outcome layer (PRD D7). A logged
+        day is evidence the solver can weigh on the next run.
+      operationId: postDailyLog
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DailyLogWrite"
+      responses:
+        "200":
+          description: Logged.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Ok"
+
+# ---------------------------------------------------------------------------
+components:
+
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: session_token
+      description: |
+        Cookie-only. Two cookies exist — `session_token` for authenticated users
+        and `guest_token` for guests — and the client sends
+        `credentials: "include"` on every call.
+
+        **There is no CSRF token.** The spec cannot express an origin check, so
+        the server must enforce one; without it every mutating route here is
+        cross-site forgeable.
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema:
+        type: string
+
+  responses:
+    Unauthorized:
+      description: No valid session.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: No such resource.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ServiceUnavailable:
+      description: A dependency is down — DB unreachable, or the LLM key is absent.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    EventStream:
+      description: |
+        `text/event-stream`. Frames are `data: {json}\n\n`, one JSON object per
+        frame, never batched.
+
+        OpenAPI cannot describe stream frames natively, so the schema below is a
+        string and the frame union lives in `x-sse-frames`. Consumers should read
+        that extension, not the schema.
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            const: no-cache
+        Content-Type:
+          schema:
+            type: string
+            const: text/event-stream
+      content:
+        text/event-stream:
+          schema:
+            type: string
+            description: "One `data: {json}` frame per line pair."
+          x-sse-frames:
+            - $ref: "#/components/schemas/SseDelta"
+            - $ref: "#/components/schemas/SseDone"
+            - $ref: "#/components/schemas/SseTools"
+            - $ref: "#/components/schemas/SseNeedsClarification"
+            - $ref: "#/components/schemas/SsePlan"
+            - $ref: "#/components/schemas/SseError"
+
+  schemas:
+
+    # -----------------------------------------------------------------------
+    # Primitives
+    # -----------------------------------------------------------------------
+    Date:
+      type: string
+      format: date
+      description: ISO `YYYY-MM-DD`. Always solver-produced.
+
+    DateTime:
+      type: string
+      format: date-time
+
+    Error:
+      type: object
+      required: [detail]
+      properties:
+        detail:
+          type: string
+          description: Human-readable. Shown verbatim in v1.
+
+    Ok:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+
+    PlannerDisabled:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: disabled
+
+    # -----------------------------------------------------------------------
+    # Vocabularies — mirrored from contracts/schemas.py
+    # -----------------------------------------------------------------------
+    GoalSize:
+      type: string
+      enum: [weekly, short, medium, long]
+      description: |
+        Sizes a **goal**. `short` is 30–90 days. Distinct from `PlanHorizon`,
+        which sizes the execution ladder — v1 conflated the two.
+
+    PlanHorizon:
+      type: string
+      enum: [daily, weekly, monthly, quarterly, yearly]
+      description: The `plan_items.horizon` grain, coarsest last.
+
+    Intent:
+      type: string
+      enum: [add_goal, plan_day, edit_goal, drop_goal, review_progress, replan]
+      description: What the user asked for.
+
+    Mode:
+      type: string
+      enum: [auto, ask, grill]
+      description: How freely intake may ask questions.
+
+    Tier:
+      type: string
+      enum: [slim, escalate]
+      description: |
+        Replan blast radius (HLD §9.2). `slim` applies silently behind a toaster;
+        `escalate` requires the confirm modal. Computed in code, never by the LLM.
+
+    DeltaKind:
+      type: string
+      enum:
+        - precedence
+        - allowed_days
+        - avoid_week
+        - max_per_day
+        - session_max
+        - pin
+        - priority_bump
+      description: |
+        A structural correction to the solver's input. Every kind is expressible
+        as a CP-SAT constraint — that is the test for whether a kind belongs here,
+        and it is what keeps the LLM out of date-writing.
+
+    ResultKind:
+      type: string
+      enum: [ok, early, no_change, renegotiate, clarify]
+      description: Terminal kind of a pipeline run.
+
+    MilestoneStatus:
+      type: string
+      enum: [open, done]
+
+    GoalStatus:
+      type: string
+      enum: [active, paused, done, dropped]
+
+    PlanItemStatus:
+      type: string
+      enum: [pending, open, done, skipped]
+
+    DriftStatus:
+      type: string
+      enum: [ahead, on_track, behind]
+
+    # -----------------------------------------------------------------------
+    # Users and sessions
+    # -----------------------------------------------------------------------
+    User:
+      type: object
+      required: [user_id, email]
+      properties:
+        user_id:
+          type: string
+        id:
+          type: string
+          description: Duplicate of `user_id`. Both are read; neither is optional in practice.
+        email:
+          type: string
+          format: email
+        name:
+          type: [string, "null"]
+        image:
+          type: [string, "null"]
+        picture:
+          type: [string, "null"]
+        model_provider:
+          type: string
+          examples: [gemini, openai, anthropic]
+        is_guest:
+          type: boolean
+        persona_key:
+          type: [string, "null"]
+
+    Persona:
+      type: object
+      properties:
+        key:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+
+    ModelOption:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        provider:
+          type: string
+        available:
+          type: boolean
+          description: False when the server has no key for this provider.
+
+    PreferencesPatch:
+      type: object
+      properties:
+        model_provider:
+          type: string
+        name:
+          type: string
+
+    # -----------------------------------------------------------------------
+    # Dashboard state
+    # -----------------------------------------------------------------------
+    State:
+      type: object
+      description: |
+        The union of the v1 agent's and v1 BFF's `/state`. The agent-only fields
+        are optional; everything the frontend reads is required.
+      required:
+        - goals
+        - milestones
+        - blockers
+        - plan_items
+        - sources
+      properties:
+        goals:
+          type: array
+          items:
+            $ref: "#/components/schemas/Goal"
+        milestones:
+          type: array
+          items:
+            $ref: "#/components/schemas/Milestone"
+        blockers:
+          type: array
+          items:
+            $ref: "#/components/schemas/Blocker"
+        plan_items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlanItem"
+        sources:
+          type: array
+          items:
+            $ref: "#/components/schemas/Source"
+        over_commitment:
+          $ref: "#/components/schemas/OverCommitment"
+        audit_summary:
+          type: object
+          properties:
+            recent:
+              type: array
+              items:
+                $ref: "#/components/schemas/AuditEntry"
+        replan_suggestions:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+          description: |
+            Left empty in the storybook on purpose — a wrong guess here renders a
+            broken card rather than nothing.
+        replan_engine:
+          type: string
+          examples: [review_progress]
+        available_weekly_hours:
+          type: number
+        generated_at:
+          $ref: "#/components/schemas/DateTime"
+        timetableBlocks:
+          type: array
+          items:
+            $ref: "#/components/schemas/TimeBlock"
+          description: |
+            Read by `Coach.js:109` and served by nothing in v1 — not by `/state`,
+            not by `/timetable`. Either populate it or delete the read.
+        budget_hours:
+          type: number
+          description: Agent-only. Absent from the v1 BFF's response.
+        availability:
+          $ref: "#/components/schemas/Availability"
+
+    OverCommitment:
+      type: object
+      properties:
+        level:
+          type: string
+          enum: [clear, moderate, high, critical]
+          description: |
+            The client's four values. The v1 fixtures emit `low` and `medium`,
+            which both silently degrade to `clear` — so a genuinely moderate
+            overload reads as fine.
+        message:
+          type: string
+        conflicting:
+          type: array
+          items:
+            type: string
+        active_goals:
+          type: integer
+        open_commitments:
+          type: integer
+
+    Availability:
+      type: object
+      description: Weekly capacity. Mirrors `Availability` in `contracts/schemas.py`.
+      properties:
+        hours:
+          type: object
+          description: Hours available per weekday name.
+          additionalProperties:
+            type: number
+          properties:
+            mon:
+              type: number
+            tue:
+              type: number
+            wed:
+              type: number
+            thu:
+              type: number
+            fri:
+              type: number
+            sat:
+              type: number
+            sun:
+              type: number
+        blocked_dates:
+          type: array
+          items:
+            $ref: "#/components/schemas/Date"
+        weekly_budget_hours:
+          type: [number, "null"]
+
+    # -----------------------------------------------------------------------
+    # Domain rows
+    # -----------------------------------------------------------------------
+    Goal:
+      type: object
+      required: [id, title, horizon]
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        horizon:
+          $ref: "#/components/schemas/GoalSize"
+        status:
+          $ref: "#/components/schemas/GoalStatus"
+        why:
+          type: string
+          description: The user's own words. Shown back to them; never paraphrased.
+        next_action:
+          type: string
+        target_date:
+          $ref: "#/components/schemas/Date"
+        start_date:
+          $ref: "#/components/schemas/Date"
+        drift_status:
+          oneOf:
+            - $ref: "#/components/schemas/DriftStatus"
+            - type: "null"
+        weekly_hours:
+          type: number
+        phase_objectives:
+          type: object
+          additionalProperties: true
+        life_area:
+          type: string
+          examples: [career, health, personal]
+        sources:
+          type: array
+          items:
+            type: string
+        plan_generation:
+          type: integer
+          description: Bumped on every confirmed plan write. The staleness key.
+        last_planned_at:
+          $ref: "#/components/schemas/DateTime"
+
+    Milestone:
+      type: object
+      required: [id, title]
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        target_date:
+          $ref: "#/components/schemas/Date"
+        goal_title:
+          type: string
+        status:
+          $ref: "#/components/schemas/MilestoneStatus"
+        phase:
+          type: string
+        goal_id:
+          type: string
+
+    PlanItem:
+      type: object
+      required: [id, title]
+      properties:
+        id:
+          type: string
+        goal_id:
+          type: [string, "null"]
+        horizon:
+          $ref: "#/components/schemas/PlanHorizon"
+        phase:
+          type: string
+        title:
+          type: string
+        note:
+          type: string
+        start_date:
+          $ref: "#/components/schemas/Date"
+        end_date:
+          $ref: "#/components/schemas/Date"
+        due_date:
+          $ref: "#/components/schemas/Date"
+        weekly_hours:
+          type: [number, "null"]
+        status:
+          $ref: "#/components/schemas/PlanItemStatus"
+        source:
+          type: string
+          examples: [solver, user]
+        source_id:
+          type: [string, "null"]
+
+    PlanItemWrite:
+      type: object
+      description: Mirrors `PlanItemRow` in `contracts/schemas.py`.
+      properties:
+        horizon:
+          $ref: "#/components/schemas/PlanHorizon"
+        phase:
+          type: string
+        title:
+          type: string
+        note:
+          type: string
+        start_date:
+          oneOf:
+            - $ref: "#/components/schemas/Date"
+            - type: "null"
+        end_date:
+          oneOf:
+            - $ref: "#/components/schemas/Date"
+            - type: "null"
+        due_date:
+          oneOf:
+            - $ref: "#/components/schemas/Date"
+            - type: "null"
+        weekly_hours:
+          type: [number, "null"]
+        status:
+          type: string
+
+    Blocker:
+      type: object
+      required: [id, title, start_date, end_date]
+      properties:
+        id:
+          type: string
+        user_id:
+          type: string
+        title:
+          type: string
+        start_date:
+          $ref: "#/components/schemas/Date"
+        end_date:
+          $ref: "#/components/schemas/Date"
+        note:
+          type: string
+        created_at:
+          $ref: "#/components/schemas/DateTime"
+
+    BlockerWrite:
+      type: object
+      required: [title, start_date, end_date]
+      properties:
+        title:
+          type: string
+        start_date:
+          $ref: "#/components/schemas/Date"
+        end_date:
+          $ref: "#/components/schemas/Date"
+        note:
+          type: string
+
+    TimeBlock:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          examples: [plan_item, commitment, event]
+        source:
+          type: string
+          examples: [solver, user]
+        source_id:
+          type: [string, "null"]
+        title:
+          type: string
+        start:
+          $ref: "#/components/schemas/DateTime"
+        end:
+          $ref: "#/components/schemas/DateTime"
+        day:
+          $ref: "#/components/schemas/Date"
+
+    TimeBlockWrite:
+      type: object
+      properties:
+        title:
+          type: string
+        start:
+          $ref: "#/components/schemas/DateTime"
+        end:
+          $ref: "#/components/schemas/DateTime"
+        kind:
+          type: string
+
+    Source:
+      type: object
+      required: [id, kind]
+      properties:
+        id:
+          type: string
+        user_id:
+          type: string
+        goal_id:
+          type: [string, "null"]
+        goal_title:
+          type: [string, "null"]
+        kind:
+          type: string
+          enum: [file, link, note]
+        storage_path:
+          type: string
+        original_filename:
+          type: string
+        content_type:
+          type: string
+        size:
+          type: integer
+        url:
+          type: string
+        is_deleted:
+          type: boolean
+        text_pending:
+          type: boolean
+          description: True until extraction finishes. Drives the spinner.
+        created_at:
+          $ref: "#/components/schemas/DateTime"
+
+    LinkPreview:
+      type: object
+      properties:
+        url:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        site_name:
+          type: string
+        image:
+          type: [string, "null"]
+
+    LinkExtract:
+      type: object
+      properties:
+        url:
+          type: string
+        title:
+          type: string
+        text:
+          type: string
+        word_count:
+          type: integer
+
+    Memory:
+      type: object
+      required: [id, text]
+      properties:
+        id:
+          type: string
+        text:
+          type: string
+        source_id:
+          type: [string, "null"]
+        created_at:
+          $ref: "#/components/schemas/DateTime"
+
+    AuditEntry:
+      type: object
+      required: [id, type]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          description: |
+            Namespaced `verb:object` — `confirm:add_plan_item`,
+            `reject:create_goal`, `replan:slim`.
+          examples: ["confirm:add_plan_item"]
+        summary:
+          type: string
+        created_at:
+          $ref: "#/components/schemas/DateTime"
+
+    MotivationItem:
+      type: object
+      required: [id, kind, title]
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [book, video, podcast, article]
+        title:
+          type: string
+        url:
+          type: string
+        author:
+          type: string
+        duration:
+          type: string
+          examples: ["2h 40m"]
+        frame:
+          type: string
+          description: Why this, for this user, now. The whole point of the card.
+
+    MotivationRecommendation:
+      type: object
+      properties:
+        bucket:
+          type: string
+          examples: [stuck, behind, ahead, starting]
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/MotivationItem"
+        cache:
+          type: string
+          enum: [hit, miss, warming]
+          description: |
+            A **polling switch**, not telemetry. Anything other than `hit` keeps
+            the client polling for 60 seconds.
+
+    DailyLogWrite:
+      type: object
+      properties:
+        date:
+          $ref: "#/components/schemas/Date"
+        plan_item_id:
+          type: string
+        done:
+          type: boolean
+        minutes:
+          type: integer
+        note:
+          type: string
+
+    # -----------------------------------------------------------------------
+    # Chat
+    # -----------------------------------------------------------------------
+    Proposal:
+      type: object
+      required: [id, action]
+      properties:
+        id:
+          type: string
+        action:
+          type: string
+          examples: [create_goal, add_plan_item, update_goal]
+        status:
+          type: string
+          enum: [pending, confirmed, rejected]
+        title:
+          type: string
+        horizon:
+          $ref: "#/components/schemas/GoalSize"
+        why:
+          type: string
+        first_action:
+          type: string
+        target_date:
+          $ref: "#/components/schemas/Date"
+        args:
+          type: object
+          additionalProperties: true
+          description: |
+            Present when the proposal arrives in a `tools` SSE frame; absent when
+            it arrives in `/chat/history`. `ToolConfirmationPrompt.js:89-93` is
+            the only place that reconciles the two.
+
+    ChatMessage:
+      type: object
+      required: [id, role, content]
+      properties:
+        id:
+          type: string
+        user_id:
+          type: string
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+        provider:
+          type: [string, "null"]
+        proposals:
+          type: array
+          items:
+            $ref: "#/components/schemas/Proposal"
+        created_at:
+          $ref: "#/components/schemas/DateTime"
+
+    ChatStreamRequest:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+        refId:
+          type: string
+          description: Scope the turn to one goal or commitment.
+        kind:
+          type: string
+        scope:
+          type: string
+          enum: [goal, commitment, milestone, blocker, generic]
+        clarify:
+          type: boolean
+          description: |
+            The `/chat/stream` spelling of `/chat/plan`'s `grillMe`. Same concept,
+            two names — a rename candidate.
+
+    ChatPlanRequest:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+        refId:
+          type: string
+        goal_id:
+          type: string
+        grillMe:
+          type: boolean
+          description: See `clarify` on `ChatStreamRequest`.
+        mode:
+          $ref: "#/components/schemas/Mode"
+
+    ToolActionRequest:
+      type: object
+      required: [proposal]
+      properties:
+        proposal:
+          $ref: "#/components/schemas/Proposal"
+        refId:
+          type: string
+
+    ToolActionResult:
+      type: object
+      required: [ok, result]
+      properties:
+        ok:
+          type: boolean
+        result:
+          type: string
+          description: Human-readable outcome, shown verbatim.
+        state:
+          $ref: "#/components/schemas/State"
+          description: |
+            The fresh snapshot, so the client re-renders without a second call.
+            Absent on the 422 path — the executor refused, so nothing changed.
+
+    # -----------------------------------------------------------------------
+    # Planner — mirrors contracts/schemas.py
+    # -----------------------------------------------------------------------
+    PlanRunRequest:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+        mode:
+          $ref: "#/components/schemas/Mode"
+        goal_id:
+          type: string
+        thread_id:
+          type: string
+          description: |
+            Resume an interrupted run. Equal to `conversation_id`, so a clarify
+            interrupt survives across HTTP requests (HLD §10).
+        answers:
+          type: object
+          additionalProperties:
+            type: string
+          description: Answers to the previous run's `questions`, keyed by question id.
+
+    HorizonTask:
+      type: object
+      description: |
+        One work item to place. **No date field** — placement owns dates, and
+        `extra="forbid"` in `contracts/schemas.py` means a model that volunteers
+        one gets a validation error rather than a silently-accepted date.
+      required: [id, title, window_start, window_end, est_hours]
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        phase:
+          type: string
+        window_start:
+          $ref: "#/components/schemas/Date"
+        window_end:
+          $ref: "#/components/schemas/Date"
+        est_hours:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 40
+        priority:
+          type: integer
+          minimum: 1
+          maximum: 5
+        order:
+          type: integer
+        goal_id:
+          type: string
+        goal_priority:
+          type: integer
+          minimum: 1
+          maximum: 5
+        depends_on:
+          type: array
+          items:
+            type: string
+        session_max_hours:
+          type: [number, "null"]
+          exclusiveMinimum: 0
+
+    Slot:
+      type: object
+      description: A placed task — which day, and how many hours in that sitting.
+      required: [task_id, date, hours]
+      properties:
+        task_id:
+          type: string
+        date:
+          $ref: "#/components/schemas/Date"
+        hours:
+          type: number
+          exclusiveMinimum: 0
+
+    PlaceResult:
+      type: object
+      description: |
+        The solver's verdict. `feasible` is **computed, never asserted** — it
+        comes from CP-SAT, not from the LLM (HLD §8.6).
+      required: [feasible]
+      properties:
+        feasible:
+          type: boolean
+        slots:
+          type: array
+          items:
+            $ref: "#/components/schemas/Slot"
+        unscheduled:
+          type: array
+          items:
+            type: string
+          description: Tasks that got no hours at all — kept at their window start.
+        short:
+          type: array
+          items:
+            type: string
+          description: Tasks that got some hours but fewer than their estimate.
+        solver:
+          type: string
+          enum: [cpsat, structural]
+          description: |
+            Which engine actually produced this. `structural` is the fallback —
+            the only fallback, ~15 lines, no hand-written greedy (HLD §8.4).
+        detail:
+          type: string
+
+    ConstraintDelta:
+      type: object
+      description: |
+        A structural correction to the solver's input. This is how the review
+        stage changes an answer: it adjusts constraints and the solver re-solves,
+        which is what keeps the LLM out of date-writing.
+      required: [kind, task_id]
+      properties:
+        kind:
+          $ref: "#/components/schemas/DeltaKind"
+        task_id:
+          type: string
+        other:
+          type: [string, "null"]
+          description: Required when `kind` is `precedence` — the task to precede.
+        value:
+          oneOf:
+            - type: string
+            - type: integer
+            - type: array
+              items:
+                type: integer
+            - type: "null"
+          description: |
+            Required for every kind except `precedence`. For `allowed_days` it is
+            a list of weekday integers (0=Mon..6=Sun).
+
+    PlacementCritique:
+      type: object
+      description: |
+        `n_review` output. On rejection, `deltas` are mandatory: CP-SAT is
+        deterministic, so re-running placement on unchanged input returns the
+        identical plan. A rejection without deltas cannot converge, so
+        `contracts/schemas.py` coerces it to `ok=true` rather than looping.
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+        deltas:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConstraintDelta"
+        rationale:
+          type: string
+
+    MilestoneSpec:
+      type: object
+      description: |
+        An OUTCOME checkpoint — an overlay chip, not a plan level. `target_date`
+        is deliberately absent; the lattice derives it (HLD §8.1).
+      required: [title]
+      properties:
+        title:
+          type: string
+        phase:
+          type: string
+        rationale:
+          type: string
+
+    GoalSpec:
+      type: object
+      required: [title, horizon, start_date, target_date, weekly_hours]
+      properties:
+        title:
+          type: string
+        horizon:
+          $ref: "#/components/schemas/GoalSize"
+        why:
+          type: string
+        first_action:
+          type: string
+        start_date:
+          $ref: "#/components/schemas/Date"
+        target_date:
+          $ref: "#/components/schemas/Date"
+        weekly_hours:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 40
+        phase_objectives:
+          type: array
+          items:
+            type: string
+
+    PlanChanges:
+      type: object
+      description: The SEMANTIC delta. Task dates are absent by construction.
+      properties:
+        title:
+          type: [string, "null"]
+        target_date:
+          oneOf:
+            - $ref: "#/components/schemas/Date"
+            - type: "null"
+        weekly_hours:
+          type: [number, "null"]
+          exclusiveMinimum: 0
+          maximum: 40
+        milestones:
+          type: array
+          items:
+            $ref: "#/components/schemas/MilestoneSpec"
+        phase_objectives:
+          type: array
+          items:
+            type: string
+
+    ReplanAction:
+      type: object
+      description: The ONE tool action, replacing v1's nine.
+      required: [intent]
+      properties:
+        intent:
+          $ref: "#/components/schemas/Intent"
+        goal_id:
+          type: [string, "null"]
+        changes:
+          $ref: "#/components/schemas/PlanChanges"
+        rationale:
+          type: string
+
+    ClarifyQuestion:
+      type: object
+      required: [question]
+      properties:
+        id:
+          type: string
+          description: |
+            Server-generated when the model omits one — the model has no reason to
+            invent a stable key, and answers are keyed positionally anyway.
+        question:
+          type: string
+        options:
+          type: array
+          items:
+            type: string
+
+    Change:
+      type: object
+      description: One recorded change, against the goal's plan generation.
+      required: [goal_id, kind]
+      properties:
+        goal_id:
+          type: string
+        kind:
+          type: string
+          description: |
+            The change kind. The authoritative list is
+            `core/staleness.py::_TEMPLATES`, which maps each kind to the sentence
+            the toaster shows — 12 kinds at last count, including
+            `shift_existing_target`, `drop_existing_commitment`,
+            `extend_new_timeline` and `reduce_new_hours`.
+        horizons_moved:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlanHorizon"
+        milestone_moved:
+          type: boolean
+        detail:
+          type: object
+          additionalProperties: true
+        created_at:
+          $ref: "#/components/schemas/DateTime"
+        generation:
+          type: integer
+
+    Verdict:
+      type: object
+      description: Blast radius → tier. Computed in code, never by the LLM.
+      required: [tier]
+      properties:
+        tier:
+          $ref: "#/components/schemas/Tier"
+        top_horizon:
+          oneOf:
+            - $ref: "#/components/schemas/PlanHorizon"
+            - type: "null"
+        reason:
+          type: string
+
+    PlanChangeRequest:
+      type: object
+      description: HLD §9 — `{action, goal_id, before, after}`.
+      required: [action, goal_id]
+      properties:
+        action:
+          $ref: "#/components/schemas/ReplanAction"
+        goal_id:
+          type: string
+        before:
+          type: object
+          additionalProperties: true
+          description: The plan as the client last saw it. Used to detect drift.
+        after:
+          type: object
+          additionalProperties: true
+
+    ChangeResult:
+      type: object
+      properties:
+        change:
+          $ref: "#/components/schemas/Change"
+        verdict:
+          $ref: "#/components/schemas/Verdict"
+        adjustments:
+          type: array
+          items:
+            type: string
+          description: |
+            The toaster copy. **Backend-driven** (PRD D8) — the frontend renders
+            these strings and never composes a sentence about a change itself.
+        plan_items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlanItemRow"
+
+    StalenessRollup:
+      type: object
+      description: Mirrors `core/staleness.py::rollup_counts`.
+      properties:
+        total:
+          type: integer
+          description: What the badge on the refresh button shows.
+        by_goal:
+          type: object
+          additionalProperties:
+            type: integer
+        label:
+          type: string
+          description: The sentence beside the badge.
+
+    PipelineResult:
+      type: object
+      description: |
+        The terminal result of a graph run. Mirrors `PipelineResult` in
+        `contracts/schemas.py`.
+      required: [kind]
+      properties:
+        kind:
+          $ref: "#/components/schemas/ResultKind"
+        prose:
+          type: string
+          description: The assistant's reply, already written. Rendered verbatim.
+        proposals:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReplanAction"
+        plan_items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlanItemRow"
+        questions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClarifyQuestion"
+        adjustments:
+          type: array
+          items:
+            type: string
+          description: Backend-driven toaster copy. See `ChangeResult.adjustments`.
+        tier:
+          oneOf:
+            - $ref: "#/components/schemas/Tier"
+            - type: "null"
+        reason:
+          type: string
+        rejects:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+          description: Review rounds that produced no usable delta.
+        thread_id:
+          type: string
+          description: Pass back to `/plan/confirm` or to resume an interrupt.
+        place:
+          oneOf:
+            - $ref: "#/components/schemas/PlaceResult"
+            - type: "null"
+        review_rounds:
+          type: integer
+
+    PlanItemRow:
+      type: object
+      description: |
+        One row of `plan_items`. The solver is the only writer of the dates —
+        mirrors `PlanItemRow` in `contracts/schemas.py`.
+      required: [horizon, title]
+      properties:
+        horizon:
+          $ref: "#/components/schemas/PlanHorizon"
+        phase:
+          type: string
+        title:
+          type: string
+        note:
+          type: string
+        start_date:
+          type: [string, "null"]
+        end_date:
+          type: [string, "null"]
+        due_date:
+          type: [string, "null"]
+        weekly_hours:
+          type: [number, "null"]
+        status:
+          type: string
+          default: pending
+
+    # -----------------------------------------------------------------------
+    # SSE frames
+    # -----------------------------------------------------------------------
+    SseDelta:
+      type: object
+      description: |
+        One chunk of the assistant's reply. The client accumulates `content`.
+
+        **HLD §12 spells this field `text`; the client reads `content`.** Shipping
+        §12 as written renders an empty stream. This file specifies `content` and
+        the HLD should be corrected.
+      required: [type, content]
+      properties:
+        type:
+          type: string
+          const: delta
+        content:
+          type: string
+        ref_id:
+          type: string
+
+    SseDone:
+      type: object
+      description: Terminal frame. Exactly one per stream.
+      required: [type]
+      properties:
+        type:
+          type: string
+          const: done
+        message_id:
+          type: string
+        provider:
+          type: string
+        redirected:
+          type: boolean
+        ref_id:
+          type: string
+        text:
+          type: string
+          description: |
+            The full reply, for clients that did not accumulate. The v1 agent sent
+            this as a separate `stream_done` frame; folding it here removes a
+            frame the frontend never read.
+
+    SseTools:
+      type: object
+      description: Proposals to confirm. Rendered as the confirm card.
+      required: [type]
+      properties:
+        type:
+          type: string
+          const: tools
+        proposals:
+          type: array
+          items:
+            $ref: "#/components/schemas/Proposal"
+
+    SseNeedsClarification:
+      type: object
+      description: |
+        The HITL clarify interrupt (HLD §10). Terminal for this request — resume
+        with the same `thread_id` and an `answers` map.
+      required: [type]
+      properties:
+        type:
+          type: string
+          const: needs_clarification
+        questions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClarifyQuestion"
+        thread_id:
+          type: string
+
+    SsePlan:
+      type: object
+      description: Progress frame from a `/plan/stream` run. Not terminal.
+      required: [type]
+      properties:
+        type:
+          type: string
+          const: plan
+        node:
+          type: string
+          description: The graph node that just finished.
+        detail:
+          type: string
+
+    SseError:
+      type: object
+      description: |
+        Terminal. Emitted when the stream fails after headers are sent — the only
+        way to report a failure once a 200 has gone out.
+      required: [type]
+      properties:
+        type:
+          type: string
+          const: error
+        detail:
+          type: string
+
+    SseFrame:
+      description: The frame union. Read `x-sse-frames` on the response, not this.
+      oneOf:
+        - $ref: "#/components/schemas/SseDelta"
+        - $ref: "#/components/schemas/SseDone"
+        - $ref: "#/components/schemas/SseTools"
+        - $ref: "#/components/schemas/SseNeedsClarification"
+        - $ref: "#/components/schemas/SsePlan"
+        - $ref: "#/components/schemas/SseError"

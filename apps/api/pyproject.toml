@@ -1,0 +1,44 @@
+[project]
+name = "sutra-api"
+version = "0.1.0"
+description = "Sutra HTTP API — the one surface apps/web calls. Serves the planner by importing sutra-agent in-process."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.5",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.30",
+    "alembic>=1.13",
+    "httpx>=0.27",
+    "python-multipart>=0.0.9",
+    # The planner is a library, imported in-process (HLD §5). Installing it here
+    # is what makes `import app.graph.build` resolvable from this service.
+    "sutra-agent",
+]
+
+[project.optional-dependencies]
+# No aiosqlite: the schema uses JSONB and ARRAY, which SQLite cannot express, so
+# tests run against the real Postgres from infra/docker-compose.yml.
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]
+
+# The agent is a sibling checkout, not a published distribution.
+[tool.uv.sources]
+sutra-agent = { path = "../agent", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# NOTE: this package is `sutra_api`, not `app`. `apps/agent` already owns the
+# top-level `app` package, and both are imported into one process — two packages
+# named `app` cannot coexist. The HLD (§5) says `apps/api/app/`; that is now
+# wrong and should be corrected to `apps/api/sutra_api/`.
+[tool.hatch.build.targets.wheel]
+packages = ["sutra_api", "sutra_chat"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q"

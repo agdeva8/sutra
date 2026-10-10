@@ -1,0 +1,159 @@
+"""Object storage — Supabase Storage, with a local-disk fallback.
+
+v1 used a proprietary object-store proxy. This is a plain Supabase Storage
+client: the bucket is reached over its REST API with a service key, and the path
+convention is `sources/<user_id>/<filename>`.
+
+**The fallback is not a stub.** With `SUPABASE_URL` unset, objects land in
+`LOCAL_STORAGE_DIR` and are served from there. That keeps the whole service
+runnable with no credentials — which matters because every other subsystem has
+an offline mode, and a service that cannot boot without cloud storage is one
+nobody can test.
+
+Filenames are sanitised on the way in. An uploaded name is attacker-controlled
+(`../../etc/passwd`, a NUL byte, a 4 KB unicode name), and it is used to build a
+path — so the sanitised form is what is stored, and the original is kept in the
+`original_filename` column where it is only ever displayed.
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
+import httpx
+
+from .config import settings
+
+#: Everything outside this set becomes `_`. Deliberately conservative: the set
+#: of characters that are safe in a URL path segment *and* on every filesystem
+#: we might fall back to is small.
+_UNSAFE = re.compile(r"[^a-zA-Z0-9._-]")
+
+#: v1's cap. A 200-char name is already absurd; truncation keeps the path well
+#: inside every filesystem's limit while preserving the extension.
+_MAX_NAME = 200
+
+#: The prefix every key shares, so a bucket can hold other things later.
+PREFIX = "sources"
+
+
+def sanitize_filename(name: str) -> str:
+    """`../../etc/passwd` → `.._.._etc_passwd`. Never returns an empty string."""
+    cleaned = _UNSAFE.sub("_", name or "")
+    cleaned = re.sub(r"_+", "_", cleaned).strip("_")
+    return (cleaned[:_MAX_NAME] or "file")
+
+
+def object_key(*, user_id: str, filename: str) -> str:
+    """The storage path. Namespaced by user, so one user's name cannot collide
+    with another's — and so a bucket listing is readable by owner."""
+    return f"{PREFIX}/{sanitize_filename(user_id)}/{sanitize_filename(filename)}"
+
+
+@dataclass
+class Object:
+    """Bytes plus the content type the *store* reports for them.
+
+    The content type comes from storage, not from the `sources` row — v1 did
+    this, and it is the right call: the row records what the client claimed, the
+    store records what it actually got.
+    """
+
+    data: bytes
+    content_type: str
+
+
+def _supabase_configured() -> bool:
+    return bool(settings.supabase_url and settings.supabase_service_key)
+
+
+def _object_url(key: str) -> str:
+    base = settings.supabase_url.rstrip("/")
+    return f"{base}/storage/v1/object/{settings.supabase_bucket}/{key}"
+
+
+def _headers() -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {settings.supabase_service_key}",
+        "apikey": settings.supabase_service_key,
+    }
+
+
+def _local_path(key: str) -> Path:
+    """Resolve under `LOCAL_STORAGE_DIR`, refusing anything that escapes it.
+
+    The second half of the traversal defence: `sanitize_filename` already
+    removed the separators, and this asserts the result is where it should be.
+    Two independent checks, because this is the one place a bad name becomes a
+    filesystem write.
+    """
+    root = Path(settings.local_storage_dir).resolve()
+    target = (root / key).resolve()
+    if not str(target).startswith(str(root)):
+        raise ValueError("storage key escapes the storage root")
+    return target
+
+
+async def put(*, key: str, data: bytes, content_type: str) -> str:
+    """Store the bytes. Returns the key, which is what the row records."""
+    if _supabase_configured():
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                _object_url(key),
+                content=data,
+                headers={
+                    **_headers(),
+                    "Content-Type": content_type or "application/octet-stream",
+                    # Overwrite rather than 409 — the key is derived from the
+                    # user and the filename, so a repeat upload is a retry.
+                    "x-upsert": "true",
+                },
+            )
+            resp.raise_for_status()
+        return key
+
+    path = _local_path(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return key
+
+
+async def get(key: str) -> Object | None:
+    """Read the bytes back, or `None` when the object is gone."""
+    if _supabase_configured():
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.get(_object_url(key), headers=_headers())
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return Object(
+            data=resp.content,
+            content_type=resp.headers.get("content-type", "application/octet-stream"),
+        )
+
+    try:
+        path = _local_path(key)
+    except ValueError:
+        return None
+    if not path.is_file():
+        return None
+    return Object(data=path.read_bytes(), content_type="application/octet-stream")
+
+
+async def delete(key: str) -> None:
+    """Best-effort. A missing object is a success, not an error.
+
+    Storage is never the source of truth: the `sources` row is, and a soft delete
+    keeps even that. So a failed object delete must not fail the request.
+    """
+    if not key:
+        return
+    try:
+        if _supabase_configured():
+            async with httpx.AsyncClient(timeout=30) as client:
+                await client.delete(_object_url(key), headers=_headers())
+        else:
+            _local_path(key).unlink(missing_ok=True)
+    except (httpx.HTTPError, ValueError, OSError):
+        pass
