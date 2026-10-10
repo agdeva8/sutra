@@ -1,0 +1,27 @@
+# Python — apps/agent is a uv/venv project; the virtualenv and test cache are
+# machine-specific and must never be committed.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / JS
+node_modules/
+dist/
+storybook-static/
+*.log
+
+# Secrets — a real API key must never be committed.
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store

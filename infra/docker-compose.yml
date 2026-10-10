@@ -1,0 +1,35 @@
+# Local development Postgres for apps/api.
+#
+# Port 5433, not 5432: 5432 is usually already taken by another project's
+# Postgres, and a silent connection to the wrong database is a bad afternoon.
+#
+#   docker compose -f infra/docker-compose.yml up -d
+#   docker compose -f infra/docker-compose.yml logs -f db
+#
+# Then, from apps/api:
+#   DATABASE_URL=postgresql+asyncpg://sutra:sutra@localhost:5433/sutra \
+#     uv run alembic upgrade head
+services:
+  db:
+    image: postgres:16
+    container_name: sutra-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sutra
+      POSTGRES_PASSWORD: sutra
+      POSTGRES_DB: sutra
+      # Deterministic collation, so ORDER BY on text is stable across machines
+      # and a fixture that sorts one way on CI does not sort another way locally.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "5433:5432"
+    volumes:
+      - sutra-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sutra -d sutra"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  sutra-pgdata:
