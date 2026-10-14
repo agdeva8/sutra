@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { Menu } from "lucide-react";
+import { Menu, MessageSquare } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -20,10 +20,10 @@ const tone = (active) =>
 /**
  * MobileTabBar — the phone-width bottom navigation. Four pinned screens
  * (`MOBILE_TAB_KEYS`) plus a trailing hamburger that opens every other screen
- * from `SCREENS`, so the bar never grows past five targets and never keeps its
+ * from `SCREENS` and, on a phone, "Chat with your coach" (there is no floating chat button there), so the bar never grows past five targets and never keeps its
  * own screen list. Hidden from `sm` up, where Coach's tab strip takes over.
  */
-export default function MobileTabBar({ activeKey }) {
+export default function MobileTabBar({ activeKey, onOpenChat = null }) {
   const pinned = SCREENS.filter((s) => MOBILE_TAB_KEYS.includes(s.key));
   const overflow = SCREENS.filter((s) => !MOBILE_TAB_KEYS.includes(s.key));
   const overflowActive = overflow.some((s) => s.key === activeKey);
@@ -70,6 +70,16 @@ export default function MobileTabBar({ activeKey }) {
           <span>More</span>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" side="top" sideOffset={8} className="min-w-[220px]">
+          {onOpenChat && (
+            <DropdownMenuItem
+              data-testid="mobile-more-item-chat"
+              onSelect={onOpenChat}
+              className="flex items-center gap-2.5 min-h-11 cursor-pointer rounded-lg"
+            >
+              <MessageSquare className="w-4 h-4 text-[var(--text-muted)]" aria-hidden="true" />
+              <span className="flex-1 whitespace-nowrap">Chat with your coach</span>
+            </DropdownMenuItem>
+          )}
           {overflow.map((s) => {
             const Icon = s.Icon;
             const active = s.key === activeKey;

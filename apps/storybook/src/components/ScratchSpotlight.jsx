@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useState } from "react";
-import { ArrowDown, ArrowUp, PenLine } from "lucide-react";
+import { ArrowRight, PenLine } from "lucide-react";
 import { hasOpenedScratch, markScratchOpened, onScratchOpenedChange } from "../lib/scratchIntro";
 import ScratchIntroDialog from "./ScratchIntroDialog";
 
@@ -7,9 +7,8 @@ import ScratchIntroDialog from "./ScratchIntroDialog";
  * ScratchSpotlight — the first-goal nudge toward Scratch.
  *
  * Once the user has a goal and has not opened Scratch, the app blurs behind a
- * dark veil with one bright circle on the Scratch tab, an arrow pointing at it, and
- * a short message. The circle is the only way through: tapping it opens Scratch
- * and ends the spotlight. There is no close button on purpose, so the feature is
+ * dark veil with one bright circle on the Scratch tab and a centred "Meet Scratch" card. The
+ * card's "Take me to Scratch" button (or the lit tab) opens Scratch and ends the spotlight. There is no close button on purpose, so the feature is
  * not missed; closing the app ends it for that session, and it returns next time
  * until Scratch has been opened once. "What can I do here?" opens the explainer.
  *
@@ -20,9 +19,8 @@ import ScratchIntroDialog from "./ScratchIntroDialog";
 
 /** The Scratch tab, wherever this width draws it: the phone's bottom bar, or the desktop strip. */
 const TARGET_SELECTORS = ['[data-testid="mobile-tab-scratch"]', '[data-testid="panel-tab-scratch"]'];
-/** Space between the tab and the ring's edge, and between the ring and the message card. */
+/** Space between the tab and the ring's edge. */
 const RING_PAD_PX = 12;
-const CARD_GAP_PX = 44;
 const VEIL = "color-mix(in srgb, var(--bg-primary) 62%, transparent)";
 
 /** The visible Scratch tab's box, or null. A hidden tab (display:none) measures zero. */
@@ -92,11 +90,6 @@ export default function ScratchSpotlight({ goalCount, onOpenScratch }) {
   };
   const radius = Math.min(ring.w, ring.h) / 2;
   const mask = holeMask(window.innerWidth, window.innerHeight, ring.x, ring.y, ring.w, ring.h, radius);
-  // Put the message on whichever side of the tab has room: below a top tab, above a bottom one.
-  const below = ring.y + ring.h / 2 < window.innerHeight / 2;
-  const cardPos = below ? { top: ring.y + ring.h + CARD_GAP_PX } : { bottom: `calc(100% - ${ring.y - CARD_GAP_PX}px)` };
-  const Arrow = below ? ArrowUp : ArrowDown;
-
   return (
     <div role="dialog" aria-modal="true" aria-label="Meet Scratch" data-testid="scratch-spotlight" className="fixed inset-0 z-[60]">
       {/* The veil: blurred and dimmed everywhere except a circle over the tab. It swallows taps. */}
@@ -106,35 +99,40 @@ export default function ScratchSpotlight({ goalCount, onOpenScratch }) {
         style={{ background: VEIL, WebkitMaskImage: mask, maskImage: mask, WebkitMaskSize: "100% 100%", maskSize: "100% 100%" }}
       />
 
-      {/* Message and arrow, on the side of the ring with room. */}
-      <div
-        className={`absolute left-0 right-0 flex items-center px-5 ${below ? "flex-col-reverse" : "flex-col"}`}
-        style={cardPos}
-      >
-        <div className="w-full max-w-sm rounded-2xl border border-[var(--accent)] bg-[var(--bg-secondary)] px-4 py-4 text-center shadow-xl">
-          <span className="mx-auto mb-2 flex h-9 w-9 items-center justify-center rounded-full bg-[var(--accent)] text-white">
-            <PenLine className="h-4 w-4" aria-hidden="true" />
+      {/* The message, centred on every width, with its own way through. The ring on the tab stays lit
+          so the user sees where Scratch lives. */}
+      <div className="absolute inset-0 flex items-center justify-center px-5 pointer-events-none">
+        <div className="pointer-events-auto w-full max-w-md rounded-2xl border border-[var(--accent)] bg-[var(--bg-secondary)] px-5 py-6 text-center shadow-xl">
+          <span className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-full bg-[var(--accent)] text-white">
+            <PenLine className="h-5 w-5" aria-hidden="true" />
           </span>
-          <p className="text-[17px] font-semibold text-[var(--text-primary)]">Keep your mind free</p>
-          <p className="mt-1 text-[14px] leading-relaxed text-[var(--text-secondary)]">
+          <h2 className="text-[20px] font-semibold text-[var(--text-primary)]">Meet Scratch</h2>
+          <p className="mt-2 text-[15px] leading-relaxed text-[var(--text-secondary)]">
             Anything on your mind (a task, a photo, a quick voice note) goes into Scratch. We file it into your plan so you
             don't have to remember it.
           </p>
           <button
             type="button"
+            autoFocus
+            onClick={go}
+            data-testid="scratch-spotlight-go"
+            className="mt-5 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-[var(--accent)] px-6 text-[16px] font-semibold text-white hover:opacity-90 focus:outline-none focus-visible:ring-4 focus-visible:ring-[color-mix(in_srgb,var(--accent)_40%,transparent)]"
+          >
+            Take me to Scratch <ArrowRight className="h-5 w-5" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
             onClick={() => setTourOpen(true)}
-            className="mt-3 text-[13px] font-medium text-[var(--accent)] underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] rounded"
+            className="mt-3 min-h-11 text-[14px] font-medium text-[var(--accent)] underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] rounded"
           >
             What can I do here?
           </button>
         </div>
-        <Arrow className={`${below ? "mb-2" : "mt-2"} h-8 w-8 text-[var(--accent)] motion-safe:animate-bounce`} aria-hidden="true" />
       </div>
 
       {/* The ring, and the only way through. It sits exactly over the Scratch tab. */}
       <button
         type="button"
-        autoFocus
         onClick={go}
         aria-label="Open Scratch"
         data-testid="scratch-spotlight-ring"

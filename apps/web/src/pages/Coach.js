@@ -750,15 +750,15 @@ export default function Coach() {
         </div>
       </main>
 
-      <MobileTabBar activeKey={panelView} />
+      <MobileTabBar activeKey={panelView} onOpenChat={() => setChatOpen(true)} />
 
-      {/* Floating chat button — always visible, opens the centered modal. */}
+      {/* Floating chat button — tablet and up. On a phone, chat lives in the tab bar's menu. */}
       <button
         data-testid="fab-chat"
         onClick={() => setChatOpen(true)}
         title="Chat with your coach"
         aria-label="Chat with your coach"
-        className="fixed right-[max(1.5rem,env(safe-area-inset-right))] bottom-[calc(4.5rem+env(safe-area-inset-bottom))] sm:bottom-[calc(1.5rem+env(safe-area-inset-bottom))] z-40 h-14 w-14 rounded-full bg-[var(--accent)] text-[var(--bg-primary)] shadow-2xl flex items-center justify-center hover:opacity-90 transition-opacity"
+        className="fixed right-[max(1.5rem,env(safe-area-inset-right))] bottom-[calc(1.5rem+env(safe-area-inset-bottom))] z-40 h-14 w-14 rounded-full bg-[var(--accent)] text-[var(--bg-primary)] shadow-2xl hidden sm:flex items-center justify-center hover:opacity-90 transition-opacity"
       >
         <MessageSquare className="w-6 h-6" />
       </button>
