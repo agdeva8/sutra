@@ -34,9 +34,8 @@ async def ready(response: Response, session: AsyncSession = Depends(get_session)
     take traffic.
 
     It is only a failure when `REQUIRE_LLM_PROVIDER` is set. Without it, the
-    agent's deterministic offline stub serves every stage — a supported mode, and
-    the one every test in `apps/agent` runs in. Failing readiness there would
-    make the service undeployable with no keys, which is not the intent.
+    service is ready with no model key (model-backed routes answer 503), so it stays deployable
+    with no keys, which is the intent.
     """
     problems: list[str] = []
 

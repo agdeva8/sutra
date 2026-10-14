@@ -18,6 +18,7 @@ from ..ids import new_id
 from ..agent_store import AUDIT_APPLY, SqlStore
 from ..models import SCRATCH_KINDS, AuditEntry, ScratchEntry, Source
 from ..scratch_service import process
+from ..stream import progress_stream, sse_response, wants_stream
 from ..wire import iso_dt
 
 router = APIRouter(tags=["scratch"])
@@ -74,9 +75,40 @@ async def create_entry(
                          tz=request.headers.get("x-timezone"))
     session.add(entry)
     await session.commit()
-    await run_after(background, process, entry.id)
-    await session.refresh(entry)
+    # `defer`: the client will start the work itself with `POST /scratch/{id}/process`, which streams
+    # progress. That is how a serverless host gets it done, and how the user sees what is happening.
+    if body.get("defer") is not True:
+        await run_after(background, process, entry.id)
+        await session.refresh(entry)
     return _row(entry)
+
+
+#: First progress line of a streamed filing, sent before the work reports its own.
+PROCESS_FIRST = "Got it."
+
+
+@router.post("/scratch/{entry_id}/process", dependencies=[Depends(llm_rate_limit)])
+async def process_entry(
+    entry_id: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(require_user),
+) -> object:
+    """File one pending entry now, streaming what is happening. A no-op for an entry already past `pending`."""
+    entry = await session.get(ScratchEntry, entry_id)
+    if entry is None or entry.user_id != user.user_id:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    runnable = entry.status == "pending"
+
+    async def job(say) -> dict:
+        if runnable:
+            await process(entry_id, say)
+        fresh = await session.get(ScratchEntry, entry_id, populate_existing=True)
+        return _row(fresh)
+
+    if wants_stream(request):
+        return sse_response(progress_stream(job, first=PROCESS_FIRST))
+    return await job(lambda _line: None)
 
 
 @router.get("/scratch")

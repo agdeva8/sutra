@@ -1,6 +1,6 @@
 """The staleness ledger — persistence, and nothing else.
 
-The *rules* are not here. `apps/agent/app/core/staleness.py` already owns
+The *rules* are not here. `sutra_api/core/staleness.py` already owns
 `classify_change` (blast radius → tier), `build_adjustments` (the toaster
 sentences), `rollup_counts` (the refresh-button count) and `next_baseline`, all
 pure. This module only moves rows in and out of the two tables.

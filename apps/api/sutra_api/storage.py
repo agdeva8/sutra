@@ -113,9 +113,13 @@ async def put(*, key: str, data: bytes, content_type: str) -> str:
             resp.raise_for_status()
         return key
 
-    path = _local_path(key)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
+    try:
+        path = _local_path(key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    except OSError:
+        # No writable disk (a serverless host): keep the bytes in the database instead.
+        await _db_put(key, data, content_type)
     return key
 
 
@@ -134,11 +138,11 @@ async def get(key: str) -> Object | None:
 
     try:
         path = _local_path(key)
-    except ValueError:
-        return None
-    if not path.is_file():
-        return None
-    return Object(data=path.read_bytes(), content_type="application/octet-stream")
+        if path.is_file():
+            return Object(data=path.read_bytes(), content_type="application/octet-stream")
+    except (ValueError, OSError):
+        pass
+    return await _db_get(key)
 
 
 async def delete(key: str) -> None:
@@ -155,5 +159,45 @@ async def delete(key: str) -> None:
                 await client.delete(_object_url(key), headers=_headers())
         else:
             _local_path(key).unlink(missing_ok=True)
+            await _db_delete(key)
     except (httpx.HTTPError, ValueError, OSError):
         pass
+
+
+# ---------------------------------------------------------------------------
+# Database fallback
+# ---------------------------------------------------------------------------
+
+
+async def _db_put(key: str, data: bytes, content_type: str) -> None:
+    from sqlalchemy.dialects.postgresql import insert
+
+    from .db import session_scope
+    from .models import SourceBlob
+
+    values = {"key": key, "content_type": content_type or "application/octet-stream", "data": data}
+    stmt = insert(SourceBlob).values(**values)
+    stmt = stmt.on_conflict_do_update(index_elements=[SourceBlob.key], set_={"data": data, "content_type": values["content_type"]})
+    async with session_scope() as session:
+        await session.execute(stmt)
+        await session.commit()
+
+
+async def _db_get(key: str) -> Object | None:
+    from .db import session_scope
+    from .models import SourceBlob
+
+    async with session_scope() as session:
+        row = await session.get(SourceBlob, key)
+    return Object(data=row.data, content_type=row.content_type) if row else None
+
+
+async def _db_delete(key: str) -> None:
+    from sqlalchemy import delete as sql_delete
+
+    from .db import session_scope
+    from .models import SourceBlob
+
+    async with session_scope() as session:
+        await session.execute(sql_delete(SourceBlob).where(SourceBlob.key == key))
+        await session.commit()

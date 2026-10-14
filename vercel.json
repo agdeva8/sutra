@@ -3,7 +3,7 @@
   "functions": {
     "api/index.py": {
       "maxDuration": 300,
-      "includeFiles": "apps/{api/sutra_api,api/sutra_chat,agentv2}/**"
+      "includeFiles": "apps/{api/sutra_api,agentv2}/**"
     }
   },
   "rewrites": [

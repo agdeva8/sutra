@@ -30,7 +30,7 @@ from ..db import get_session
 from ..rate_limit import llm_rate_limit
 from ..deps import CurrentUser, planner_enabled_for, require_user
 from ..store import repo, staleness
-from ..stream import done, frame, needs_clarification, plan as plan_frame, sse_response
+from ..stream import done, frame, needs_clarification, plan as plan_frame, progress_stream, sse_response, wants_stream
 
 router = APIRouter(tags=["planning"])
 
@@ -131,12 +131,16 @@ async def plan_confirm() -> dict:
     )
 
 
+#: First progress line of a streamed plan change, before the planner reports its own.
+PLAN_CHANGE_FIRST = "Looking at what changed…"
+
+
 @router.post("/plan/change")
 async def plan_change(
     request: Request,
     session: AsyncSession = Depends(get_session),
     user: CurrentUser = Depends(require_user),
-) -> dict:
+) -> object:
     """Record a change and decide its blast radius, then re-plan the goal around it.
 
     The tier is computed, never asserted by the model. `slim` changes (day-level dates) are re-planned
@@ -145,44 +149,50 @@ async def plan_change(
     "N changes" badge clears only when the plan really was rebuilt.
     """
     body = await _read_body(request)
-    action = body.get("action") or {}
-    goal_id = str(body.get("goal_id") or "")
-    intent = str(action.get("intent") or "")
-    if not goal_id or not intent:
-        raise HTTPException(status_code=400, detail="action.intent and goal_id are required")
 
-    goal = await repo.get_goal(session, user_id=user.user_id, goal_id=goal_id)
-    if goal is None:
-        raise HTTPException(status_code=404, detail="Goal not found")
+    async def job(say) -> dict:
+        action = body.get("action") or {}
+        goal_id = str(body.get("goal_id") or "")
+        intent = str(action.get("intent") or "")
+        if not goal_id or not intent:
+            raise HTTPException(status_code=400, detail="action.intent and goal_id are required")
 
-    horizons, milestone_moved = radius_for_intent(intent)
-    verdict = classify_change(horizons, milestone_moved=milestone_moved)
-    detail = action.get("rationale") or goal.title
-    recorded = await staleness.record_change(
-        session, user_id=user.user_id, goal_id=goal_id, kind=f"{intent}:{verdict.tier}",
-        horizons_moved=horizons, milestone_moved=milestone_moved, summary=str(detail),
-    )
-    adjustments = build_adjustments([recorded])
+        goal = await repo.get_goal(session, user_id=user.user_id, goal_id=goal_id)
+        if goal is None:
+            raise HTTPException(status_code=404, detail="Goal not found")
 
-    replanned = False
-    if verdict.tier == "slim" or body.get("confirmed"):
-        now = local_now(request.headers.get("x-timezone"))
-        out = await replan_goal(SqlStore(session, user.user_id, today=now.date()), goal_id, now=now)
-        if out.status != "applied":
-            await session.rollback()
-            raise HTTPException(status_code=422, detail="Couldn't re-plan this goal safely.")
-        replanned = True
-        if verdict.tier != "slim":
-            await staleness.mark_planned(session, user_id=user.user_id, goal_id=goal_id)
-    await session.commit()
+        horizons, milestone_moved = radius_for_intent(intent)
+        verdict = classify_change(horizons, milestone_moved=milestone_moved)
+        detail = action.get("rationale") or goal.title
+        recorded = await staleness.record_change(
+            session, user_id=user.user_id, goal_id=goal_id, kind=f"{intent}:{verdict.tier}",
+            horizons_moved=horizons, milestone_moved=milestone_moved, summary=str(detail),
+        )
+        adjustments = build_adjustments([recorded])
 
-    return {
-        "tier": verdict.tier,
-        "reason": verdict.reason,
-        "adjustments": adjustments,
-        "replanned": replanned,
-        "plan_items": [],
-    }
+        replanned = False
+        if verdict.tier == "slim" or body.get("confirmed"):
+            now = local_now(request.headers.get("x-timezone"))
+            out = await replan_goal(SqlStore(session, user.user_id, today=now.date()), goal_id, now=now, progress=say)
+            if out.status != "applied":
+                await session.rollback()
+                raise HTTPException(status_code=422, detail="Couldn't re-plan this goal safely.")
+            replanned = True
+            if verdict.tier != "slim":
+                await staleness.mark_planned(session, user_id=user.user_id, goal_id=goal_id)
+        await session.commit()
+
+        return {
+            "tier": verdict.tier,
+            "reason": verdict.reason,
+            "adjustments": adjustments,
+            "replanned": replanned,
+            "plan_items": [],
+        }
+
+    if wants_stream(request):
+        return sse_response(progress_stream(job, first=PLAN_CHANGE_FIRST))
+    return await job(lambda _line: None)
 
 
 @router.get("/plan/staleness")

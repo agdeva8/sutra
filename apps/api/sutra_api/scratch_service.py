@@ -24,6 +24,15 @@ log = logging.getLogger(__name__)
 MSG_NO_TRANSCRIPT = "Couldn't hear anything in that. Try again."
 MSG_UNEXPECTED = "Something went wrong reading this. Try again."
 
+#: How much of an attached source's text goes into triage. Matches the stored excerpt cap.
+SOURCE_TEXT_CHARS = 8000
+
+#: What the user is told while an entry is filed, in order. Plain words.
+SAY_OPENING_PHOTO = "Opening your photo…"
+SAY_READING = "Reading what you wrote…"
+SAY_DECIDING = "Working out what this is and where it belongs…"
+SAY_FILING = "Filing it into your plan…"
+
 
 async def _images(session, entry: ScratchEntry) -> list[tuple[bytes, str]]:
     if entry.kind != "image" or not entry.source_id:
@@ -37,8 +46,9 @@ async def _images(session, entry: ScratchEntry) -> list[tuple[bytes, str]]:
     return [(obj.data, mime)]
 
 
-async def process(entry_id: str) -> None:
-    """Run triage for one entry and record the outcome on its row."""
+async def process(entry_id: str, say=None) -> None:
+    """Run triage for one entry and record the outcome on its row. `say(line)` reports progress, if given."""
+    say = say or (lambda _line: None)
     maker = async_sessionmaker(get_engine(), expire_on_commit=False)
     async with maker() as session:
         entry = await session.get(ScratchEntry, entry_id)
@@ -48,6 +58,7 @@ async def process(entry_id: str) -> None:
         await session.commit()
 
         try:
+            say(SAY_OPENING_PHOTO if entry.kind == "image" else SAY_READING)
             images = await _images(session, entry)
             # Voice arrives already transcribed by the browser; an empty transcript is a failure to hear.
             if entry.kind == "audio" and not entry.body.strip():
@@ -59,6 +70,11 @@ async def process(entry_id: str) -> None:
                 # An entry settled in chat is filed from its clarified text; the original words stay on the row.
                 clarified = (entry.result or {}).get("clarification")
                 text = f"{entry.body}\n\nClarified by the user: {clarified}" if clarified else entry.body
+                # A file or link attached to the note: what was read from it is part of what the note means.
+                src = await session.get(Source, entry.source_id) if entry.source_id else None
+                if src is not None and (src.text_excerpt or "").strip():
+                    text = f"{text}\n\nAttached ({src.url or src.original_filename}):\n{src.text_excerpt[:SOURCE_TEXT_CHARS]}".strip()
+                say(SAY_DECIDING)
                 outcome = await triage_entry(
                     store, text, entry_id=entry.id, images=images, source_id=entry.source_id, now=now
                 )
@@ -71,6 +87,7 @@ async def process(entry_id: str) -> None:
             return
 
         if outcome is not None:
+            say(SAY_FILING)
             entry.status = outcome.status
             entry.question = outcome.question
             entry.error = outcome.error

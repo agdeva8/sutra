@@ -57,6 +57,9 @@ from .config import settings
 from .db import create_engine, dispose_engine, install_engine
 from .security import MUTATING_METHODS, origin_is_same_site
 
+#: Request headers a browser on another origin may send. `X-Timezone` is the user's own zone, sent on every call.
+CORS_ALLOWED_HEADERS = ["Content-Type", "Authorization", "Cookie", "X-Requested-With", "X-Timezone", "Accept"]
+
 TITLE = "GoalCoach API"
 VERSION = "2.0.0"
 
@@ -128,7 +131,7 @@ def create_app() -> FastAPI:
             allow_origins=settings.cors_allowed_origins,
             allow_credentials=True,
             allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
-            allow_headers=["Content-Type", "Authorization", "Cookie", "X-Requested-With"],
+            allow_headers=CORS_ALLOWED_HEADERS,
             expose_headers=["Set-Cookie"],
             max_age=86400,
         )

@@ -2,7 +2,7 @@
 
 Prefix-free env names, matching v1 where a name already existed
 (`DATABASE_URL`, `AUTH_SECRET`, `ALLOW_DEV_LOGIN`, `DEEPSEEK_*`). The LLM keys
-are deliberately *not* re-declared here: `apps/agent/app/llm/client.py` reads
+are deliberately *not* re-declared here: `apps/agentv2/config.py` reads
 `SUTRA_LLM_*` / `DEEPSEEK_*` from `os.environ` itself, and duplicating them
 would create a second source of truth for the model configuration.
 """

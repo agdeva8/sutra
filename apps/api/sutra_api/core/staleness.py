@@ -1,5 +1,4 @@
-"""Staleness + blast radius, pure. Moved into the API from the v1 agent so the service no longer
-imports `apps/agent`; the logic and tests are unchanged.
+"""Staleness + blast radius, pure. Lives in the API, which owns the staleness ledger.
 
 The count is arithmetic: changes recorded against a goal's **current plan
 generation**, after its last confirmed plan write. Generation (not timestamp) is

@@ -2,9 +2,9 @@
 import asyncio
 
 from sutra_api.api import chat as chat_routes
-from sutra_chat.clarify_options import options_for
-from sutra_chat.prompts import INTAKE_MODE, KIND_ADD_GOAL, mode_hint
-from sutra_chat.tools_block import extract_clarifying_questions
+from agentv2.coach.clarify_options import options_for
+from agentv2.coach.prompts import INTAKE_MODE, KIND_ADD_GOAL, mode_hint
+from agentv2.coach.tools_block import extract_clarifying_questions
 
 
 def _hint(**kw):
@@ -31,9 +31,22 @@ def test_bold_markers_are_stripped_from_questions():
     assert qs[0]["question"] == "What is the deadline?"
 
 
-def test_trying_to_move_is_not_a_relocation_question():
+def test_chips_are_domain_neutral_and_only_attach_when_they_fit():
     assert options_for("What stopped you the last time you tried to move?") == ([], False)
-    assert options_for("Where are you based?")[0]
+    # The career-only banks are gone: location, seniority and pipeline questions get no chips.
+    assert options_for("Where are you based?") == ([], False)
+    assert options_for("Are you after a lateral move or a step up?") == ([], False)
+    assert options_for("What is your current level of debt?") == ([], False)
+    assert options_for("How many hours a day do you sleep?") == ([], False)
+    assert options_for("How many hours a week can you give this?")[0]
+    assert options_for("Which days suit you best?") == (["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"], True)
+
+
+def test_options_the_model_wrote_win_over_the_bank():
+    from agentv2.coach.clarify_options import enrich
+
+    out = enrich([{"question": "How many hours a week can you give?", "options": ["1h", "3h"]}])
+    assert out[0]["options"] == ["1h", "3h"]
 
 
 def test_plan_hands_add_goal_to_the_chat():
@@ -66,3 +79,30 @@ def test_attached_sources_reach_the_prompt():
     finally:
         chat_routes.repo.sources_by_ids = saved
     assert "syllabus.txt" in block and "Week 1: arrays" in block
+
+
+def test_inline_lettered_options_attach_to_their_question_and_the_list_is_not_repeated():
+    from agentv2.coach.tools_block import strip_question_list
+
+    text = "Intro.\n\n1. Where are you today? (a) just starting, (b) applying now)\n2. How many hours?"
+    qs = extract_clarifying_questions(text)
+    assert qs[0]["question"] == "Where are you today?"
+    assert qs[0]["options"] == ["just starting", "applying now"]
+    assert strip_question_list(text) == "Intro."
+
+
+def test_a_reply_is_not_cut_off_at_the_end():
+    from agentv2.coach.turn import _generate
+
+    reply = "Answer what applies and I'll build the plan."
+
+    async def complete(_system, _user):
+        return reply
+
+    seen = []
+
+    async def on_delta(chunk):
+        seen.append(chunk)
+
+    asyncio.run(_generate(complete=complete, system="", message="", on_delta=on_delta))
+    assert "".join(seen) == reply

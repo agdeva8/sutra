@@ -43,6 +43,9 @@ from ..store import repo, staleness
 from ..stream import delta, done, error, frame, sse_response
 from ..wire import source_list_row, source_row, source_upload_row
 
+#: What an upload may be for. A memory photo is kept out of the Sources list.
+SOURCE_PURPOSES = ("source", "memory")
+
 router = APIRouter(tags=["sources"])
 
 #: A temporary, unlinked upload is reaped after a week by the cleanup job.
@@ -125,6 +128,7 @@ async def upload_source(
     file: UploadFile = File(...),
     goal_id: str = Form(default=""),
     temporary: str = Form(default=""),
+    purpose: str = Form(default="source"),
 ) -> dict:
     """Upload a file. **200**, and the row carries `text_pending`."""
     if not file or not file.filename:
@@ -134,6 +138,8 @@ async def upload_source(
     if len(data) > settings.source_max_bytes:
         raise HTTPException(status_code=413, detail="File too large (max 20MB)")
 
+    if purpose not in SOURCE_PURPOSES:
+        raise HTTPException(status_code=400, detail=f"purpose must be one of {', '.join(SOURCE_PURPOSES)}")
     ext = extract_mod.extension_of(file.filename)
     if ext not in extract_mod.ALLOWED_EXTENSIONS:
         raise HTTPException(
@@ -167,6 +173,7 @@ async def upload_source(
         goal_id=resolved_goal_id,
         goal_title=goal_title,
         kind="file",
+        purpose=purpose,
         storage_path=key,
         original_filename=file.filename,
         content_type=content_type,
@@ -488,7 +495,7 @@ async def ask_link(
     document, it does not propose actions, and a confirm card appearing here
     would be an action the user never asked for.
 
-    **One delta, not a token stream.** `apps/agent`'s completion seam is
+    **One delta, not a token stream.** The model call is
     non-streaming, so the whole reply arrives at once. The client accumulates
     `content` either way, so this renders correctly — it just is not
     character-by-character. Token streaming needs a streaming client in the

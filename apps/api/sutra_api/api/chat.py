@@ -26,25 +26,26 @@ Without that, a confirmed plan would keep accumulating turns nobody wants.
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sutra_chat.clarify_options import enrich
-from sutra_chat.tools_block import parse_proposals, split_prose_and_tools
-from sutra_chat.turn import stream_turn
+from agentv2.coach.clarify_options import enrich
+from agentv2.coach.tools_block import parse_proposals, split_prose_and_tools
+from agentv2.coach.turn import stream_turn
 
 from agentv2 import chat_turn, default_chat, local_now
 
 from ..agent_store import SqlStore
+from ..coach_context import build_coach_context
 from ..db import get_session
 from ..rate_limit import llm_rate_limit
 from ..deps import CurrentUser, planner_enabled_for, require_user
 from ..llm import get_complete, provider_status
-from ..models import SCOPE_TO_KIND, Conversation, Milestone, PlanItem, Proposal
+from ..models import SCOPE_TO_KIND, Conversation, Milestone, PlanItem, Proposal, User
+from ..profile import answered_topics
 from ..store import chat as chat_store
 from ..store import repo
 from ..stream import (
@@ -86,50 +87,8 @@ INTENTS = frozenset(
 
 
 async def _build_context(session: AsyncSession, *, user_id: str) -> str:
-    """The live-state block injected into the system prompt.
-
-    Kept compact on purpose. This is pasted into *every* turn, so its size is a
-    per-message cost, and a model given forty lines of state attends to none of
-    it. What goes in: the goals with their horizons and dates, what is in flight
-    this week, and anything overdue.
-    """
-    goals = await repo.list_goals(session, user_id=user_id, limit=50)
-    milestones = await repo.list_milestones(session, user_id=user_id, limit=100)
-    items = await repo.list_plan_items(session, user_id=user_id, limit=200)
-    today = datetime.now(UTC).date()
-
-    lines: list[str] = [f"Today is {today.isoformat()}."]
-
-    active = [g for g in goals if g.status == "active"]
-    if goals:
-        lines.append("\nGOALS:")
-        for g in goals:
-            marker = "" if g.status == "active" else f" [{g.status}]"
-            target = f" → {g.target_date}" if g.target_date else ""
-            hours = f", {g.weekly_hours}h/week" if g.weekly_hours else ""
-            lines.append(f"- {g.title} ({g.horizon}){target}{hours}{marker}")
-
-    overdue = [
-        m for m in milestones if m.target_date and m.target_date < today and m.status != "done"
-    ]
-    if overdue:
-        lines.append("\nOVERDUE MILESTONES:")
-        lines.extend(f"- {m.title} (was due {m.target_date})" for m in overdue[:10])
-
-    upcoming = [
-        i
-        for i in items
-        if i.horizon in ("daily", "weekly") and i.status != "done" and i.start_date
-    ]
-    if upcoming:
-        lines.append("\nIN FLIGHT:")
-        lines.extend(
-            f"- {i.title} ({i.start_date})" for i in upcoming[:12]
-        )
-
-    if not active:
-        lines.append("\nNo active goals yet.")
-    return "\n".join(lines)
+    """The live-state block injected into the system prompt. See `coach_context` for what it holds."""
+    return await build_coach_context(session, user_id=user_id, now=local_now(None))
 
 
 #: What the user is told while the coach works, in the order it happens. Plain words, no jargon.
@@ -180,7 +139,26 @@ async def _history_text(
     rows = await chat_store.history(
         session, user_id=user_id, conv_id=conv_id, limit=limit
     )
-    return [{"role": r.role, "content": r.content} for r in rows]
+    return [{"role": r.role, "content": _with_questions(r.content, r.questions), "questions": list(r.questions or [])}
+            for r in rows]
+
+
+def _with_questions(content: str, questions: list | None) -> str:
+    """An assistant turn as the model should see it: its stored intro plus the questions it asked.
+
+    The stored content is only the introduction (the card showed the questions), so without this the
+    model reads "01: 5 hours" with no idea what question 01 was, and asks it again.
+    """
+    if not questions:
+        return content
+    listed = "\n".join(f"{i:02d}. {q}" for i, q in enumerate(questions, start=1))
+    return f"{content}\n\n{listed}".strip()
+
+
+def _asked_so_far(turns: list[dict]) -> tuple[list[str], int]:
+    """Every question already asked in this conversation, and how many clarifying rounds there were."""
+    rounds = [t["questions"] for t in turns if t.get("role") == "assistant" and t.get("questions")]
+    return [q for r in rounds for q in r], len(rounds)
 
 
 # ---------------------------------------------------------------------------
@@ -317,9 +295,12 @@ async def chat_stream(
     if source_ids:
         context += await _sources_block(session, user_id=user.user_id, source_ids=source_ids)
 
+    asked, rounds_asked = _asked_so_far(turns)
+    user_row = await session.get(User, user.user_id)
+    profile_answers = answered_topics(user_row.profile if user_row else None)
+
     async def complete(system: str, user_text: str) -> str:
-        """The seam. `apps/agent`'s completion, wrapped so this route owns no
-        provider logic — see `sutra_api/llm.py`."""
+        """The seam: one model call, so this route owns no provider logic — see `sutra_api/llm.py`."""
         return await _text_complete(system, user_text, turns)
 
     async def events():
@@ -335,6 +316,9 @@ async def chat_stream(
                 clarify=clarify,
                 proactive_propose=body.get("proactive_propose") is True,
                 scoped_kind=scoped_kind,
+                asked=asked,
+                rounds_asked=rounds_asked,
+                profile_answers=profile_answers,
             ):
                 if event == "delta":
                     delivered.append(str(payload))
@@ -381,6 +365,7 @@ async def chat_stream(
                         role="assistant",
                         content=str(turn.prose or ""),  # type: ignore[attr-defined]
                         provider=provider_status()["provider"],
+                        questions=[str(q.get("question") or "") for q in turn.questions],  # type: ignore[attr-defined]
                     )
                     await session.commit()
                     yield frame(
@@ -665,7 +650,7 @@ async def chat_refine(
         )
 
     from ..store.executor import apply_proposal  # noqa: F401  (documented below)
-    from sutra_chat.prompts import SYSTEM_PROMPT
+    from agentv2.coach.prompts import SYSTEM_PROMPT
 
     previous = row.args or {}
     prompt = (

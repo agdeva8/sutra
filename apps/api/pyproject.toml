@@ -31,12 +31,8 @@ sutra-agentv2 = { path = "../agentv2", editable = true }
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-# NOTE: this package is `sutra_api`, not `app`. `apps/agent` already owns the
-# top-level `app` package, and both are imported into one process — two packages
-# named `app` cannot coexist. The HLD (§5) says `apps/api/app/`; that is now
-# wrong and should be corrected to `apps/api/sutra_api/`.
 [tool.hatch.build.targets.wheel]
-packages = ["sutra_api", "sutra_chat"]
+packages = ["sutra_api"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

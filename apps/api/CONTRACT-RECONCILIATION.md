@@ -155,7 +155,7 @@ genuine v1 bugs.
 | 62 | SSE `delta.content` | **Spec right.** v1 emits `content`; HLD §12's `text` would render an empty stream. |
 | 63 | `SsePlan` frame | **Spec right** — the v2 planner's progress frame; v1 has no equivalent. |
 | 64 | `text_pending` | **Spec right.** v1 sets it to `isImage` and defers OCR. Worth noting it is response-only, never stored. |
-| 65 | `/plan/*` (5 routes) | **Spec right** — the new surface. `apps/agent` is the authority for the shapes. |
+| 65 | `/plan/*` (5 routes) | **Spec right** — the new surface. `apps/agentv2/contracts` is the authority for the shapes. |
 | 66 | `budget_hours`, `availability` | **Spec right** — optional agent-only additions. |
 | 67 | `/health`, `/ready` | **Spec right** — carried from v1's Python app. |
 | 68 | **Bearer auth bypass** | **Security fix.** v1's `authenticateRoute` gates `Authorization: Bearer` behind `ALLOW_DEV_LOGIN`, but `/auth/me`, `/sources*` and `/audit/export` had their **own** inline resolvers that accepted an *ungated* bearer — and used it as the `user_id`, so `Bearer <any-id>` read that user's data. v2 gates every path, in one place. |

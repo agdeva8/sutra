@@ -1,7 +1,7 @@
 """The routes.
 
 One module per tag in `openapi.yaml`, so a route's home is predictable from the
-spec. `plan.py` is the only module that imports `apps/agent`; everything else
+spec. The routes import `agentv2` in-process for planning and the coach; everything else
 touches the database and nothing else.
 
 Two conventions run through all of them:

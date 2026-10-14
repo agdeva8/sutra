@@ -1,7 +1,7 @@
 """Pure functions over already-loaded data.
 
 **No imports from `store/`, `db`, `wire`, or FastAPI.** These take plain dicts
-and return plain dicts, exactly as `apps/agent/app/core/` does, and for the same
+and return plain dicts, exactly as `agentv2/core/` does, and for the same
 reason: the logic is the part worth testing, and it should be testable without a
 database.
 

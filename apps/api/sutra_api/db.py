@@ -109,3 +109,11 @@ async def get_session() -> AsyncIterator[AsyncSession]:
     assert _sessionmaker is not None
     async with _sessionmaker() as session:
         yield session
+
+
+def session_scope() -> AsyncSession:
+    """A standalone session for code that runs outside a request (e.g. storage). Use as `async with`."""
+    if _sessionmaker is None:
+        get_engine()
+    assert _sessionmaker is not None
+    return _sessionmaker()

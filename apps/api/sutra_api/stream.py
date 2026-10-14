@@ -24,10 +24,12 @@ heartbeat — v1 sent exactly this and the client's reader assumes it.
 """
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
+from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 #: `no-cache` and the nginx hint are what stop a proxy buffering the stream into
@@ -175,3 +177,55 @@ def sse_response(chunks: AsyncIterator[str]) -> StreamingResponse:
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
+
+
+# ---------------------------------------------------------------------------
+# Long jobs, streamed
+# ---------------------------------------------------------------------------
+
+#: A comment frame this often keeps proxies from closing a quiet connection while a model works.
+HEARTBEAT_S = 8.0
+#: What the client asks for to get progress frames instead of one JSON body.
+SSE_ACCEPT = "text/event-stream"
+
+Say = Callable[[str], None]
+
+
+def wants_stream(request) -> bool:
+    return SSE_ACCEPT in (request.headers.get("accept") or "")
+
+
+async def progress_stream(work: Callable[[Say], Awaitable[dict]], *, first: str = "") -> AsyncIterator[str]:
+    """Run `work(say)` and stream what it says while it runs.
+
+    `say(line)` may be called from any thread. Frames: `status` per line, `result` once with `work`'s
+    dict, or `error` if it raised. The server keeps the request open for the whole job, which is what
+    lets a serverless host finish it: work started after the response is not guaranteed to run there.
+    """
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[str] = asyncio.Queue()
+
+    def say(line: str) -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, line)
+
+    if first:
+        yield frame(status(first))
+    task = asyncio.ensure_future(work(say))
+    while not task.done() or not queue.empty():
+        try:
+            line = await asyncio.wait_for(queue.get(), timeout=HEARTBEAT_S)
+        except asyncio.TimeoutError:
+            yield ": keep-alive\n\n"
+            continue
+        yield frame(status(line))
+    # A line said just before the job returned is still on its way into the queue (`say` hands it over
+    # with `call_soon_threadsafe`); give those hand-overs one turn of the loop, then flush them.
+    await asyncio.sleep(0)
+    while not queue.empty():
+        yield frame(status(queue.get_nowait()))
+    try:
+        yield frame({"type": "result", "result": task.result()})
+    except HTTPException as exc:
+        yield frame({"type": "error", "status": exc.status_code, "content": str(exc.detail)})
+    except Exception as exc:  # noqa: BLE001 - after the headers, an error frame is the only way to say so
+        yield frame({"type": "error", "status": 500, "content": str(exc) or "Something went wrong."})

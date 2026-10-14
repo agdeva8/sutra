@@ -31,6 +31,7 @@ from agentv2.contracts import (
 from agentv2.contracts import ChangeSet as _ChangeSet
 from agentv2.core.calendar import week_start
 from agentv2.core.context import BlockRow, Context, GoalHours, PlanWeekRow, RecurringRow
+from agentv2.core.profile import UserProfile, to_planner
 from agentv2.core.recurring import occurrences
 from pydantic import TypeAdapter
 from sqlalchemy import delete, select, update
@@ -147,10 +148,17 @@ class SqlStore:
         done: dict[str, float] = {}
         for gid, note in done_rows:
             done[gid] = done.get(gid, 0.0) + _effort(note)
+        # The "about you" profile: waking hours, work or study hours, weekly hours for goals. A per-day
+        # availability the user set explicitly is more specific, so it wins over the weekly figure.
+        planner = to_planner(UserProfile.from_json(user.profile if user else None))
+        weekday_hours = _weekday_hours(user.availability if user else None)
         return Context(
+            active_spans=planner.active_spans,
+            busy_weekly=planner.busy_weekly,
             recurring=tuple(RecurringRow(r.id, r.title, tuple(r.weekdays), r.start_time, r.end_time, r.end_date) for r in rules),
             goal_hours={g: GoalHours(float(t), done.get(g, 0.0)) for g, t in totals.items()},
-            weekday_hours=_weekday_hours(user.availability if user else None),
+            weekday_hours=weekday_hours if weekday_hours is not None else planner.weekday_hours,
+            weekly_cap_hours=planner.weekly_cap_hours,
             blocked_dates=frozenset(blocked),
             goal_targets={g.id: g.target_date for g in goal_rows if g.target_date},
             today=self.today,

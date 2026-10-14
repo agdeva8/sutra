@@ -37,6 +37,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     Time,
@@ -117,6 +118,10 @@ class User(Timestamped, Base):
     available_weekly_hours: Mapped[int | None] = mapped_column(Integer)
     #: `{mon: 2, tue: 0, …}`. A missing day is zero, not an error.
     availability: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    #: The "about you" profile asked once in the first-run flow: work or study hours, wake and sleep,
+    #: weekly hours for goals, rest days, and `asked` (true once shown, even if every field was skipped).
+    #: Shape and meaning: `sutra_api/profile.py`.
+    profile: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb"))
 
     __table_args__ = (
         # Partial unique. A plain unique index would reject the second
@@ -419,6 +424,39 @@ class ScratchEntry(Base):
     )
 
 
+CALENDAR_ACTIVE = "active"
+#: Delinked with "delete the events": the feed now serves an empty calendar, so the calendar app drops
+#: everything Sutra put there on its next refresh. It goes dark (404) after `purge_after`.
+CALENDAR_EMPTIED = "emptied"
+#: Delinked, events left as they were: the feed is gone (404) and the calendar app keeps its last copy.
+CALENDAR_REVOKED = "revoked"
+CALENDAR_STATUSES = (CALENDAR_ACTIVE, CALENDAR_EMPTIED, CALENDAR_REVOKED)
+
+
+class CalendarSubscription(Base):
+    """One calendar app subscribed to the user's plan — one secret `.ics` URL each.
+
+    A user may have several (Google, a partner's Apple calendar, Outlook), and each is linked, renamed
+    and delinked on its own. The `token` in the URL is the only credential on the public feed.
+    """
+
+    __tablename__ = "calendar_subscriptions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False, default="My calendar")
+    #: Which app the user said they would add it to; only changes which "add" link is offered first.
+    provider: Mapped[str] = mapped_column(String, nullable=False, default="other")
+    token: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, default=CALENDAR_ACTIVE)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    last_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    purge_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (Index("calendar_subscriptions_user_idx", "user_id", "created_at"),)
+
+
 class CalendarFeed(Base):
     """A user's subscribable iCalendar feed, plus whether we have asked about it.
 
@@ -447,6 +485,21 @@ class CalendarFeed(Base):
 # ---------------------------------------------------------------------------
 
 
+class SourceBlob(Base):
+    """The bytes of an upload, when no object store is reachable (a serverless host has no writable disk).
+
+    Keyed by the same storage key a `sources` row records, so the row neither knows nor cares which
+    backend holds the bytes. Used only as a fallback: Supabase Storage wins when it is configured.
+    """
+
+    __tablename__ = "source_blobs"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    content_type: Mapped[str] = mapped_column(String, nullable=False, default="application/octet-stream")
+    data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class Source(Base):
     """An attached file or link.
 
@@ -467,6 +520,9 @@ class Source(Base):
     )
     goal_title: Mapped[str] = mapped_column(String, nullable=False, default="")
     kind: Mapped[str] = mapped_column(String, nullable=False)  # SOURCE_KINDS
+    #: What the upload is for: `source` (material for a goal) or `memory` (a photo pinned to the Memories
+    #: tab). Memories never appear in the Sources list, and sources never in Memories.
+    purpose: Mapped[str] = mapped_column(String, nullable=False, default="source", server_default="source")
     storage_path: Mapped[str] = mapped_column(String, nullable=False, default="")
     original_filename: Mapped[str] = mapped_column(String, nullable=False)
     content_type: Mapped[str] = mapped_column(String, nullable=False)
@@ -630,6 +686,10 @@ class Message(Base):
     role: Mapped[str] = mapped_column(String, nullable=False)  # MESSAGE_ROLES
     content: Mapped[str] = mapped_column(Text, nullable=False)
     provider: Mapped[str | None] = mapped_column(String)
+    #: The clarifying questions an assistant turn asked (their text only). The stored `content` is the
+    #: introduction without the question list, so without this the next turn cannot tell what was
+    #: already asked, and the coach re-asks an unanswered question. NULL on every other turn.
+    questions: Mapped[list | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

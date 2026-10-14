@@ -88,6 +88,7 @@ async def add_message(
     role: str,
     content: str,
     provider: str | None = None,
+    questions: list[str] | None = None,
 ) -> Message:
     row = Message(
         id=new_id("msg"),
@@ -96,6 +97,7 @@ async def add_message(
         role=role,
         content=content,
         provider=provider,
+        questions=questions,
     )
     session.add(row)
     await session.flush()

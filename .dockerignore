@@ -11,6 +11,5 @@
 graphify-out
 apps/web
 apps/storybook
-apps/agent
 docs
 infra

@@ -407,6 +407,10 @@ async def get_time_block(
 # ---------------------------------------------------------------------------
 
 
+#: A `sources` row's purpose when it is material for a goal (as opposed to a memory photo).
+SOURCE_PURPOSE_SOURCE = "source"
+
+
 async def list_sources(
     session: AsyncSession,
     *,
@@ -416,7 +420,7 @@ async def list_sources(
 ) -> list[Source]:
     stmt = (
         select(Source)
-        .where(Source.user_id == user_id, Source.is_deleted.is_(False))
+        .where(Source.user_id == user_id, Source.is_deleted.is_(False), Source.purpose == SOURCE_PURPOSE_SOURCE)
         .order_by(Source.created_at.desc())
         .limit(limit)
     )

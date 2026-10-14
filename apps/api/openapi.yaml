@@ -10,10 +10,10 @@ info:
 
     ## Where the planner routes are served
 
-    `apps/web` never calls `apps/agent`. The planner routes below — `/plan/run`,
+    `apps/web` never calls `apps/agentv2` directly. The planner routes below — `/plan/run`,
     `/plan/stream`, `/plan/confirm`, `/plan/change`, `/plan/staleness`,
     `/chat/plan`, `/chat/stream` — are `apps/api` routes like any other. `apps/api`
-    serves them by calling the agent **in-process**, importing its graph. The agent
+    serves them by calling `agentv2` **in-process**. The agent
     is a library, not a service: it has no HTTP surface of its own, and no second
     spec to drift out of sync with this one.
 
@@ -21,7 +21,7 @@ info:
 
     Three sources, cross-checked:
 
-    1. `apps/agent/app/contracts/schemas.py` — the v2 pydantic vocabulary. Where a
+    1. `apps/agentv2/contracts/` — the pydantic vocabulary. Where a
        shape exists there, this file copies it verbatim; that module stays the
        source of truth and this file is generated-by-hand to match.
     2. `apps/storybook/src/lib/api.js` + `src/mock/backend.js` — the v1 frontend,
@@ -42,7 +42,7 @@ info:
 
     - **Two backends.** v1 split this surface across a Python FastAPI agent and a
       Next.js BFF. v2 is one FastAPI app — `apps/api` — which the frontend talks
-      to; the planner is delegated to `apps/agent` in-process. HLD §18 rules out
+      to; the planner and the coach are delegated to `apps/agentv2` in-process. HLD §18 rules out
       Next.js. Every path below is therefore owned by one service.
     - **Non-uniform envelopes.** v1 mixed bare arrays and wrapped objects for no
       reason. This file documents the split as it *is* (see `x-envelope` on each
@@ -217,7 +217,7 @@ servers:
   - url: /
     description: Same origin. `apps/web` calls `/api/*` with no host prefix.
   - url: http://localhost:8000
-    description: Local dev, `apps/agent` directly.
+    description: Local dev.
 
 tags:
   - name: auth

@@ -7,7 +7,6 @@
 graphify-out
 apps/web
 apps/storybook
-apps/agent
 apps/api/tests
 apps/agentv2/tests
 apps/agentv2/demo

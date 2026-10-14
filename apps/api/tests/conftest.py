@@ -3,8 +3,7 @@
 **No database fixture, deliberately.** Tests that need Postgres hit the real one
 from `infra/docker-compose.yml`, because the schema uses `JSONB` and `ARRAY` —
 types SQLite cannot express — so a fake would test a schema the service does not
-use. That mirrors `apps/agent`'s convention, where the default `pytest` target is
-`tests/unit` and anything touching a shared service is opt-in.
+use. The default `pytest` target is `tests/unit`; anything touching a shared service is opt-in.
 
 Everything in `tests/unit` therefore imports only pure modules: the `core/`
 package, `wire`, `security`, and the `registry`. Those import no driver, no

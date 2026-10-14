@@ -1,4 +1,4 @@
-# Python — apps/agent is a uv/venv project; the virtualenv and test cache are
+# Python — the virtualenvs and test caches are
 # machine-specific and must never be committed.
 .venv/
 venv/
@@ -29,7 +29,5 @@ storybook-static/
 # graphify — generated graph output, rebuilt by the hook
 graphify-out/
 
-# LangGraph Agent Server (`langgraph dev`) scratch state — apps/agent only
-.langgraph_api/
 .vercel
 .env*

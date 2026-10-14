@@ -2,9 +2,9 @@
 
 The one HTTP surface `apps/web` talks to.
 
-`apps/agent` is a **library**, not a service. It has no HTTP surface of its own
+`apps/agentv2` is a **library**, not a service. It holds the planner and the coach (the Add-goal interview and chat). It has no HTTP surface of its own
 and no second spec to drift out of sync: this app serves the planner routes by
-importing its graph **in-process**, so the boundary between them is a function
+importing it **in-process**, so the boundary between them is a function
 call.
 
 ## Run it
@@ -31,8 +31,8 @@ set -a; source .env; set +a
 .venv/bin/uvicorn sutra_api.main:app --reload --port 8000
 ```
 
-With no LLM key set, `apps/agent`'s deterministic offline stub serves every
-stage, so the whole service runs with no network and no credentials.
+With no LLM key set, model-backed routes answer 503 ("the assistant isn't available"); everything else
+runs with no network.
 
 ```bash
 # Unit tests — pure modules only: no database, no network.
@@ -49,7 +49,6 @@ sutra_api/
   models.py        21 tables, ported from v1's Drizzle schema
   wire.py          row → wire. The only place a shape is decided.
   dashboard.py     the /state snapshot — shared with /tools/confirm
-  planner.py       the in-process bridge to apps/agent
   stream.py        the SSE frame union
   security.py      cookies, tokens, the origin check
   storage.py       Supabase Storage, with a local-disk fallback
@@ -69,10 +68,7 @@ individually, against the v1 source, and records which way each went. Several
 corrections are things a well-meaning reader would "fix" back to the broken
 state — the docstrings say which.
 
-**2. The package is `sutra_api`, not `app`.** `apps/agent` already owns the
-top-level `app` package, and both are imported into this process. The HLD (§5)
-says `apps/api/app/`; that cannot work, so the service package is the one that
-moved.
+**2. The package is `sutra_api`.** The planner and the coach live in `agentv2`, imported in-process.
 
 ## The security fix worth knowing about
 
@@ -90,7 +86,7 @@ check on every mutating request, failing **closed**.
 
 | subsystem | status |
 |---|---|
-| `/chat/*` (stream, history, plan, refine) and `/sources/link/ask` | **not written** — needs a chat graph. The plan is a separate package, `sutra_chat`, so nothing existing is touched. |
+| `/chat/*` (stream, history, plan, refine) and `/sources/link/ask` | served by `agentv2` (planning and `agentv2.coach`, the interview and chat), called in-process. |
 | the motivation pipeline | the route, the cache contract and the bucket logic all work; `_generate()` returns an empty set. Needs a search key and the critique loop. |
 | PDF / DOCX / image text extraction | named in `core/extract.py`. An empty excerpt is already the "unreadable" signal the planner expects, so a PDF attaches and simply contributes nothing yet. |
 | the `/plan/runs` baseline table | `/plan/confirm`'s 409 uses the conversation's `last_message_at` as the baseline. Correct for the normal flow, with a one-request-wide window. See `api/plan.py`. |
