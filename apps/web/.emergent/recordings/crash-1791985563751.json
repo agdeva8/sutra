@@ -1,0 +1,1 @@
+{"kind":"crash","note":"","url":"/?panel=scratch","viewport":{"w":1434,"h":790},"error":{"kind":"rejection","message":"API /scratch timed out after 30000ms","file":"","stack":"TimeoutError: API /scratch timed out after 30000ms\n    at http://localhost:3000/static/js/bundle.js:28287:14","frame":null},"recorder":"off","captured_at":"2026-10-14T13:46:03.751Z","events":[]}
