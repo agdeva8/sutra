@@ -28,3 +28,8 @@ storybook-static/
 
 # graphify — generated graph output, rebuilt by the hook
 graphify-out/
+
+# LangGraph Agent Server (`langgraph dev`) scratch state — apps/agent only
+.langgraph_api/
+.vercel
+.env*

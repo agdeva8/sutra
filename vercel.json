@@ -1,0 +1,15 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 300,
+      "includeFiles": "apps/{api/sutra_api,api/sutra_chat,agentv2}/**"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/:path*",
+      "destination": "/api/index?__path=/:path*"
+    }
+  ]
+}

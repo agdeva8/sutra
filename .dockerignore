@@ -1,0 +1,16 @@
+# Keep secrets, caches and the frontend out of the API image.
+**/.env
+**/.env.*
+!**/.env.example
+**/.venv
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+.git
+.idea
+graphify-out
+apps/web
+apps/storybook
+apps/agent
+docs
+infra

@@ -1,5 +1,17 @@
 [project]
 name = "goalcoachv2-develop-v2"
 version = "0.1.0"
-requires-python = ">=3.14"
-dependencies = []
+# Vercel reads this file for the API function (api/index.py), so the runtime dependencies live here.
+# 3.12 matches the tested Docker image and has wheels for every dependency below.
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.5",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.30",
+    "httpx>=0.27",
+    "python-multipart>=0.0.9",
+    "python-dotenv>=1.0",
+    "langchain-deepseek>=0.1",
+]
