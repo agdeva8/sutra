@@ -143,6 +143,32 @@ a[href]:active,
   }
 }
 
+/* App-shell lock. The screens are fixed-height (`h-[100dvh]`) with their
+ * own inner scroll regions, so the document must never scroll or
+ * rubber-band — otherwise the bottom nav and "border" of the app drag
+ * with the finger on iOS/Android. `overscroll-behavior: none` kills the
+ * bounce/pull-to-refresh chain; `touch-action: manipulation` on the
+ * root stops double-tap zoom on non-control areas while keeping pinch
+ * zoom available. Mobile only: desktop keeps normal document scroll. */
+html {
+  overscroll-behavior: none;
+  touch-action: manipulation;
+}
+@media (max-width: 639px) {
+  html,
+  body {
+    height: 100%;
+    overflow: hidden;
+    position: fixed;
+    inset: 0;
+    width: 100%;
+  }
+  #root {
+    height: 100%;
+    overflow: hidden;
+  }
+}
+
 body {
   margin: 0;
   background: var(--bg-primary);
