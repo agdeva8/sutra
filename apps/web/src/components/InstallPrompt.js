@@ -1,5 +1,6 @@
 import { useState } from "react";
 import useInstallPrompt from "../hooks/use-install-prompt";
+import { useGuideActive } from "../lib/guideActive";
 import InstallPromptDialog from "./InstallPromptDialog";
 
 /**
@@ -15,6 +16,7 @@ import InstallPromptDialog from "./InstallPromptDialog";
 export default function InstallPrompt() {
   const { open, platform, promptInstall, dismiss } = useInstallPrompt();
   const [installing, setInstalling] = useState(false);
+  const guideActive = useGuideActive();
 
   const handleInstall = async () => {
     setInstalling(true);
@@ -27,7 +29,7 @@ export default function InstallPrompt() {
 
   return (
     <InstallPromptDialog
-      open={open && platform !== "none"}
+      open={open && platform !== "none" && !guideActive}
       platform={platform === "ios" ? "ios" : "chromium"}
       onClose={dismiss}
       onInstall={handleInstall}

@@ -61,6 +61,9 @@ import ReplanToast from "../components/ReplanToast";
 import ChatModal from "../components/ChatModal";
 import WelcomeToast from "../components/WelcomeToast";
 import ScratchSpotlight from "../components/ScratchSpotlight";
+import TimelineGuide from "../components/TimelineGuide";
+import { setGuideActive } from "../lib/guideActive";
+import { hasOpenedScratch, onScratchOpenedChange } from "../lib/scratchIntro";
 import { CalendarSyncPrompt } from "../components/CalendarSync";
 
 /**
@@ -501,6 +504,21 @@ export default function Coach() {
     setSearchParams(searchForScreen(mobileLandingKey(goals.length)), { replace: true });
   }, [state, searchParams, setSearchParams]);
 
+  // First step of the guide: with no goals the app is held on the Goal screen, where the Add Goal
+  // dialog is required. The tabs and chat are disabled until a goal exists.
+  const noGoals = !!state && (state.goals || []).filter((g) => g.status !== "dropped").length === 0;
+  useEffect(() => {
+    if (noGoals && panelView !== "state") setSearchParams(searchForScreen("state"), { replace: true });
+  }, [noGoals, panelView, setSearchParams]);
+
+  // The first-run guide is in progress until Scratch has been opened. While it is, other prompts wait.
+  const [scratchOpenedFlag, setScratchOpenedFlag] = useState(hasOpenedScratch);
+  useEffect(() => onScratchOpenedChange(() => setScratchOpenedFlag(hasOpenedScratch())), []);
+  useEffect(() => {
+    setGuideActive(!!state && (noGoals || !scratchOpenedFlag));
+    return () => setGuideActive(false);
+  }, [state, noGoals, scratchOpenedFlag]);
+
   // Push a screen onto history so browser/system back steps
   // screen-by-screen. Clicking the screen you're already on is a no-op —
   // otherwise every tab tap would stack a duplicate history entry.
@@ -637,7 +655,7 @@ export default function Coach() {
           {/* Desktop — the horizontal strip stays, now route-driven:
               each tab is a real URL, and the active screen carries
               aria-current. Visually unchanged. */}
-          <nav aria-label="Screens" className="hidden sm:flex items-center">
+          <nav aria-label="Screens" className={`hidden sm:flex items-center${noGoals ? " pointer-events-none opacity-40" : ""}`} aria-disabled={noGoals}>
             {DESKTOP_SCREENS.map((s) => {
               const Icon = s.Icon;
               const active = s.key === panelView;
@@ -750,7 +768,7 @@ export default function Coach() {
         </div>
       </main>
 
-      <MobileTabBar activeKey={panelView} onOpenChat={() => setChatOpen(true)} />
+      <MobileTabBar activeKey={panelView} locked={noGoals} onOpenChat={noGoals ? null : () => setChatOpen(true)} />
 
       {/* Floating chat button — tablet and up. On a phone, chat lives in the tab bar's menu. */}
       <button
@@ -758,7 +776,7 @@ export default function Coach() {
         onClick={() => setChatOpen(true)}
         title="Chat with your coach"
         aria-label="Chat with your coach"
-        className="fixed right-[max(1.5rem,env(safe-area-inset-right))] bottom-[calc(1.5rem+env(safe-area-inset-bottom))] z-40 h-14 w-14 rounded-full bg-[var(--accent)] text-[var(--bg-primary)] shadow-2xl hidden sm:flex items-center justify-center hover:opacity-90 transition-opacity"
+        className={`fixed right-[max(1.5rem,env(safe-area-inset-right))] bottom-[calc(1.5rem+env(safe-area-inset-bottom))] z-40 h-14 w-14 rounded-full bg-[var(--accent)] text-[var(--bg-primary)] shadow-2xl ${noGoals ? "hidden" : "hidden sm:flex"} items-center justify-center hover:opacity-90 transition-opacity`}
       >
         <MessageSquare className="w-6 h-6" />
       </button>
@@ -788,9 +806,14 @@ export default function Coach() {
         helperText={chatScope?.helperText}
       />
 
-      <WelcomeToast user={user} state={state} signedIn={!isGuest} />
+      <WelcomeToast user={user} state={state} signedIn={!isGuest} suppress={noGoals || !scratchOpenedFlag} />
       {/* Asks once per account; guests are skipped — their account expires. */}
       {user && !isGuest && <CalendarSyncPrompt />}
+      <TimelineGuide
+        goalCount={(state?.goals || []).filter((g) => g.status !== "dropped").length}
+        panelView={panelView}
+        onShowTimeline={() => goPanel("timeline")}
+      />
       <ScratchSpotlight
         goalCount={(state?.goals || []).filter((g) => g.status !== "dropped").length}
         onOpenScratch={() => goPanel("scratch")}

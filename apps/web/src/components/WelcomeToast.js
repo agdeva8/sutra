@@ -22,12 +22,13 @@ import { localDateKey } from "../lib/utils";
  * new mount = each new session = toast. The toast itself is dismissible
  * via the Sonner `closeButton: true` option.
  */
-export default function WelcomeToast({ user, state, signedIn }) {
+export default function WelcomeToast({ user, state, signedIn, suppress = false }) {
   const firedRef = useRef(false);
 
   useEffect(() => {
     if (firedRef.current) return;
     if (!state) return;
+    if (suppress) return; // the first-run guide has the floor; the greeting waits
 
     // Once-per-day sentinel — the same person reloading the page an
     // hour later shouldn't see the greeting again. The date is stored
@@ -64,7 +65,7 @@ export default function WelcomeToast({ user, state, signedIn }) {
         dueToday.length === 1 ? "" : "s"
       } due today — top of the list: ${firstThree.join(" · ")}.`;
     } else {
-      body = `Tracking ${activeGoals.length} active goal${activeGoals.length === 1 ? "" : "s"}. Tap the chat button when you're ready for a planning session.`;
+      body = `Tracking ${activeGoals.length} active goal${activeGoals.length === 1 ? "" : "s"}. Open the chat from the menu when you're ready for a planning session.`;
     }
 
     toast(
@@ -105,7 +106,7 @@ export default function WelcomeToast({ user, state, signedIn }) {
           "!fixed !top-4 !right-4 !left-auto !bottom-auto !translate-x-0 !translate-y-0 sm:!top-4",
       },
     );
-  }, [user, state, signedIn]);
+  }, [user, state, signedIn, suppress]);
 
   return null;
 }

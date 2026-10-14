@@ -1,0 +1,21 @@
+/**
+ * Limits on what a person can put into the app at once. Generous on purpose: each one mirrors a limit
+ * the server enforces (so the person hears "too big" before waiting on an upload) and none is tighter
+ * than the feature needs.
+ */
+
+/** Largest file one upload may be. Matches the server's `source_max_bytes`. */
+export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+/** Files, photos and links attached to a single Scratch note. */
+export const MAX_ATTACHMENTS_PER_NOTE = 10;
+/** Characters in a Scratch note. Matches the server's `BODY_MAX_CHARS`. */
+export const MAX_NOTE_CHARS = 4000;
+/** A note's character counter appears once it is this full. */
+export const NOTE_COUNTER_FROM = 0.8;
+
+export const formatMegabytes = (bytes) => `${Math.round(bytes / (1024 * 1024))} MB`;
+
+/** An error sentence if `file` is too big to upload, else "". */
+export function uploadSizeProblem(file) {
+  return file && file.size > MAX_UPLOAD_BYTES ? `Too big — the limit is ${formatMegabytes(MAX_UPLOAD_BYTES)}.` : "";
+}

@@ -11,7 +11,7 @@ import { paletteFor, PLAN_INK } from './planColors';
  * PlanCalendar - FullCalendar 6, coloured per goal.
  *
  * - View is chosen from a DROPDOWN at the TOP (not toolbar buttons).
- * - Year/Month show only the coarse plan: goals + milestones + blockers +
+ * - Year shows only the coarse plan: goals + milestones + blockers +
  *   commitments. Week/Day add the other time blocks.
  * - Each goal has a hue; its goal bar is the lightest shade, milestones a
  *   mid shade, its commitments the darkest - all light enough for dark ink.
@@ -29,7 +29,9 @@ const VIEWS = [
   { id: 'timeGridWeek', label: 'Week' },
   { id: 'timeGridDay', label: 'Day' },
 ];
-const COARSE = { multiMonthYear: true, dayGridMonth: true };
+// Only the year view is coarse: the month shows each planned session on its day (`dayMaxEvents` folds a
+// crowded day into "+n more"), so the plan is visible day by day without zooming to a week.
+const COARSE = { multiMonthYear: true };
 
 export function buildEvents({ goals = [], milestones = [], blockers = [], blocks = [] }, paletteByGoalId) {
   const pal = (id) => (paletteByGoalId && paletteByGoalId.get(id)) || paletteFor(0);

@@ -47,3 +47,12 @@ export const PENDING_REASSURANCE = [
   { afterMs: 12000, text: "Still on it — a good plan takes a moment." },
   { afterMs: 30000, text: "Nearly there. This one needs a bit more thought." },
 ];
+
+/** What the Add Goal dialog says while it sets up a confirmed plan, in order. */
+export const CONFIRM_STATUS = {
+  saving: (done, total) => `Saving your goal and milestones (${done} of ${total})…`,
+  placing: "Finding free time and placing your sessions in your week…",
+  done: (title) => `All set — "${title}" is in your plan. The coach is keeping an eye on it and will adjust your week as things change.`,
+};
+/** How long the finished message stays up before the dialog closes itself. */
+export const CLOSE_AFTER_CONFIRM_MS = 2800;

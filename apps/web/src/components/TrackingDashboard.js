@@ -54,21 +54,14 @@ export default function TrackingDashboard({
   const visibleGoals = (state?.goals || []).filter((g) => g.status !== "dropped");
   const milestones = state?.milestones || [];
 
-  // First-visit auto-open: when there are zero goals AND the
-  // localStorage sentinel is unset, surface the AddGoalDialog half a
-  // second after paint so the user lands inside it instead of staring
-  // at an empty dark panel. The sentinel sticks so a returning user
-  // never gets re-surprised. `closeAddGoalDialog` writes the same
-  // sentinel, so closing the dialog is enough to mark the user onboarded.
+  // The first goal is the first step of the guide and cannot be skipped: with no goals the dialog
+  // opens by itself and stays until a plan is confirmed.
+  const firstGoalRequired = !!state && visibleGoals.length === 0;
   useEffect(() => {
-    if (!state) return;
-    if (visibleGoals.length !== 0) return;
-    try {
-      if (localStorage.getItem("gc_first_visit_v1") === "done") return;
-    } catch { return; }
-    const t = setTimeout(() => setAddGoalOpen(true), 600);
+    if (!firstGoalRequired) return;
+    const t = setTimeout(() => setAddGoalOpen(true), 300);
     return () => clearTimeout(t);
-  }, [state, visibleGoals.length]);
+  }, [firstGoalRequired]);
 
   // "Take me there → Add goal" from the general chat. Coach.js routes to
   // this screen with `autoOpenAddGoal=true`; open the dialog once on
@@ -161,13 +154,13 @@ export default function TrackingDashboard({
               <Plus className="h-4 w-4" aria-hidden="true" /> Add your first goal
               <ArrowRight className="h-4 w-4" aria-hidden="true" />
             </button>
-            <button
+            {!firstGoalRequired && <button
               data-testid="empty-state-open-chat"
               onClick={onOpenChat}
               className="min-h-11 inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-[var(--bg-tertiary)] text-[var(--text-secondary)] text-sm font-medium hover:text-[var(--text-primary)] active:scale-[0.98] transition-[color,transform] duration-150 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg-primary)]"
             >
               <MessageSquare className="h-4 w-4" aria-hidden="true" /> Or just chat with the coach
-            </button>
+            </button>}
           </div>
         </div>
       ) : (
@@ -196,6 +189,7 @@ export default function TrackingDashboard({
         <AddGoalDialog
           open={addGoalOpen}
           onClose={closeAddGoalDialog}
+          required={firstGoalRequired}
           onStepBack={(fn) => { addGoalStepBackRef.current = fn; }}
           registerCloser={registerCloser}
           autoAnswer={autoAnswer}

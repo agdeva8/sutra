@@ -160,7 +160,7 @@ function DropImpactBlock({ impact }) {
   );
 }
 
-export default function ToolConfirmationPrompt({ proposal, onConfirm, onOpenRefine, onOpenReject, onNavigate, onAnswerChoice, showConfirm = true, busy }) {
+export default function ToolConfirmationPrompt({ proposal, onConfirm, onOpenRefine, onOpenReject, onNavigate, onAnswerChoice, showConfirm = true, busy, locked = false }) {
   // Read-only navigator card (general chat) — no confirm/refine/reject.
   if (proposal.action === "navigate") {
     return <NavigateCard proposal={proposal} onNavigate={onNavigate} busy={busy} />;
@@ -332,7 +332,7 @@ export default function ToolConfirmationPrompt({ proposal, onConfirm, onOpenRefi
         )}
       </div>
 
-      {status !== "confirmed" && (
+      {status !== "confirmed" && !locked && (
         <div className="border-t border-[var(--border)]">
           {/* Per-item Confirm — the only confirm path in the focused/scoped
               chats (AddGoalDialog passes showConfirm=false and uses its

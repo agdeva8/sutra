@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useState } from "react";
 import { ArrowRight, PenLine } from "lucide-react";
 import { hasOpenedScratch, markScratchOpened, onScratchOpenedChange } from "../lib/scratchIntro";
+import { hasSeenTimeline, onTimelineSeenChange } from "../lib/timelineIntro";
 import ScratchIntroDialog from "./ScratchIntroDialog";
 
 /**
@@ -65,7 +66,11 @@ export default function ScratchSpotlight({ goalCount, onOpenScratch }) {
   const [tourOpen, setTourOpen] = useState(false);
   useEffect(() => onScratchOpenedChange(() => setOpened(hasOpenedScratch())), []);
 
-  const active = goalCount > 0 && !opened;
+  const [timelineSeen, setTimelineSeen] = useState(hasSeenTimeline);
+  useEffect(() => onTimelineSeenChange(() => setTimelineSeen(hasSeenTimeline())), []);
+
+  // The third step of the first-run guide: only after the timeline has been seen.
+  const active = goalCount > 0 && timelineSeen && !opened;
   const rect = useTargetRect(active);
 
   const go = () => {

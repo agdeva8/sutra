@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { useReopenLink } from "./ReopenableLink";
+import LinkPreviewDialog from "./LinkPreviewDialog";
 import { Link2, Paperclip, X, Loader2 } from "lucide-react";
 
 /** File types the source upload accepts; images are read by the coach the same way as documents. */
@@ -12,11 +13,14 @@ const ACCEPT = ".pdf,.md,.txt,.csv,.json,.png,.jpg,.jpeg";
  * attach (a syllabus, a job description, notes, a screenshot) shapes the questions and the plan.
  * "Not now" skips it; "Done" continues with what was attached.
  */
-export default function SourcesAskCard({ sources, onUploadFile, onAddLink, onDeleteSource, onNotNow, onDone }) {
+export default function SourcesAskCard({ sources, onUploadFile, onAddLink, onDeleteSource, onNotNow, onDone, goalContext = "" }) {
   const fileRef = useRef(null);
   const reopenLink = useReopenLink();
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
+  // The typed link goes through the same preview -> "what the coach read" -> ask -> attach dialog the
+  // chat composer uses (ChatConsole), so a link attached here is curated the same way, not added raw.
+  const [previewUrl, setPreviewUrl] = useState("");
 
   const run = async (fn) => {
     setBusy(true);
@@ -29,10 +33,12 @@ export default function SourcesAskCard({ sources, onUploadFile, onAddLink, onDel
   const addLink = () => {
     const value = url.trim();
     if (!value) return;
-    run(async () => {
-      await onAddLink(value);
-      setUrl("");
-    });
+    setPreviewUrl(value);
+  };
+
+  const attachFromPreview = async (excerpt, attachedUrl) => {
+    await run(() => onAddLink(attachedUrl || previewUrl, "", { text: excerpt }));
+    setUrl("");
   };
 
   return (
@@ -124,6 +130,13 @@ export default function SourcesAskCard({ sources, onUploadFile, onAddLink, onDel
         </button>
       </div>
       {reopenLink.dialog}
+      <LinkPreviewDialog
+        open={Boolean(previewUrl)}
+        url={previewUrl}
+        onClose={() => setPreviewUrl("")}
+        onAttach={attachFromPreview}
+        goalContext={goalContext}
+      />
     </div>
   );
 }

@@ -1,6 +1,8 @@
 import { useRef, useState } from "react";
 import { useWebcamCapture } from "./WebcamCaptureDialog";
-import { ArrowUp, Camera, Mic, Paperclip } from "lucide-react";
+import { ArrowUp, Camera, FileText, Link2, Loader2, Mic, Paperclip, X, AlertCircle, Check } from "lucide-react";
+import LinkPreviewDialog from "./LinkPreviewDialog";
+import { MAX_ATTACHMENTS_PER_NOTE, MAX_NOTE_CHARS, NOTE_COUNTER_FROM, uploadSizeProblem } from "../constants/limits";
 import AutoTextarea from "./AutoTextarea";
 import { useSpeechCapture } from "../hooks/useSpeechCapture";
 
@@ -37,13 +39,17 @@ const STATE_TONE = {
   failed: "text-[var(--danger)] bg-[color-mix(in_srgb,var(--danger)_12%,transparent)]",
 };
 
+/** Attachment states shown on the chip under the composer. */
+const ATTACH_LABEL = { uploading: "Uploading…", ready: "Attached", error: "Couldn't attach" };
+
 export default function Scratch({
   inbox = [],
   handled = [],
   initialTab = "write",
   onCapture,
-  onPhoto,
-  onAttach,
+  onSend,
+  onUpload,
+  onAddLink,
   onAnswer,
   onRetry,
   onUndo,
@@ -54,15 +60,60 @@ export default function Scratch({
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
 
+  // Files, photos and links added to this note. Each is uploaded as soon as it is picked, so "Send" only
+  // waits for ones still in flight and the user sees every one of them attached (or not).
+  const [attachments, setAttachments] = useState([]);
+  const [linkOpen, setLinkOpen] = useState(false);
+  const patchAttachment = (key, patch) => setAttachments((all) => all.map((a) => (a.key === key ? { ...a, ...patch } : a)));
+
+  const atLimit = attachments.length >= MAX_ATTACHMENTS_PER_NOTE;
+
+  async function attachFile(file, kind) {
+    if (atLimit) return;
+    const key = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const preview = kind === "image" ? URL.createObjectURL(file) : "";
+    const tooBig = uploadSizeProblem(file);
+    if (tooBig) {
+      setAttachments((all) => [...all, { key, kind, name: file.name, preview, status: "error", error: tooBig }]);
+      return;
+    }
+    setAttachments((all) => [...all, { key, kind, name: file.name, preview, status: "uploading" }]);
+    try {
+      const source = await onUpload?.(file);
+      patchAttachment(key, { status: "ready", id: source.id });
+    } catch (e) {
+      patchAttachment(key, { status: "error", error: e?.message || "Upload failed" });
+    }
+  }
+
+  async function attachLink(url, excerpt) {
+    if (atLimit) return;
+    const key = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    setAttachments((all) => [...all, { key, kind: "link", name: url, status: "uploading" }]);
+    try {
+      const source = await onAddLink?.(url, excerpt);
+      patchAttachment(key, { status: "ready", id: source.id });
+    } catch (e) {
+      patchAttachment(key, { status: "error", error: e?.message || "Couldn't add that link" });
+    }
+  }
+
+  const removeAttachment = (key) => setAttachments((all) => all.filter((a) => a.key !== key));
+  const uploading = attachments.some((a) => a.status === "uploading");
+  const ready = attachments.filter((a) => a.status === "ready");
+  const canSend = (text.trim() || ready.length > 0) && !uploading && !sending;
+
   async function send() {
-    const body = text.trim();
-    if (!body || sending) return;
+    if (!canSend) return;
     setSending(true);
     try {
-      await onCapture?.({ kind: "text", body });
+      await onSend?.({ text: text.trim(), attachments: ready });
       setText("");
+      setAttachments([]);
+      // What happens next is on the Waiting tab: show it, so the note never seems to vanish.
+      setTab("waiting");
     } catch {
-      // The write failed: leave the text in the composer so nothing is lost.
+      // The write failed: leave the text and attachments in the composer so nothing is lost.
       // Surfacing the error is the parent's job (it owns the request).
     } finally {
       setSending(false);
@@ -70,12 +121,13 @@ export default function Scratch({
   }
 
   const fileInput = useRef(null);
-  const { openCamera, cameraUi } = useWebcamCapture((f) => onPhoto?.(f));
+  const { openCamera, cameraUi } = useWebcamCapture((f) => attachFile(f, "image"));
   const voice = useSpeechCapture({ onFinal: (transcript) => onCapture?.({ kind: "audio", body: transcript }) });
-  const pick = (handler) => (e) => {
+  const isImage = (f) => (f.type || "").startsWith("image/");
+  const pickFile = (e) => {
     const f = e.target.files?.[0];
     e.target.value = "";
-    if (f) handler?.(f);
+    if (f) attachFile(f, isImage(f) ? "image" : "file");
   };
 
   const counts = { waiting: inbox.length };
@@ -136,15 +188,27 @@ export default function Scratch({
                 }
               }}
               placeholder={COMPOSER_PLACEHOLDER}
+              maxLength={MAX_NOTE_CHARS}
               minRows={5}
               maxRows={12}
               className="w-full px-3.5 py-2 text-[15px] leading-[22px] rounded-xl bg-[var(--bg-secondary)] border border-[var(--border)] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus-visible:border-[var(--accent)]"
             />
-            <div className="flex items-center gap-2">
+            {text.length >= MAX_NOTE_CHARS * NOTE_COUNTER_FROM && (
+              <p className="text-right text-[12px] text-[var(--text-muted)] tabular-nums">{text.length} / {MAX_NOTE_CHARS}</p>
+            )}
+            {attachments.length > 0 && (
+              <ul className="space-y-1.5" data-testid="scratch-attachments">
+                {attachments.map((a) => (
+                  <AttachmentChip key={a.key} a={a} onRemove={() => removeAttachment(a.key)} />
+                ))}
+              </ul>
+            )}
+            <div className="flex items-center gap-2 flex-wrap">
               {cameraUi}
-              <input ref={fileInput} type="file" hidden aria-label="Choose a file" onChange={pick(onAttach)} />
-              <ToolButton icon={Camera} label="Photo" onClick={openCamera} />
-              <ToolButton icon={Paperclip} label="Attach" onClick={() => fileInput.current?.click()} />
+              <input ref={fileInput} type="file" hidden aria-label="Choose a file" onChange={pickFile} />
+              <ToolButton icon={Camera} label="Photo" disabled={atLimit} onClick={openCamera} />
+              <ToolButton icon={Paperclip} label="Attach" disabled={atLimit} onClick={() => fileInput.current?.click()} />
+              <ToolButton icon={Link2} label="Link" disabled={atLimit} onClick={() => setLinkOpen(true)} />
               <ToolButton
                 icon={Mic}
                 label={voice.listening ? "Listening…" : "Hold to talk"}
@@ -158,13 +222,24 @@ export default function Scratch({
               <button
                 type="button"
                 onClick={send}
-                disabled={!text.trim() || sending}
+                disabled={!canSend}
                 aria-label="Send"
                 className="ml-auto inline-flex items-center justify-center w-9 h-9 rounded-full bg-[var(--accent)] text-white disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg-primary)]"
               >
-                <ArrowUp className="w-4 h-4" aria-hidden="true" />
+                {sending ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" /> : <ArrowUp className="w-4 h-4" aria-hidden="true" />}
               </button>
             </div>
+            {atLimit && <p className="text-[12px] text-[var(--text-muted)]">That's the most one note can hold ({MAX_ATTACHMENTS_PER_NOTE} attachments). Send it, then add more in another note.</p>}
+            {uploading && <p className="text-[12px] text-[var(--text-muted)]">Waiting for your attachment to finish uploading…</p>}
+            <LinkPreviewDialog
+              open={linkOpen}
+              onClose={() => setLinkOpen(false)}
+              title="Add a link to this note"
+              onAttach={async (excerpt, url) => {
+                setLinkOpen(false);
+                attachLink(url, excerpt);
+              }}
+            />
           </section>
         )}
 
@@ -191,6 +266,34 @@ export default function Scratch({
         )}
       </div>
     </div>
+  );
+}
+
+/** One attachment under the composer: what it is, and whether it is attached yet. */
+function AttachmentChip({ a, onRemove }) {
+  const tone = a.status === "error" ? "text-[var(--danger)]" : a.status === "ready" ? "text-[var(--accent)]" : "text-[var(--text-muted)]";
+  return (
+    <li data-testid={`scratch-attachment-${a.status}`} className="flex items-center gap-2.5 rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-2">
+      {a.preview ? (
+        <img src={a.preview} alt="" className="h-10 w-10 shrink-0 rounded-lg object-cover" />
+      ) : (
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[var(--bg-tertiary)] text-[var(--text-muted)]">
+          {a.kind === "link" ? <Link2 className="h-4 w-4" aria-hidden="true" /> : <FileText className="h-4 w-4" aria-hidden="true" />}
+        </span>
+      )}
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-[13px] text-[var(--text-primary)]">{a.name}</p>
+        <p className={`flex items-center gap-1 text-[12px] ${tone}`}>
+          {a.status === "uploading" && <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />}
+          {a.status === "ready" && <Check className="h-3 w-3" aria-hidden="true" />}
+          {a.status === "error" && <AlertCircle className="h-3 w-3" aria-hidden="true" />}
+          {a.status === "error" ? a.error || ATTACH_LABEL.error : ATTACH_LABEL[a.status]}
+        </p>
+      </div>
+      <button type="button" onClick={onRemove} aria-label={`Remove ${a.name}`} className="h-9 w-9 shrink-0 flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)]">
+        <X className="h-4 w-4" aria-hidden="true" />
+      </button>
+    </li>
   );
 }
 
@@ -247,7 +350,8 @@ function InboxRow({ entry, onAnswer, onRetry }) {
         {entry.body}
         {entry.stateLabel && (
           <div>
-            <span className={`inline-block mt-1 px-2.5 py-0.5 rounded-full text-[12px] ${tone}`}>
+            <span className={`inline-flex items-center gap-1.5 mt-1 px-2.5 py-0.5 rounded-full text-[12px] ${tone}`} aria-live="polite">
+              {entry.state === "processing" && <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />}
               {entry.stateLabel}
             </span>
           </div>

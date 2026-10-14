@@ -24,3 +24,6 @@ yarn-error.log*
 
 .vercel
 .env*
+
+# Emergent tool crash recordings
+.emergent/

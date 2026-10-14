@@ -18,7 +18,9 @@ import CenteredDialog from "./CenteredDialog";
 import ChatConsole from "./ChatConsole";
 import RefineModal from "./RefineModal";
 import RejectModal from "./RejectModal";
+import { CONFIRM_STATUS, CLOSE_AFTER_CONFIRM_MS } from "../constants/progress";
 import SourcesAskCard from "./SourcesAskCard";
+import AboutYouCard from "./AboutYouCard";
 import RenegotiationDialog from "./RenegotiationDialog";
 import { useDialogBack } from "../hooks/useDialogBack";
 import { usePlanSend, renegotiationChoiceLabel, clearRenegotiation } from "../hooks/use-plan-send";
@@ -132,6 +134,8 @@ export default function AddGoalDialog({
   onDeleteSource,
   onGoalConfirmed,
   registerCloser = null,
+  // The first goal is not optional: while required, the dialog cannot be closed until a plan is confirmed.
+  required = false,
 }) {
   // Dialog-internal chat state — completely isolated from the parent.
   const [messages, setMessages] = useState([]);
@@ -151,6 +155,26 @@ export default function AddGoalDialog({
 
   // UI state for the 2-step flow.
   const [activeCategory, setActiveCategory] = useState(null);
+  // The "about you" step: shown before anything else while the profile has never been asked. A failed
+  // fetch leaves it hidden, so a flaky network never blocks adding a goal.
+  const [profileNeeded, setProfileNeeded] = useState(false);
+  useEffect(() => {
+    if (!open) return undefined;
+    let cancelled = false;
+    api
+      .getProfile()
+      .then((data) => {
+        if (!cancelled) setProfileNeeded(!data?.profile?.asked);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+  const saveProfile = async (profile) => {
+    await api.putProfile(profile);
+    setProfileNeeded(false);
+  };
   const [step, setStep] = useState(INITIAL_STEP); // "tiles" | "chat"
   // Iteration 5 (Bug 10) — bump every tiles→chat transition so React
   // remounts <ChatConsole> via `key` and re-fires its focus effect.
@@ -201,6 +225,8 @@ export default function AddGoalDialog({
   const [heldFirst, setHeldFirst] = useState(null);
   // Once the plan is confirmed the conversation is a record, not a draft: the composer goes away.
   const [planConfirmed, setPlanConfirmed] = useState(false);
+  // From the moment Confirm is pressed until the dialog closes, the chat is frozen and says what is happening.
+  const [finalStatus, setFinalStatus] = useState("");
   const autoResumePendingRef = useRef(false);
   const reusedDraftRef = useRef(false);
   // Set to the source's label when a source is attached while a plan is
@@ -253,6 +279,7 @@ export default function AddGoalDialog({
             setStep(INITIAL_STEP);
     setHeldFirst(null);
     setPlanConfirmed(false);
+    setFinalStatus("");
           }
         })
         .catch(() => {
@@ -262,6 +289,7 @@ export default function AddGoalDialog({
           setStep(INITIAL_STEP);
     setHeldFirst(null);
     setPlanConfirmed(false);
+    setFinalStatus("");
         });
     } else {
       // Fresh draft — mint a bucket and remember it for the session.
@@ -270,6 +298,7 @@ export default function AddGoalDialog({
       setStep(INITIAL_STEP);
     setHeldFirst(null);
     setPlanConfirmed(false);
+    setFinalStatus("");
       reusedDraftRef.current = false;
       refIdRef.current = `new_goal_${crypto.randomUUID()}`;
       writeDraftBucket("add_goal", refIdRef.current);
@@ -485,6 +514,7 @@ export default function AddGoalDialog({
     const msg = heldFirst;
     setHeldFirst(null);
     setPlanConfirmed(false);
+    setFinalStatus("");
     if (msg) send(msg);
   };
 
@@ -503,6 +533,7 @@ export default function AddGoalDialog({
     setStep(INITIAL_STEP);
     setHeldFirst(null);
     setPlanConfirmed(false);
+    setFinalStatus("");
     setInput("");
   };
 
@@ -513,6 +544,7 @@ export default function AddGoalDialog({
   // handler always calls this — it doesn't need to know the current
   // step.
   const handleStepBack = () => {
+    if (required && !planConfirmed) return;
     if (step === "chat" && activeCategory) {
       goBackToTiles();
     } else {
@@ -600,6 +632,7 @@ export default function AddGoalDialog({
     let freshState = null;
     const confirmedIds = [];
     setSending(true);
+    setFinalStatus(CONFIRM_STATUS.saving(0, pending.length));
     try {
       // Create the goal first, then confirm its dependent milestones so the
       // resolver can attach them to the new goal.
@@ -608,6 +641,7 @@ export default function AddGoalDialog({
       );
       for (const proposal of ordered) {
         setBusyProposal(proposal.id);
+        setFinalStatus(CONFIRM_STATUS.saving(confirmedIds.length, ordered.length));
         const resp = await api.confirm(messageId, proposal.id);
         freshState = resp?.state || freshState;
         confirmedIds.push(proposal.id);
@@ -636,8 +670,9 @@ export default function AddGoalDialog({
       )?.id;
       // Place the goal's weeks on the calendar. The goal already exists, so a failure here is a retry, not a loss.
       if (createdGoalId) {
+        setFinalStatus(CONFIRM_STATUS.placing);
         try {
-          const planned = await api.planGoal(createdGoalId);
+          const planned = await api.planGoal(createdGoalId, setFinalStatus);
           freshState = planned?.state || freshState;
         } catch {
           toast.error("The goal is created, but its schedule couldn't be built yet. Try replanning from the goal.");
@@ -655,9 +690,11 @@ export default function AddGoalDialog({
         },
       ]);
       setPlanConfirmed(true);
+      setFinalStatus(CONFIRM_STATUS.done(createdGoalTitle));
       onGoalConfirmed?.(proposalId);
-      setTimeout(() => onClose?.(), 700);
+      setTimeout(() => onClose?.(), CLOSE_AFTER_CONFIRM_MS);
     } catch (e) {
+      setFinalStatus("");
       if (confirmedIds.length > 0) onGoalConfirmed?.(proposalId);
       toast.error(typeof e?.message === "string" ? e.message : "Couldn't confirm the full plan. Retry to finish it.");
     } finally {
@@ -934,6 +971,7 @@ export default function AddGoalDialog({
     setStep(INITIAL_STEP);
     setHeldFirst(null);
     setPlanConfirmed(false);
+    setFinalStatus("");
     setShowDraftPrompt(false);
   }, []);
 
@@ -946,7 +984,9 @@ export default function AddGoalDialog({
       icon={Sparkles}
       title={step === "chat" && activeCat ? `${activeCat.label} goal` : "Add a new goal"}
       subtitle={
-        step === "tiles"
+        profileNeeded
+          ? "A few quick things about your week, then your goal."
+          : step === "tiles"
           ? "Pick what area this goal is in. You can refine the details once we start talking."
           : activeCat
           ? `Tell the coach about your ${activeCat.label.toLowerCase()} goal — or just hit send and they'll propose something.`
@@ -954,6 +994,7 @@ export default function AddGoalDialog({
       }
       maxWidth="max-w-3xl"
       testId="add-goal-dialog"
+      dismissible={!required || planConfirmed}
       // On mobile the dialog morphs:
       //   step 1 (tiles) — half-height sheet pinned to bottom
       //   step 2 (chat)  — full-height sheet so the composer gets the
@@ -992,7 +1033,9 @@ export default function AddGoalDialog({
         </div>
       )}
 
-      {step === "tiles" ? (
+      {profileNeeded ? (
+        <AboutYouCard onSave={saveProfile} onSkip={saveProfile} />
+      ) : step === "tiles" ? (
         <div
           data-testid="add-goal-categories"
           className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 mb-4"
@@ -1083,6 +1126,7 @@ export default function AddGoalDialog({
                 onDeleteSource={handleDeleteSource}
                 onNotNow={releaseHeldFirst}
                 onDone={releaseHeldFirst}
+                goalContext={heldFirst}
               />
             </div>
           )}
@@ -1122,7 +1166,8 @@ export default function AddGoalDialog({
               onAnswerClarification={(text) => { setPendingClarifications(null); send(text); }}
               onDismissClarifications={() => setPendingClarifications(null)}
               showSources={true}
-              readOnly={planConfirmed}
+              readOnly={planConfirmed || !!finalStatus}
+              readOnlyNote={finalStatus}
               focusOnMount={true}
               goalContext={activeCategory ? `Adding a "${activeCategory}" goal` : "Adding a new goal"}
               // AddGoalDialog uses its own pinned Confirm button; suppress

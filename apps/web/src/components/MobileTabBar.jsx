@@ -23,7 +23,7 @@ const tone = (active) =>
  * from `SCREENS` and, on a phone, "Chat with your coach" (there is no floating chat button there), so the bar never grows past five targets and never keeps its
  * own screen list. Hidden from `sm` up, where Coach's tab strip takes over.
  */
-export default function MobileTabBar({ activeKey, onOpenChat = null }) {
+export default function MobileTabBar({ activeKey, onOpenChat = null, locked = false }) {
   const pinned = SCREENS.filter((s) => MOBILE_TAB_KEYS.includes(s.key));
   const overflow = SCREENS.filter((s) => !MOBILE_TAB_KEYS.includes(s.key));
   const overflowActive = overflow.some((s) => s.key === activeKey);
@@ -35,7 +35,8 @@ export default function MobileTabBar({ activeKey, onOpenChat = null }) {
     <nav
       aria-label="Screens"
       data-testid="mobile-tab-bar"
-      className="sm:hidden shrink-0 flex items-stretch border-t border-[var(--border)] bg-[var(--bg-primary)] pb-[env(safe-area-inset-bottom)] z-30"
+      aria-disabled={locked}
+      className={`sm:hidden shrink-0 flex items-stretch ${locked ? "pointer-events-none opacity-40" : ""} border-t border-[var(--border)] bg-[var(--bg-primary)] pb-[env(safe-area-inset-bottom)] z-30`}
     >
       {pinned.map((s) => {
         const Icon = s.Icon;

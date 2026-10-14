@@ -227,9 +227,21 @@ function SourceCard({ source, goalTitle, onDelete, deleting, onView }) {
           )}
         </div>
         <div className="flex-1 min-w-0">
-          <p className="text-xs font-medium text-[var(--text-primary)] leading-snug line-clamp-2 break-all">
-            {displayName}
-          </p>
+          {isLink ? (
+            <button
+              type="button"
+              onClick={() => onView?.(source)}
+              data-testid={`source-open-${source.id}`}
+              title="See what the coach read"
+              className="block w-full text-left text-xs font-medium text-[var(--text-primary)] leading-snug line-clamp-2 break-all hover:text-[var(--accent)] hover:underline"
+            >
+              {displayName}
+            </button>
+          ) : (
+            <p className="text-xs font-medium text-[var(--text-primary)] leading-snug line-clamp-2 break-all">
+              {displayName}
+            </p>
+          )}
           <div className="flex items-center gap-1.5 mt-1">
             {displayDate && (
               <span className="font-mono text-[10px] text-[var(--text-muted)]">
@@ -273,15 +285,26 @@ function SourceCard({ source, goalTitle, onDelete, deleting, onView }) {
       {/* Inline actions — only render on sm+ where there's room. Mobile
           gets the same actions via the kebab above. */}
       <div className="hidden sm:flex items-center gap-2 pt-1">
+        {isLink && (
+          <button
+            type="button"
+            onClick={() => onView?.(source)}
+            data-testid={`source-view-link-${source.id}`}
+            className="min-h-11 inline-flex items-center gap-1 text-[11px] text-[var(--accent)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] rounded"
+          >
+            <Eye className="w-3 h-3" />
+            See what the coach read
+          </button>
+        )}
         {isLink && source.url && (
           <a
             href={source.url}
             target="_blank"
             rel="noopener noreferrer"
-            className="min-h-11 flex items-center gap-1 text-[11px] text-[var(--accent)] hover:underline"
+            className="min-h-11 flex items-center gap-1 text-[11px] text-[var(--text-muted)] hover:text-[var(--accent)] hover:underline"
           >
             <ExternalLink className="w-3 h-3" />
-            Open link
+            Open page
           </a>
         )}
         {isFile && downloadUrl && (
@@ -400,6 +423,16 @@ function SourceActions({ source, isFile, isLink, downloadUrl, onView, onDelete, 
               </a>
             </>
           )}
+          {isLink && (
+            <button
+              role="menuitem"
+              type="button"
+              onClick={() => { setOpen(false); onView?.(source); }}
+              className="min-h-11 w-full flex items-center gap-2 px-3 py-2 hover:bg-[color-mix(in_srgb,var(--accent)_8%,transparent)] text-left"
+            >
+              <Eye className="w-3.5 h-3.5" /> See what the coach read
+            </button>
+          )}
           {isLink && source.url && (
             <a
               role="menuitem"
@@ -409,7 +442,7 @@ function SourceActions({ source, isFile, isLink, downloadUrl, onView, onDelete, 
               onClick={() => setOpen(false)}
               className="min-h-11 w-full flex items-center gap-2 px-3 py-2 hover:bg-[color-mix(in_srgb,var(--accent)_8%,transparent)]"
             >
-              <ExternalLink className="w-3.5 h-3.5" /> Open link
+              <ExternalLink className="w-3.5 h-3.5" /> Open page
             </a>
           )}
           <button

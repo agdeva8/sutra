@@ -22,6 +22,8 @@ import { X } from "lucide-react";
  *   footer      — optional React node (typically Cancel + primary action)
  *   maxWidth    — Tailwind max-w-* class (default: "max-w-xl")
  *   testId      — data-testid for the root element (default: "centered-dialog")
+ *   dismissible — when false the dialog cannot be closed by the user (no close button, Esc or overlay
+ *                 click); the owner closes it by setting `open`. Used where a step is required.
  *   closeOnBackdrop — when false, overlay clicks are ignored (default: true)
  *   mobileAnchor    — "sheet" (bottom-anchored on phones, centered on sm+) or
  *                     "center" (default: "sheet"). Sheet mode rounds the
@@ -41,6 +43,7 @@ export default function CenteredDialog({
   maxWidth = "max-w-xl",
   testId = "centered-dialog",
   closeOnBackdrop = true,
+  dismissible = true,
   // Mobile anchor: "sheet" (bottom-anchored, slides up) or "center".
   // Defaults to "sheet" so every dialog feels mobile-native on phones.
   // Desktop (≥ sm) always centers regardless — the bottom-sheet only
@@ -58,11 +61,11 @@ export default function CenteredDialog({
   useEffect(() => {
     if (!open) return;
     const onKey = (e) => {
-      if (e.key === "Escape") onClose?.();
+      if (e.key === "Escape" && dismissible) onClose?.();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [open, onClose, dismissible]);
 
   // Lock body scroll while the dialog is open so the underlying page
   // doesn't shift. Mirrors the behaviour of the existing SignInModal.
@@ -117,7 +120,7 @@ export default function CenteredDialog({
       <div
         data-testid={`${testId}-backdrop`}
         className="absolute inset-0 bg-black/60 backdrop-blur-sm gc-fade-in"
-        onClick={() => closeOnBackdrop && onClose?.()}
+        onClick={() => closeOnBackdrop && dismissible && onClose?.()}
       />
       <div
         ref={dialogRef}
@@ -142,7 +145,7 @@ export default function CenteredDialog({
                 </p>
               )}
             </div>
-            <button
+            {dismissible && (<button
               onClick={onClose}
               data-testid={`${testId}-close`}
               title="Close"
@@ -150,10 +153,10 @@ export default function CenteredDialog({
               className="h-11 w-11 -mr-2 flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors shrink-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] rounded"
             >
               <X className="w-4 h-4" />
-            </button>
+            </button>)}
           </div>
         )}
-        {!title && !Icon && (
+        {!title && !Icon && dismissible && (
           <button
             onClick={onClose}
             data-testid={`${testId}-close`}

@@ -1,3 +1,4 @@
+import { uploadSizeProblem } from "../constants/limits"
 import { useEffect, useState, useCallback, useRef } from "react";
 import { Image as ImageIcon, Link2, Plus, Trash2, X, Loader2, Camera, ChevronLeft, ChevronRight, ExternalLink, RefreshCw, Download } from "lucide-react";
 import { api, API } from "../lib/api";
@@ -42,7 +43,20 @@ export default function Memories({ state, onChange }) {
   const [adding, setAdding] = useState(false)
   const [kind, setKind] = usePersistentState("memory:new:kind", "photo")
   const [file, setFile] = useState(null)
-  const { openCamera, cameraUi } = useWebcamCapture(setFile)
+  const pickPhoto = (f) => {
+    const tooBig = uploadSizeProblem(f)
+    setSubmitError(tooBig)
+    setFile(tooBig ? null : f)
+  }
+  const { openCamera, cameraUi } = useWebcamCapture(pickPhoto)
+  // A thumbnail of the chosen photo, so picking one visibly "attaches" it.
+  const [filePreview, setFilePreview] = useState("")
+  useEffect(() => {
+    if (!file) { setFilePreview(""); return undefined }
+    const url = URL.createObjectURL(file)
+    setFilePreview(url)
+    return () => URL.revokeObjectURL(url)
+  }, [file])
   const [url, setUrl] = usePersistentState("memory:new:url", "")
   const [caption, setCaption] = usePersistentState("memory:new:caption", "")
   const [goalId, setGoalId] = useState("")
@@ -80,7 +94,7 @@ export default function Memories({ state, onChange }) {
       // Step 1: upload the file through the existing sources pipeline
       // so the bytes land in the same storage bucket as everything
       // else, and we get a `source_id` back.
-      const source = await api.uploadSource(file, goalId || "")
+      const source = await api.uploadSource(file, goalId || "", { purpose: "memory" })
       // Step 2: pin that source as a memory.
       await api.createMemory({
         kind: "photo",
@@ -208,7 +222,7 @@ export default function Memories({ state, onChange }) {
                     accept="image/png,image/jpeg,image/webp,image/heic,image/heif"
                     aria-label="Photo file"
                     hidden
-                    onChange={(e) => setFile(e.target.files?.[0] || null)}
+                    onChange={(e) => pickPhoto(e.target.files?.[0] || null)}
                   />
                 </label>
                 <button
@@ -223,8 +237,13 @@ export default function Memories({ state, onChange }) {
                 {cameraUi}
               </div>
               {file && (
-                <div className="mt-1.5 text-[11px] text-[var(--text-muted)]">
-                  {file.name} · {Math.round(file.size / 1024)} KB
+                <div data-testid="memories-file-attached" className="mt-2 flex items-center gap-2.5 rounded-xl border border-[var(--border)] bg-[var(--bg-primary)] p-2">
+                  {filePreview && <img src={filePreview} alt="" className="h-12 w-12 shrink-0 rounded-lg object-cover" />}
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[13px] text-[var(--text-primary)]">{file.name}</p>
+                    <p className="text-[12px] text-[var(--accent)]">Attached · {Math.round(file.size / 1024)} KB</p>
+                  </div>
+                  <button type="button" onClick={() => setFile(null)} aria-label="Remove photo" className="h-9 w-9 shrink-0 flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)]">×</button>
                 </div>
               )}
             </div>

@@ -77,6 +77,17 @@ html {
   font-size: var(--sutra-font-scale);
 }
 
+/* The app is one full-height column (fixed top bar, scrolling middle, fixed bottom nav), so the
+ * document itself must never scroll: otherwise a zoom or the on-screen keyboard pans the whole page
+ * and carries the nav buttons off screen. Each screen scrolls inside its own container. */
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 /* Mobile-native tap hygiene. Scoped to interactive elements only —
  * NOT to html/body, so pinch-zoom keeps working (disabling zoom is an
  * accessibility anti-pattern). `manipulation` removes the ~300ms

@@ -174,7 +174,7 @@ function SetLines({ content, settled }) {
   ));
 }
 
-function Message({ m, settled = false, onConfirm, onReject, onRefine, onOpenRefine, onOpenReject, onNavigate, onAnswerChoice, showConfirm = true, busyProposal, onViewGoal }) {
+function Message({ m, settled = false, onConfirm, onReject, onRefine, onOpenRefine, onOpenReject, onNavigate, onAnswerChoice, showConfirm = true, busyProposal, onViewGoal, locked = false }) {
   // Success divider — appended by the parent after a confirm closes the
   // conversation bucket (spec §10.5). Rendered inline in the same
   // stream; the messages are never cleared on confirm.
@@ -255,6 +255,7 @@ function Message({ m, settled = false, onConfirm, onReject, onRefine, onOpenRefi
               onNavigate={onNavigate}
               onAnswerChoice={onAnswerChoice}
               showConfirm={showConfirm}
+              locked={locked}
             />
           ))}
         </div>
@@ -266,7 +267,7 @@ function Message({ m, settled = false, onConfirm, onReject, onRefine, onOpenRefi
   );
 }
 
-export default function ChatConsole({ messages, onSend, sending, input, setInput, onConfirm, onReject, onRefine, onOpenRefine, onOpenReject, onNavigate = null, onAnswerChoice = null, showConfirm = true, busyProposal, autoAnswer, setAutoAnswer, grillMe = false, setGrillMe = () => {}, onUploadFile = () => {}, onAddLink = () => {}, sources = [], onDeleteSource = () => {}, onClearChat = () => {}, pendingClarifications = null, onAnswerClarification = () => {}, onDismissClarifications = () => {}, showSources = true, focusOnMount = false, scopeLabel = "", scopeIntent = "", goalContext = "", emptyPrompt = "", loading = false, onViewGoal = null, showModeSelect = true, readOnly = false }) {
+export default function ChatConsole({ messages, onSend, sending, input, setInput, onConfirm, onReject, onRefine, onOpenRefine, onOpenReject, onNavigate = null, onAnswerChoice = null, showConfirm = true, busyProposal, autoAnswer, setAutoAnswer, grillMe = false, setGrillMe = () => {}, onUploadFile = () => {}, onAddLink = () => {}, sources = [], onDeleteSource = () => {}, onClearChat = () => {}, pendingClarifications = null, onAnswerClarification = () => {}, onDismissClarifications = () => {}, showSources = true, focusOnMount = false, scopeLabel = "", scopeIntent = "", goalContext = "", emptyPrompt = "", loading = false, onViewGoal = null, showModeSelect = true, readOnly = false, readOnlyNote = "" }) {
   const endRef = useRef(null);
   const reopenLink = useReopenLink(goalContext);
   const taRef = useRef(null);
@@ -755,7 +756,7 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
           </div>
         )}
         {messages.slice(-CHAT_RENDER_CAP).map((m) => (
-          <Message key={m.id} m={m} settled={settledId === m.id} onConfirm={onConfirm} onReject={onReject} onRefine={onRefine} onOpenRefine={onOpenRefine} onOpenReject={onOpenReject} onNavigate={onNavigate} onAnswerChoice={onAnswerChoice} showConfirm={showConfirm} busyProposal={busyProposal} onViewGoal={onViewGoal} />
+          <Message key={m.id} m={m} settled={settledId === m.id} onConfirm={onConfirm} onReject={onReject} onRefine={onRefine} onOpenRefine={onOpenRefine} onOpenReject={onOpenReject} onNavigate={onNavigate} onAnswerChoice={onAnswerChoice} showConfirm={showConfirm} busyProposal={busyProposal} onViewGoal={onViewGoal} locked={readOnly} />
         ))}
         {/* Clarification card lives at the END of the transcript, not below the
             composer: it is part of the coach's turn, so it scrolls with the
@@ -906,7 +907,7 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
 
       {readOnly && (
         <div data-testid="chat-read-only" className="shrink-0 px-4 py-3 text-center text-xs text-[var(--text-muted)] bg-[var(--bg-primary)]">
-          This plan is confirmed, so the conversation is now read-only.
+          {readOnlyNote || "This plan is confirmed, so the conversation is now read-only."}
         </div>
       )}
       <div className={`shrink-0 px-3 pt-2.5 pb-2 sm:px-4 sm:pt-3 sm:pb-2.5 bg-[var(--bg-primary)]${readOnly ? " hidden" : ""}`}
