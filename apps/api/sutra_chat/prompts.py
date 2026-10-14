@@ -48,6 +48,8 @@ Rules for the block:
 - Omit the block entirely when you are asking a question.
 """
 
+KIND_ADD_GOAL = "add_goal"
+
 #: Appended in add-goal mode. The job is a proposal, not a conversation.
 ADD_GOAL_MODE = """
 === ADD GOAL MODE ===
@@ -72,6 +74,21 @@ question unless you genuinely cannot answer without it. If you do not know,
 say so.
 """
 
+#: Appended when a goal is being added and the user has not asked for auto-answers. The coach interviews
+#: first, the way a coach would, and proposes once the answers are in the conversation.
+INTAKE_MODE = """
+=== GOAL INTAKE MODE — OVERRIDES GENERAL CLARIFY RULE ===
+The user is adding a goal and wants to be asked first. Before proposing anything, find out:
+where they are today and where they are lagging (their current level against what the goal needs),
+what they already have (skills, materials, time already spent), the hard deadline and why it is
+that date, the hours a week they can really give and what is competing for them, and what has
+stopped them before. Ask the two to four of these that the user has NOT already answered, in
+numbered questions that name the specific goal, and offer two to four short options where the
+question has natural ones. Do not propose actions and do not produce a tools block while questions
+are unanswered. Once the conversation contains the answers, or the user says to go ahead, propose
+the goal, its milestones and the first action in the tools block, with the answers reflected in it.
+"""
+
 #: The follow-up that forces a proposal when a turn produced prose but no block.
 #:
 #: v1's model would sometimes finish a perfectly good plan in prose and never
@@ -83,7 +100,7 @@ if the plan has phases, two to four `add_milestone` actions. Prose first, then
 the block. Do not ask any questions."""
 
 
-def mode_hint(*, proactive_propose: bool, clarify: bool, auto_answer: bool) -> str:
+def mode_hint(*, proactive_propose: bool, clarify: bool, auto_answer: bool, scoped_kind: str = "general") -> str:
     """The one hint that applies, or `""`. They are mutually exclusive by design.
 
     Grill outranks ask: a user who asked to be grilled does not want an answer
@@ -91,6 +108,8 @@ def mode_hint(*, proactive_propose: bool, clarify: bool, auto_answer: bool) -> s
     """
     if clarify:
         return GRILL_MODE
+    if scoped_kind == KIND_ADD_GOAL and not auto_answer:
+        return INTAKE_MODE
     if not auto_answer:
         return ASK_MODE
     if proactive_propose:
@@ -99,7 +118,7 @@ def mode_hint(*, proactive_propose: bool, clarify: bool, auto_answer: bool) -> s
 
 
 def assemble_system(
-    *, proactive_propose: bool, clarify: bool, auto_answer: bool, context: str = ""
+    *, proactive_propose: bool, clarify: bool, auto_answer: bool, context: str = "", scoped_kind: str = "general"
 ) -> str:
     """The full system prompt: base + mode hint + live state.
 
@@ -108,7 +127,7 @@ def assemble_system(
     rather than about goal-setting in general.
     """
     parts = [SYSTEM_PROMPT, mode_hint(
-        proactive_propose=proactive_propose, clarify=clarify, auto_answer=auto_answer
+        proactive_propose=proactive_propose, clarify=clarify, auto_answer=auto_answer, scoped_kind=scoped_kind
     )]
     if context:
         parts.append(f"\n=== LIVE STATE & MEMORY ===\n{context}")

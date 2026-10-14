@@ -25,6 +25,7 @@ Without that, a confirmed plan would keep accumulating turns nobody wants.
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -36,8 +37,11 @@ from sutra_chat.clarify_options import enrich
 from sutra_chat.tools_block import parse_proposals, split_prose_and_tools
 from sutra_chat.turn import stream_turn
 
-from .. import planner
+from agentv2 import chat_turn, default_chat, local_now
+
+from ..agent_store import SqlStore
 from ..db import get_session
+from ..rate_limit import llm_rate_limit
 from ..deps import CurrentUser, planner_enabled_for, require_user
 from ..llm import get_complete, provider_status
 from ..models import SCOPE_TO_KIND, Conversation, Milestone, PlanItem, Proposal
@@ -54,6 +58,9 @@ from ..stream import (
 )
 from ..wire import chat_message, proposal_sse
 
+#: Recent turns the planner sees with a chat message. Generous; it only bounds a query.
+CHAT_CONTEXT_TURNS = 12
+
 router = APIRouter(tags=["chat"])
 
 #: v1's history window per scope. The general bucket is the long-running one.
@@ -64,6 +71,9 @@ CONTEXT_TURNS_SCOPED = 12
 
 #: The kinds a scoped conversation may be. `not_planned` is v1's answer for
 #: anything else.
+#: Roles a stored turn may carry into the model call.
+CHAT_ROLES = frozenset({"user", "assistant"})
+KIND_ADD_GOAL = "add_goal"
 INTENTS = frozenset(
     {"add_goal", "plan_day", "review_progress", "edit_goal", "drop_goal"}
 )
@@ -381,23 +391,21 @@ async def _rows_for(
 
 
 async def _text_complete(
-    system: str, user_text: str, _turns: list[dict]
+    system: str, user_text: str, turns: list[dict]
 ) -> str:
     """One model call, text in and text out.
 
-    The chat surface needs raw prose, not a schema — the agent's seam returns a
-    validated model. `get_complete()` is used with a permissive schema so there
-    is still exactly one place a provider is resolved.
+    The chat surface reads raw prose with a `[[TOOLS]]` block, not JSON, so this
+    bypasses the structured-completion seam (`get_complete`), which would force
+    the reply into a schema and fail every turn. Earlier turns go in as real
+    messages so the model sees the conversation, not just the latest line.
     """
-    from pydantic import BaseModel
-
-    class _Prose(BaseModel):
-        model_config = {"extra": "ignore"}
-
-        text: str = ""
-
-    result = await get_complete()(system, user_text, _Prose)
-    return result.text
+    chat = default_chat()
+    messages = [("system", system)]
+    messages += [(t["role"], t["content"]) for t in turns if t.get("role") in CHAT_ROLES]
+    messages.append(("user", user_text))
+    reply = await asyncio.to_thread(chat.invoke, messages)
+    return str(reply.content)
 
 
 # ---------------------------------------------------------------------------
@@ -455,7 +463,7 @@ async def clear_history(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/chat/plan")
+@router.post("/chat/plan", dependencies=[Depends(llm_rate_limit)])
 async def chat_plan(
     request: Request,
     session: AsyncSession = Depends(get_session),
@@ -485,6 +493,11 @@ async def chat_plan(
     if kind and kind not in INTENTS:
         return {"status": "not_planned", "kind": "no_change", "prose": ""}
 
+    if kind == KIND_ADD_GOAL:
+        # The Add-goal dialog asks its own questions and offers a goal card to confirm. Filing the
+        # goal from here would skip both, so this hands the turn to the ordinary chat.
+        return {"status": "not_planned", "kind": "no_change", "prose": ""}
+
     if not planner_enabled_for(user):
         return {"status": "disabled"}
 
@@ -505,59 +518,51 @@ async def chat_plan(
     )
     await session.commit()
 
-    context = await planner.planner_context(
-        session, user_id=user.user_id, goal_id=str(body.get("goal_id") or "") or None
-    )
-    result = await planner.run(
-        message=message,
-        context=context,
-        thread_id=str(body.get("thread_id") or "") or None,
+    # The turn runs on agentv2: it files what it can, proposes goal and availability changes for the
+    # user to confirm, and hands everything else back to the ordinary chat (`not_planned`).
+    now = local_now(request.headers.get("x-timezone"))
+    past = await chat_store.history(session, user_id=user.user_id, conv_id=conv_id, limit=CHAT_CONTEXT_TURNS)
+    turn = await chat_turn(
+        SqlStore(session, user.user_id, today=now.date()), message,
+        history=[(m.role, m.content) for m in past[:-1]], now=now, ref=conv_id,
     )
 
     base = {
         "message_id": "",
         "conversation_id": conv_id,
         "ref_id": effective_ref,
-        # The v2 spelling of the same thing, so the contract holds too.
-        "kind": result.get("kind", "no_change"),
-        "thread_id": result.get("thread_id", ""),
+        "kind": "ok" if turn.kind == "ok" else "no_change",
+        "thread_id": "",
     }
-    status = result.get("kind", "no_change")
 
-    if status == "clarify":
-        return {
-            "status": "clarify",
-            **base,
-            "prose": result.get("prose", ""),
-            "questions": enrich(list(result.get("questions") or [])),
-        }
-    if status == "renegotiate":
-        return {
-            "status": "renegotiate",
-            **base,
-            "prose": result.get("prose", ""),
-            "headroom": result.get("headroom"),
-            "plan": result.get("place"),
-            "plan_items": result.get("plan_items") or [],
-        }
-    if status == "ok":
-        proposals = list(result.get("proposals") or [])
-        return {
-            "status": "ok",
-            **base,
-            "prose": result.get("prose", ""),
-            "proposals": proposals,
-            "plan": result.get("place"),
-            "plan_items": result.get("plan_items") or [],
-        }
-    if status == "early":
-        return {"status": "early", **base, "prose": result.get("prose", "")}
+    if turn.kind == "not_planned":
+        await session.commit()  # keep the filed rows, if any, and the user's message
+        return {"status": "not_planned", **base, "prose": ""}
 
+    if turn.kind == "clarify":
+        await session.commit()
+        return {"status": "clarify", **base, "prose": turn.prose, "questions": enrich(list(turn.questions))}
+
+    prose = "\n".join([p for p in [turn.prose, *turn.applied] if p])
+    reply = await chat_store.add_message(
+        session, user_id=user.user_id, conv_id=conv_id, role="assistant", content=prose,
+        provider=provider_status()["provider"],
+    )
+    rows = [
+        await chat_store.add_proposal(
+            session, user_id=user.user_id, message_id=reply.id, conv_id=conv_id, action=p["action"], args=p["args"]
+        )
+        for p in turn.proposals
+    ]
+    await session.commit()
     return {
-        "status": "no_change",
+        "status": "ok",
         **base,
-        "prose": result.get("prose", ""),
-        "reason": result.get("reason", ""),
+        "message_id": reply.id,
+        "prose": prose,
+        "proposals": [proposal_sse(r) for r in rows],
+        "plan": None,
+        "plan_items": [],
     }
 
 
@@ -596,7 +601,7 @@ async def chat_refine(
             status_code=400, detail="thought is too long (max 2000 chars)"
         )
 
-    row = await repo.get_proposal(session, user_id=user.user_id, proposal_id=proposal_id)
+    row = await chat_store.get_proposal(session, user_id=user.user_id, proposal_id=proposal_id)
     # Scoped by user in the query, so "not found" and "someone else's" are the
     # same answer — a 403 would confirm the id exists.
     if row is None:

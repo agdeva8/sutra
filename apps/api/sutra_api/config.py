@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     #: DDL runs must not share one. Falls back to `database_url`.
     database_url_unpooled: str = Field(default="", alias="DATABASE_URL_UNPOOLED")
 
+    #: Serverless hosts freeze the process once a response is sent, so work queued "after the response"
+    #: may never finish. When true, filing and replans run inside the request instead (see `background.py`).
+    background_inline: bool = Field(default=False, alias="BACKGROUND_INLINE")
+    #: Shared secret the platform scheduler sends (`Authorization: Bearer ...`) to the `/cron/*` routes.
+    cron_secret: str = Field(default="", alias="CRON_SECRET")
+
     # ── auth ───────────────────────────────────────────────────────────────
     #: HMAC key for the guest cookie. v1 required >= 32 chars; kept.
     auth_secret: str = Field(default="", alias="AUTH_SECRET")
@@ -97,6 +103,16 @@ class Settings(BaseSettings):
     link_fetch_timeout_ms: int = 12_000
     link_fetch_max_bytes: int = 256 * 1024
     link_max_redirects: int = 5
+
+    # ── calendar feed ──────────────────────────────────────────────────────
+    #: Absolute origin calendar apps use to fetch the `.ics` feed, e.g.
+    #: `https://api.sutra.app`. Empty = derive from the request, which is right
+    #: locally but wrong behind a proxy that rewrites the host. Google fetches
+    #: from its own servers, so a localhost URL only works for Apple/Outlook desktop.
+    calendar_feed_base_url: str = Field(default="", alias="CALENDAR_FEED_BASE_URL")
+    #: How far back the feed reaches. Past steps stay visible for context, but a
+    #: years-long history would bloat every refresh.
+    calendar_feed_past_days: int = 60
 
     # ── motivation ─────────────────────────────────────────────────────────
     #: Master switch for the nudge card. When off, `/motivation/recommend`

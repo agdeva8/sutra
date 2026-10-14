@@ -151,6 +151,12 @@ async def _link_sources(
 # ---------------------------------------------------------------------------
 
 
+#: Used when a goal proposal names no deadline or no weekly pace.
+DEFAULT_GOAL_WEEKS = 12
+DEFAULT_WEEKLY_HOURS = 3
+DAYS_PER_WEEK = 7
+
+
 async def _create_goal(session: AsyncSession, *, user_id: str, args: dict) -> ExecResult:
     title = str(args.get("title") or "").strip()
     if not title:
@@ -176,6 +182,10 @@ async def _create_goal(session: AsyncSession, *, user_id: str, args: dict) -> Ex
         else None,
         life_area=str(args.get("life_area") or ""),
     )
+
+    # agentv2 plans from a total number of hours; the chat proposal only carries a weekly pace and a date.
+    weeks = max(1, (goal.target_date - goal.start_date).days // DAYS_PER_WEEK) if goal.target_date else DEFAULT_GOAL_WEEKS
+    goal.total_hours = weeks * (goal.weekly_hours or DEFAULT_WEEKLY_HOURS)
 
     await _link_sources(
         session,

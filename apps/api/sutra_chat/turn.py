@@ -91,6 +91,7 @@ async def run_turn(
         proactive_propose=proactive_propose,
         clarify=clarify,
         auto_answer=auto_answer,
+        scoped_kind=scoped_kind,
         context=context,
     )
 

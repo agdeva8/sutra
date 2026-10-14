@@ -181,6 +181,8 @@ class Goal(Timestamped, Base):
     #: Free text despite the UI's fixed list — v1 never validated it.
     life_area: Mapped[str] = mapped_column(String, nullable=False, default="")
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")
+    #: Total effort the goal needs, in hours, so progress can be measured against it. NULL = not stated.
+    total_hours: Mapped[float | None] = mapped_column(Float)
 
     milestones: Mapped[list["Milestone"]] = relationship(
         back_populates="goal", cascade="all, delete-orphan", passive_deletes=True
@@ -314,6 +316,130 @@ class TimetableBlock(Timestamped, Base):
     __table_args__ = (
         Index("timetable_blocks_user_date_idx", "user_id", "block_date", "start_time"),
     )
+
+
+class RecurringBlock(Base):
+    """A fixed commitment that repeats ("class every Tuesday and Thursday 6 to 8pm") until it is stopped.
+
+    The rule is the source of truth; its occurrences are laid out as ordinary `timetable_blocks`
+    (`source = "recurring"`, `source_id` = the rule), a rolling window ahead that the nightly tick keeps
+    extending. Stopping sets `end_date` and removes the occurrences after it.
+    """
+
+    __tablename__ = "recurring_blocks"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    #: Weekdays it falls on, Monday = 0.
+    weekdays: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    start_time: Mapped[time] = mapped_column(Time, nullable=False)
+    end_time: Mapped[time] = mapped_column(Time, nullable=False)
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    #: NULL = repeats until stopped.
+    end_date: Mapped[date | None] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (Index("recurring_blocks_user_idx", "user_id", "end_date"),)
+
+
+class Reminder(Base):
+    """Something to remember at set times: a prescription, "call mom Sundays".
+
+    Stores the *expanded* schedule as day and time lists rather than one row per
+    dose, so a 5-day course is one row and one undo. Code produces both lists
+    (agentv2.core.recur); the model only supplies frequency and duration.
+    """
+
+    __tablename__ = "reminders"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    goal_id: Mapped[str | None] = mapped_column(
+        ForeignKey("goals.id", ondelete="SET NULL")
+    )
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    #: ISO dates and HH:MM strings.
+    days: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    times: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    #: Where it came from ("scratch", entry id), for the origin line.
+    source: Mapped[str] = mapped_column(String, nullable=False, default="manual")
+    source_id: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (Index("reminders_user_idx", "user_id", "created_at"),)
+
+
+SCRATCH_KINDS = ("text", "image", "audio", "file")
+SCRATCH_STATUSES = ("pending", "processing", "handled", "needs_input", "failed")
+
+
+class ScratchEntry(Base):
+    """One thing the user dumped into Scratch (docs/prd/scratchpad.md).
+
+    `body` is the user's own words, or the voice transcript, and is never
+    rewritten. `status` is the queue: a row is durable before any model runs, so
+    a failed inference never loses the sentence.
+    """
+
+    __tablename__ = "scratch_entries"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String, nullable=False)  # SCRATCH_KINDS
+    body: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    source_id: Mapped[str | None] = mapped_column(
+        ForeignKey("sources.id", ondelete="SET NULL")
+    )
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    #: The user's IANA timezone when they wrote it, so a note filed later still means the right "today".
+    tz: Mapped[str | None] = mapped_column(String)
+    #: The one thing we need from the user, for `needs_input`.
+    question: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
+    #: What the agent did: `{"bucket": ..., "lines": [...], "proposed": bool}`.
+    result: Mapped[dict | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    handled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        Index("scratch_entries_user_status_idx", "user_id", "status", "created_at"),
+    )
+
+
+class CalendarFeed(Base):
+    """A user's subscribable iCalendar feed, plus whether we have asked about it.
+
+    One row per user. `token` is the only credential on the public `.ics` URL —
+    calendar apps fetch it with no cookie — so it is long, random, and NULL when
+    the user has revoked it. `prompted_at` records that the first-open prompt was
+    answered either way, so it is asked once per account rather than per browser.
+    """
+
+    __tablename__ = "calendar_feeds"
+
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    token: Mapped[str | None] = mapped_column(String, unique=True)
+    prompted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    #: Last time a calendar app fetched the feed — how the UI says "connected".
+    last_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 # ---------------------------------------------------------------------------
@@ -525,14 +651,16 @@ class Proposal(Base):
     __tablename__ = "proposals"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    message_id: Mapped[str] = mapped_column(
-        ForeignKey("messages.id", ondelete="CASCADE"), nullable=False
+    #: NULL for a proposal the agent raised outside chat (a Scratch entry), which
+    #: has no message or conversation to hang off.
+    message_id: Mapped[str | None] = mapped_column(
+        ForeignKey("messages.id", ondelete="CASCADE"), nullable=True
     )
     user_id: Mapped[str] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
-    conversation_id: Mapped[str] = mapped_column(
-        ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
+    conversation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), nullable=True
     )
     action: Mapped[str] = mapped_column(String, nullable=False)
     args: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)

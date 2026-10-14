@@ -544,7 +544,7 @@ paths:
       tags: [planning]
       summary: Run the planning graph to completion.
       description: |
-        The non-streaming entry point (HLD §4). Runs the 10-node graph and returns
+        The non-streaming entry point (HLD §4). Runs the 12-node graph and returns
         one terminal `PipelineResult`.
 
         `kind` tells the caller what to do:

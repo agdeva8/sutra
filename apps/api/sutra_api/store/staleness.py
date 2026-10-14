@@ -27,8 +27,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from app.contracts.schemas import Change
-from app.core.staleness import (
+from ..core.staleness import (
+    Change,
     Baseline,
     build_adjustments,
     classify_change,

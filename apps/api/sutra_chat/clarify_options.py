@@ -27,7 +27,7 @@ import re
 #: would lose information.
 _BANK: list[tuple[re.Pattern[str], list[str], bool]] = [
     (
-        re.compile(r"\b(relocat|move|moving|which cit|where.*(based|live))\b", re.I),
+        re.compile(r"\b(relocat|which cit|where.*(based|live))\b", re.I),
         ["Only my current city", "Anywhere in the country", "Open to relocating abroad", "Fully remote is fine"],
         False,
     ),

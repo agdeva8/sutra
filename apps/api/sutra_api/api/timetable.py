@@ -23,16 +23,19 @@ presentation choice made once, in `wire.time_block`.
 from __future__ import annotations
 
 import re
-from datetime import date, time
+from datetime import date, datetime, time, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.blast_radius import radius_for
+from ..agent_background import replan_conflicts_for
 from ..db import get_session
+from ..background import run_after
 from ..deps import CurrentUser, require_user
 from ..ids import new_id
-from ..models import BLOCKER_KINDS, TimetableBlock
+from ..models import BLOCKER_KINDS, Reminder, TimetableBlock
 from ..store import repo, staleness
 from ..wire import time_block
 
@@ -74,18 +77,51 @@ async def _resolve_goal_title(
     return goal.title if goal is not None else ""
 
 
+#: A reminder is a moment, not a stretch of time; it is drawn as a block this long so Today can show it.
+REMINDER_DISPLAY_MINUTES = 15
+#: Reminder occurrences from this many days back to this many days ahead are listed. Generous: it bounds the payload.
+REMINDER_DAYS_BACK = 1
+REMINDER_DAYS_AHEAD = 120
+KIND_REMINDER = "reminder"
+
+
+def _reminder_blocks(reminders: list) -> list[dict]:
+    """Each reminder's days x times as short blocks, so Today and the calendar show them like anything
+    else on the day. They are read-only here: the id names the reminder, the day and the time."""
+    today = date.today()
+    lo, hi = today - timedelta(days=REMINDER_DAYS_BACK), today + timedelta(days=REMINDER_DAYS_AHEAD)
+    out: list[dict] = []
+    for r in reminders:
+        for day_s in r.days or []:
+            day = date.fromisoformat(day_s)
+            if not lo <= day <= hi:
+                continue
+            for t in r.times or []:
+                start = time.fromisoformat(t)
+                end = (datetime.combine(day, start) + timedelta(minutes=REMINDER_DISPLAY_MINUTES)).time()
+                out.append({
+                    "id": f"{r.id}:{day_s}:{t}", "user_id": r.user_id, "block_date": day_s,
+                    "start_time": t, "end_time": end.strftime("%H:%M"), "label": r.title, "kind": KIND_REMINDER,
+                    "source": "agent", "source_id": r.id, "goal_id": r.goal_id, "goal_title": "", "note": "",
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                })
+    return out
+
+
 @router.get("/timetable")
 async def list_timetable(
     session: AsyncSession = Depends(get_session),
     user: CurrentUser = Depends(require_user),
 ) -> dict:
     rows = await repo.list_time_blocks(session, user_id=user.user_id)
-    return {"blocks": [time_block(b) for b in rows]}
+    reminders = (await session.execute(select(Reminder).where(Reminder.user_id == user.user_id))).scalars().all()
+    return {"blocks": [time_block(b) for b in rows] + _reminder_blocks(reminders)}
 
 
 @router.post("/timetable", status_code=201)
 async def create_block(
     request: Request,
+    background: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
     user: CurrentUser = Depends(require_user),
 ) -> dict:
@@ -158,6 +194,7 @@ async def create_block(
             summary=f"Added '{label}'",
         )
     await session.commit()
+    await run_after(background, replan_conflicts_for, user.user_id, request.headers.get("x-timezone"))
     return time_block(row)
 
 
@@ -165,6 +202,7 @@ async def create_block(
 async def update_block(
     id: str,
     request: Request,
+    background: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
     user: CurrentUser = Depends(require_user),
 ) -> dict:
@@ -220,6 +258,7 @@ async def update_block(
             summary=f"Updated block '{label}'",
         )
     await session.commit()
+    await run_after(background, replan_conflicts_for, user.user_id, request.headers.get("x-timezone"))
     return {"block": time_block(row)}
 
 

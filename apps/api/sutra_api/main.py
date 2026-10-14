@@ -23,17 +23,22 @@ whether to expose the response.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from agentv2 import ModelUnavailable
 from fastapi.responses import JSONResponse
 
 from .api import (
+    agent_goals,
     audit,
     auth,
     blockers,
+    calendar,
     chat,
+    cron,
     daily_log,
     goals,
     memories,
@@ -41,6 +46,7 @@ from .api import (
     ops,
     plan_items,
     preferences,
+    scratch,
     sources,
     state,
     timetable,
@@ -57,20 +63,18 @@ VERSION = "2.0.0"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Open the engine, warm the checkpointer, and close both.
-
-    The checkpointer is warmed here rather than lazily on the first plan request,
-    so `.setup()` (which creates four tables) runs at boot when it is cheap and
-    visible, instead of inside a user's first turn.
-    """
+    """Open the engine, start the Scratch recovery loop, and close both."""
     install_engine(create_engine())
-    from .store.checkpointer import close_checkpointer, get_checkpointer
+    # Entries stranded by a restart are picked up again by a loop that lives as long as the app.
+    from .scratch_service import recovery_loop
 
-    await get_checkpointer()
+    # Serverless hosts freeze between requests, so a loop cannot live there; `/cron/reap` does the same job.
+    recovery = None if settings.background_inline else asyncio.create_task(recovery_loop())
     try:
         yield
     finally:
-        await close_checkpointer()
+        if recovery is not None:
+            recovery.cancel()
         await dispose_engine()
 
 
@@ -106,6 +110,11 @@ def create_app() -> FastAPI:
 
     prefix = settings.api_prefix
 
+    @app.exception_handler(ModelUnavailable)
+    async def _no_model(_request: Request, _exc: ModelUnavailable) -> JSONResponse:
+        # No model key is a configuration problem, not a crash: say so, and let the client retry later.
+        return JSONResponse(status_code=503, content={"detail": "The assistant isn't available right now."})
+
     @app.middleware("http")
     async def _csrf(request: Request, call_next):
         blocked = _origin_guard(request)
@@ -131,6 +140,7 @@ def create_app() -> FastAPI:
         auth,
         preferences,
         state,
+        agent_goals,
         goals,
         plan_items,
         blockers,
@@ -143,6 +153,9 @@ def create_app() -> FastAPI:
         tools,
         chat,
         plan_routes,
+        scratch,
+        calendar,
+        cron,
     ):
         app.include_router(module.router, prefix=prefix)
 

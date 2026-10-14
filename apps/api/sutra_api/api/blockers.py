@@ -22,11 +22,13 @@ from __future__ import annotations
 
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.blast_radius import radius_for
+from ..agent_background import replan_conflicts_for
 from ..db import get_session
+from ..background import run_after
 from ..deps import CurrentUser, require_user
 from ..store import drift as drift_store
 from ..store import repo, staleness
@@ -91,6 +93,7 @@ async def list_blockers(
 @router.post("/blockers", status_code=201)
 async def create_blocker(
     request: Request,
+    background: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
     user: CurrentUser = Depends(require_user),
 ) -> dict:
@@ -137,6 +140,7 @@ async def create_blocker(
         summary=f"Blocker '{row.title}'",
     )
     await session.commit()
+    await run_after(background, replan_conflicts_for, user.user_id, request.headers.get("x-timezone"))
     return blocker(row)
 
 
@@ -144,6 +148,7 @@ async def create_blocker(
 async def update_blocker(
     id: str,
     request: Request,
+    background: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
     user: CurrentUser = Depends(require_user),
 ) -> dict:
@@ -184,6 +189,7 @@ async def update_blocker(
         summary=f"Updated blocker '{row.title}'",
     )
     await session.commit()
+    await run_after(background, replan_conflicts_for, user.user_id, request.headers.get("x-timezone"))
     return {"blocker": blocker(row)}
 
 

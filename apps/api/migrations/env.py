@@ -36,7 +36,8 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # The .ini's `sqlalchemy.url` is intentionally blank — see the file's header.
-config.set_main_option("sqlalchemy.url", settings.ddl_url)
+# configparser treats "%" as interpolation, and a URL-encoded password is full of them.
+config.set_main_option("sqlalchemy.url", settings.ddl_url.replace("%", "%%"))
 
 target_metadata = Base.metadata
 

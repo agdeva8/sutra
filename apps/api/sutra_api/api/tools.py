@@ -31,8 +31,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..dashboard import assemble_state
 from ..db import get_session
 from ..deps import CurrentUser, require_user
+from ..store import chat as chat_store
 from ..store import repo
-from ..store.executor import apply_proposal, ledger_args
+from ..store.executor import ExecResult, apply_proposal, ledger_args
 
 router = APIRouter(tags=["tools"])
 
@@ -50,7 +51,7 @@ async def _load_pending(
     if not proposal_id or not isinstance(proposal_id, str):
         raise HTTPException(status_code=400, detail="Missing proposal_id")
 
-    row = await repo.get_proposal(session, user_id=user_id, proposal_id=proposal_id)
+    row = await chat_store.get_proposal(session, user_id=user_id, proposal_id=proposal_id)
     # Scoped by user in the query, so a foreign proposal is indistinguishable
     # from a missing one — which is the point: a 403 would confirm the id exists.
     if row is None:
@@ -58,6 +59,27 @@ async def _load_pending(
     if row.status != "pending":
         raise HTTPException(status_code=409, detail="Proposal already resolved")
     return row
+
+
+async def _apply_gateway_proposal(session: AsyncSession, *, user_id: str, proposal) -> ExecResult:
+    """A proposal raised by agentv2's gateway (it carries the change itself): apply it, now that the
+    user has confirmed. Validation still runs, so a change that went stale is refused, not forced."""
+    from agentv2 import ChangeSet, Origin, apply_changes, local_now
+    from agentv2.contracts import Change
+    from pydantic import TypeAdapter
+
+    from ..agent_store import SqlStore
+
+    change = TypeAdapter(Change).validate_python(proposal.args["change"])
+    now = local_now()
+    res = await apply_changes(
+        SqlStore(session, user_id, today=now.date()),
+        ChangeSet(origin=Origin(source="manual", ref=proposal.id), changes=[change]),
+        approved=True,
+    )
+    if hasattr(res, "violations"):
+        return ExecResult(False, "That change no longer fits: " + "; ".join(v.message for v in res.violations))
+    return ExecResult(True, "Done.")
 
 
 @router.post("/tools/confirm")
@@ -80,9 +102,12 @@ async def confirm(
 
     proposal = await _load_pending(session, user_id=user.user_id, body=body)
 
-    outcome = await apply_proposal(
-        session, user_id=user.user_id, action=proposal.action, args=proposal.args or {}
-    )
+    if "change" in (proposal.args or {}):
+        outcome = await _apply_gateway_proposal(session, user_id=user.user_id, proposal=proposal)
+    else:
+        outcome = await apply_proposal(
+            session, user_id=user.user_id, action=proposal.action, args=proposal.args or {}
+        )
 
     if not outcome.success:
         # Roll back any partial work, and *keep the proposal pending* so the
@@ -93,7 +118,7 @@ async def confirm(
     # The guard: only flip if it is still pending. Zero rows means a concurrent
     # confirm already applied it, and applying it twice is exactly the bug this
     # design exists to prevent.
-    flipped = await repo.mark_proposal_resolved(
+    flipped = await chat_store.mark_proposal_resolved(
         session,
         user_id=user.user_id,
         proposal_id=proposal.id,
@@ -139,7 +164,7 @@ async def reject(
     reason = body.get("reason")
     reason = reason.strip() if isinstance(reason, str) and reason.strip() else None
 
-    flipped = await repo.mark_proposal_resolved(
+    flipped = await chat_store.mark_proposal_resolved(
         session,
         user_id=user.user_id,
         proposal_id=proposal.id,

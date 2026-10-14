@@ -13,9 +13,8 @@ dependencies = [
     "alembic>=1.13",
     "httpx>=0.27",
     "python-multipart>=0.0.9",
-    # The planner is a library, imported in-process (HLD §5). Installing it here
-    # is what makes `import app.graph.build` resolvable from this service.
-    "sutra-agent",
+    # The v2 agent, also a sibling checkout imported in-process.
+    "sutra-agentv2",
 ]
 
 [project.optional-dependencies]
@@ -25,7 +24,7 @@ dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]
 
 # The agent is a sibling checkout, not a published distribution.
 [tool.uv.sources]
-sutra-agent = { path = "../agent", editable = true }
+sutra-agentv2 = { path = "../agentv2", editable = true }
 
 [build-system]
 requires = ["hatchling"]

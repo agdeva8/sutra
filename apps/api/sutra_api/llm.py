@@ -1,53 +1,59 @@
-"""The model seam — a thin re-export, deliberately not an implementation.
+"""The model seam for the routes that need a plain structured completion.
 
-**The LLM lives inside `apps/agent`.** HLD §18 locks that: `app/llm/client.py` is
-the only LLM seam, written so it can be lifted into a shared package later
-without touching node code. This module exists so the service has one import for
-"is a model available", and adds nothing to it.
+Backed by agentv2, so the service has one model configuration (agentv2's `config.py` and
+`.env`) and no dependency on the v1 agent. `get_complete()` keeps the signature the chat,
+sources and refine routes already call: `await complete(system, user, schema) -> schema`.
 
-Re-exporting rather than wrapping matters: if the service grew its own provider
-resolution, the agent and the service could disagree about which model is
-configured, and the failure would be a planner that silently runs on the offline
-stub while the chat runs on DeepSeek.
+The model call blocks, so it runs in a thread rather than freezing the server.
 """
 from __future__ import annotations
 
-from app.llm.client import CompleteFn, LlmError, get_complete, resolve_provider
+import asyncio
+from collections.abc import Awaitable, Callable
+from typing import TypeVar
 
-__all__ = [
-    "CompleteFn",
-    "LlmError",
-    "get_complete",
-    "provider_configured",
-    "provider_status",
-]
+from agentv2 import default_chat
+from agentv2.config import load_settings
+from agentv2.llm import complete_json
+from pydantic import BaseModel
+
+T = TypeVar("T", bound=BaseModel)
+CompleteFn = Callable[[str, str, type[T]], Awaitable[T]]
+
+PROVIDER_NAME = "deepseek"
+
+__all__ = ["CompleteFn", "LlmError", "get_complete", "provider_configured", "provider_status"]
+
+
+class LlmError(RuntimeError):
+    """The model was unreachable or its reply could not be read into the requested shape."""
+
+
+async def _complete(system: str, user: str, schema: type[T]) -> T:
+    result = await asyncio.to_thread(complete_json, default_chat(), system, user, schema)
+    if result is None:
+        raise LlmError("The model's reply could not be read.")
+    return result
+
+
+def get_complete() -> CompleteFn:
+    return _complete
+
+
+def _settings():
+    try:
+        return load_settings()
+    except SystemExit:  # no key configured
+        return None
 
 
 def provider_status() -> dict:
-    """`{"provider", "model", "endpoint", "real"}`.
-
-    `real` is False when nothing is configured — in which case the agent's
-    deterministic offline stub serves every stage. That is a supported mode, not
-    a degraded one: it is how the whole pipeline runs with no keys and no
-    network, and every test in `apps/agent` uses it.
-    """
-    cfg = resolve_provider()
+    """`{"provider", "model", "endpoint", "real"}`. `real` is False when no key is configured."""
+    cfg = _settings()
     if cfg is None:
-        return {"provider": "stub", "model": "stub", "endpoint": "", "real": False}
-    # `ProviderConfig` is the agent's own type; read defensively so a field added
-    # or renamed there cannot break this service's readiness probe.
-    return {
-        "provider": getattr(cfg, "name", None) or getattr(cfg, "provider", "unknown"),
-        "model": getattr(cfg, "model", ""),
-        "endpoint": getattr(cfg, "base_url", None) or getattr(cfg, "url", ""),
-        "real": True,
-    }
+        return {"provider": "none", "model": "", "endpoint": "", "real": False}
+    return {"provider": PROVIDER_NAME, "model": cfg.model, "endpoint": cfg.base_url, "real": True}
 
 
 def provider_configured() -> bool:
-    """True when a real provider is resolvable.
-
-    Note this is *not* "can the service produce completions" — the stub always
-    can. Use it only where a real model is required.
-    """
-    return resolve_provider() is not None
+    return _settings() is not None

@@ -150,6 +150,10 @@ def has_questions(text: str) -> bool:
     return bool(extract_clarifying_questions(text))
 
 
+#: Longest line taken as an answer chip; a longer bullet is a sentence, not a choice.
+OPTION_MAX_CHARS = 80
+
+
 def extract_clarifying_questions(text: str, max_questions: int = 6) -> list[dict]:
     """Question-shaped sentences, in order, deduped case-insensitively.
 
@@ -163,17 +167,24 @@ def extract_clarifying_questions(text: str, max_questions: int = 6) -> list[dict
     out: list[dict] = []
     seen: set[str] = set()
 
-    for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
-        cleaned = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", sentence).strip()
-        if not cleaned or not cleaned.endswith("?"):
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if not stripped:
             continue
-        if len(cleaned) > 220:
+        is_bullet = line[: len(line) - len(line.lstrip())] != "" and re.match(r"^[-*•]\s+", stripped)
+        # A bullet indented under a question is one of its answers, not a question of its own.
+        if is_bullet and out and not stripped.endswith("?"):
+            option = re.sub(r"^[-*•]\s+", "", stripped).replace("**", "").strip()
+            if option and len(option) <= OPTION_MAX_CHARS:
+                out[-1]["options"].append(option)
             continue
-        key = cleaned.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append({"id": f"q{len(out) + 1}", "question": cleaned, "options": []})
-        if len(out) >= max_questions:
-            break
-    return out
+        for sentence in re.split(r"(?<=[.!?])\s+", stripped):
+            cleaned = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", sentence).replace("**", "").strip().lstrip("*").strip()
+            if not cleaned or not cleaned.endswith("?") or len(cleaned) > 220:
+                continue
+            key = cleaned.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"id": f"q{len(out) + 1}", "question": cleaned, "options": []})
+    return out[:max_questions]
