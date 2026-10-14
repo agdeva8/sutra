@@ -51,7 +51,7 @@ Three concrete problems:
 
 Checked against https://docs.langchain.com/ (Python index). Three findings shaped this design:
 
-1. **This is a workflow, not a free-running agent.** The docs split the two explicitly: "Workflows have predetermined code paths and are designed to operate in a certain order" vs "Agents are dynamic and define their own processes and tool usage." Planning here has a *predetermined* control flow — clarify → plan → place → propose → confirm — with LLM calls inside the nodes. That is the documented workflow model, and the docs' own over-engineering warnings ("Most applications can skip this"; a 4-field state graph labelled "Over-engineered Graph API") argue against a more agentic shape.
+1. **This is a workflow, not a free-running agent.** The docs split the two explicitly: "Workflows have predetermined code paths and are designed to operate in a certain order" vs "Agents are dynamic and define their own processes and tool usage." Planning here has a *predetermined* control flow — clarify → plan → place → propose → confirm — with LLM calls inside the nodes. That is the documented workflow model, and the docs' own over-engineering warnings ("Most applications can skip this"; a 4-field state graph labelled "Over-engineered Graph API") argue against a more agentic shape. §6 widens this to let any stage divert to the interrupt, which is worth stating precisely: the *reachable path set stays statically enumerable* because each origin's resume target is a code constant. The model can decide to divert; it can never choose a destination, and it cannot route the graph itself.
 2. **There is no `plan-and-execute` page in the current docs.** It survives only as a blog post and stale notebooks; planning as a *product* feature moved into Deep Agents (`TodoListMiddleware` / `write_todos`). The sanctioned LangGraph-level shape for planning is **orchestrator-worker** — which maps onto this problem almost 1:1: an orchestrator breaks the goal into subtasks (here: horizons and steps), a **deterministic conditional edge** dispatches them, and outputs accumulate through a reducer.
 3. **There is no documented solver/constrained-optimisation pattern — this is an explicit gap, not an oversight in reading.** What the docs *do* support, and what §8.2 follows: a node is just a function, so a CP-SAT call is a legal node; give it its own node and its own `TimeoutPolicy`; make it the **validator/normalizer, not the generator**; and treat infeasibility as an *LLM-recoverable* error — store it in state and loop back with the violation as feedback, rather than raising.
 
@@ -146,8 +146,9 @@ apps/agent/                     library — imported by apps/api; no routes
     graph/
       build.py                  build_plan_graph(...) -> compiled StateGraph
       state.py                  PlanState (TypedDict) + reducers
-      nodes.py                  the 11 nodes, one function each
-      routers.py                after_intake / after_plan / after_headroom / after_validate
+      nodes.py                  the 12 nodes, one function each
+      routers.py                one per node — at_start, after_intake, after_clarify,
+                                …, after_validate — plus the shared `_early`
     core/                       PURE — imports no DB, no network, no LLM client
       util.py                   date math, weekdays, rounding
       lattice.py                build_lattice() — phase spans, milestone dates, bands, buffer
@@ -179,10 +180,11 @@ lifespan (§11), but `repo.py` is read by both the planner and the product route
 START
   │
   ▼
-n_intake ──────────────(needs_clarification)──▶ n_clarify ──┐
-  │  LLM: shape, material_unknowns,                      interrupt()
-  │       change → blast radius                            │ resume
-  │◀───────────────────────────────────────────────────────┘
+n_intake ──────────────(material unknown)──▶ n_clarify ──┐
+  │  LLM: shape, material_unknowns,          the ONE      │
+  │       change → blast radius              interrupt()  │ resume
+  │◀──────────────────────────────────────────────────────┘
+  │        (resume lands where the ORIGIN declared — see below)
   │
   ├──(early / conversational)──────────────────────────────▶ END  (kind=early)
   ├──(intake failed)───────────────────────────────────────▶ END  (kind=no_change)
@@ -220,14 +222,16 @@ n_validate       pure: every tool must trace to the plan
  END  (kind=ok)
 ```
 
-**Routers.** Each reads `state["result"]` first: if set, route to `END`. That single rule is what makes "never fail" structural rather than defensive — a node sets `result` and the turn is over, cleanly.
+**Routers.** Each reads `state["result"]` first: if set, route to `END`. That single rule is what makes "never fail" structural rather than defensive — a node sets `result` and the turn is over, cleanly. The five *origin* routers read one more key before their default, through `_early`: a pending `clarify_request` diverts to the interrupt. Only an origin's own router reads it — `n_clarify` consumes the request in the same turn it was written, so no other router can ever see one, and `at_start` deliberately never looks (it runs against checkpointed state on every new turn, where a request left by a crashed turn would hijack the entry).
 
-**Node count is 11.** v1 had 6 nodes but 3 entry points; v2 has 11 nodes and 1 entry point. `n_verify` and `n_validate` are two entry points into the *same* pure module (`core/validate.py`) — placement invariants before the review, grounding after the proposal. `n_clarify` is the interrupt, and `n_place` is re-entered (not duplicated) on a review rejection.
+**Node count is 12.** v1 had 6 nodes but 3 entry points; v2 has 12 nodes and 1 entry point. `n_verify` and `n_validate` are two entry points into the *same* pure module (`core/validate.py`) — placement invariants before the review, grounding after the proposal. `n_clarify` is the interrupt, `n_replan_done` is the slim replan's exit, and `n_place` is re-entered (not duplicated) on a review rejection.
+
+**Clarify is a hub, not a stage.** Any stage that can find a material unknown — `n_intake`, `n_plan`, `n_decompose`, `n_review`, `n_propose` — writes a `clarify_request` and its router diverts to `n_clarify`. The origin also declares where execution resumes once the answer is in, as a **code constant**: the model chooses *whether* to divert, never *where to*, which is what keeps the reachable path set statically enumerable. An origin's resume target is never downstream of the origin — a question re-derives the plan, then proposes. The pure nodes (`n_lattice`, `n_place`, `n_verify`, `n_headroom`, `n_validate`, `n_replan_done`) cannot originate one: they have no model and no unknown-bearing schema, and a solver invariant violation is a bug, not a missing fact.
 
 **Graph idioms (doc-grounded).**
 
 - **Node granularity is the determinism lever.** The docs list checkpoint granularity, scoping retry policies to external services, intermediate visibility, and testability as the reasons to split nodes — and note "more nodes doesn't mean slower execution" (checkpoints are written in the background). That is why `place`, `headroom`, and `validate` are separate nodes rather than calls inside `n_plan`: each is pure, independently retryable, and independently testable.
-- **One `interrupt()` per node invocation.** A node may not ask twice. Clarification rounds therefore loop `n_clarify → n_intake` through a conditional edge, capped at `MAX_CLARIFYING_ROUNDS`.
+- **One `interrupt()` per node invocation, and it lives in exactly one node.** A node may not ask twice, and no stage may call `interrupt()` itself: LangGraph re-executes a node from its first line on resume, so an interrupt placed after a model call would replay that call — and the *second* completion is what the resumed turn would proceed with, while the user answered questions from the first. Every stage therefore routes to `n_clarify`, which does no model or solver work above the `interrupt()` call and resumes at the node the origin declared. Capped at `MAX_CLARIFYING_ROUNDS`, with dedupe on the unknown name as the actual livelock guard.
 - **`error_handler=` per node** (langgraph ≥ 1.2) is the sanctioned degradation hook; **`TimeoutPolicy(run_timeout=...)`** bounds `n_place`, whose search is the only unbounded thing in the graph.
 - **`Send` for per-horizon fan-out** is available if the solver is ever split per horizon — not needed at slice 1–7, but it is why `items` and `slots` carry reducers.
 - **Edge topology is not persisted** in a checkpoint, so edges may be added, removed, or rerouted on a live deployment. Node and state-key *renames* are what break paused threads (§11.1).
@@ -247,6 +251,10 @@ class PlanState(TypedDict, total=False):
     # intake
     intake: dict | None
     clarify_rounds: int
+    clarify_answers: list[dict]  # every answer this turn, folded into `context`
+    clarify_request: dict | None # inbox: {origin, resume, prompt, questions, reason}
+    clarify_resume: str | None   # outbox: where `after_clarify` lands
+    clarify_asked: list[str]     # unknown names asked this turn — the livelock guard
     # planning
     plan: dict | None
     lattice: dict | None
@@ -542,8 +550,10 @@ The count is fully served by the three columns — it is arithmetic over rows in
 
 Two interrupts, both real LangGraph, both durable across HTTP requests:
 
-1. **Clarify** — `interrupt({kind: "clarify", questions: [...]})` inside `n_clarify`. The checkpointer persists; the next request resumes with `Command(resume=answers)`. `MAX_CLARIFYING_ROUNDS = 2`.
-   **Invariant (v1 backlog §3, carried over):** the interrupt is **mandatory** when `intake.material_unknowns` is non-empty. The model cannot forget to ask. A material unknown is a core fact without which the plan would be a guess — target role/domain, hours available, deadline. v1 shipped a bug where "I want to change the job" assumed software engineering; the forcing rule is the fix, and it lives in the router, not the prompt.
+1. **Clarify** — `interrupt({kind: "clarify", questions: [...]})` inside `n_clarify`. The checkpointer persists; the next request resumes with `Command(resume=answers)`. `MAX_CLARIFYING_ROUNDS = 3`.
+   **Reachable from any stage that finds a material unknown** — `n_intake`, `n_plan`, `n_decompose`, `n_review`, `n_propose`. A stage writes a `clarify_request` rather than calling `interrupt()` itself (LangGraph re-executes a node on resume, so an interrupt after a model call would replay it), and it declares where execution resumes as a **code constant**. Neither `origin` nor `resume` is a model output: the model may divert, never choose a destination.
+   **Invariant (v1 backlog §3, carried over):** the interrupt is **mandatory** when a stage reports a material unknown. The model cannot forget to ask — `_MayClarify` synthesises the question, and `_clarify_request` refuses to plan around the unknown. A material unknown is a core fact without which the plan would be a guess — target role/domain, hours available, deadline. v1 shipped a bug where "I want to change the job" assumed software engineering; the forcing rule is the fix, and it now lives in one gate (`_clarify_request`) rather than a router gate and a node gate that can drift apart.
+   **Dedupe, not the budget, is the livelock guard.** `clarify_asked` records the unknown names already asked this turn, so a resumed stage that re-detects the unknown it was just answered on does not re-ask it. `clarify_rounds` is the backstop on the user's patience, shared across stages — using it as the livelock guard would mean a legitimate question is refused because an earlier one was repeated.
 
 2. **Confirm** — semantic proposals persist as `proposals` rows; `POST /plan/confirm` applies one, atomically flipping status and applying in a single step (v1's 6.1 double-apply race is designed out here, not patched).
 
@@ -626,7 +636,7 @@ Each row above maps to one of the docs' four error strategies — which is how t
 |---|---|---|
 | Transient (network, rate limit) | retry policy on the node | `n_intake`, `n_plan`, `n_propose` LLM calls |
 | LLM-recoverable (parse, grounding) | store error in state, loop back | `n_validate` → `n_propose` retry with the diff; solver infeasibility → renegotiate |
-| User-fixable | pause with `interrupt()` | `n_clarify`; the confirm modal |
+| User-fixable | pause with `interrupt()` | any of five stages → `n_clarify`; the confirm modal |
 | Recoverable after retries | `error_handler=` (langgraph ≥ 1.2) | `n_place` → degrade to structural placement |
 | Unexpected | "let them bubble up for debugging" | genuine bugs — never swallowed |
 
@@ -660,7 +670,7 @@ The docs' version of this seam is `context_schema` — compile the graph with a 
 | `core/` | unit; property tests on `place` — never exceed capacity, every task either placed or explicitly unscheduled, deterministic for a fixed seed |
 | `contracts/` | schema round-trip; reject an LLM-supplied date |
 | graph | node-level with a fake `complete`; full-graph golden runs per intent |
-| HITL | pause → persist → resume across two separate calls; assert the mandatory-clarify invariant |
+| HITL | pause → persist → resume across two separate calls; assert the mandatory-clarify invariant from any origin, resuming where the origin declared |
 | replan | slim vs escalate table-driven over blast radii; assert count is 0 after confirm and monotonic inside a window |
 | store | replace-on-write leaves no duplicates after N consecutive replans |
 
@@ -697,9 +707,9 @@ Each slice is independently shippable and testable.
 | 0 | Scaffold `apps/agent` | FastAPI, settings, DI seam for `complete`, `pytest` wired |
 | 1 | **Pure core** | `util`, `lattice`, `place` (CP-SAT, multi-goal, shared weekly budget), `validate` (invariants), `headroom`, `staleness` + tests. No LLM, no DB. |
 | 2 | Contracts | `schemas.py` (incl. `ConstraintDelta`), `prompts.py`, schema tests |
-| 3 | Graph, headless | 11 nodes incl. `n_verify` + the `n_review` loop, fake `complete`, golden runs. No DB, no HITL. |
+| 3 | Graph, headless | 12 nodes incl. `n_verify` + the `n_review` loop, fake `complete`, golden runs. No DB, no HITL. |
 | 4 | Persistence | checkpointer, `repo`, replace-on-write, `POST /plan/run` |
-| 5 | HITL | clarify interrupt + resume; confirm; mandatory-clarify invariant |
+| 5 | HITL | clarify interrupt + resume from any stage; confirm; mandatory-clarify invariant |
 | 6 | **Replan** | `POST /plan/change`, blast radius → tier, `adjustments[]`, staleness count |
 | 7 | Solver hardening | timeout → structural fallback; property tests on the model; multi-goal contention and infeasibility cases |
 | 8 | Streaming | SSE adapter + `apps/web` wiring |
