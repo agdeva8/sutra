@@ -4,17 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-Sutra / GoalCoach v2 — a planning agent that turns "switch jobs in 3 months" into a dated, multi-horizon plan and keeps it true as circumstances change. This is the `develop_v2` worktree: a fresh, Python-only rewrite of a v1 that existed as a TypeScript Next.js app plus a Python port.
+Sutra / GoalCoach v2 — a planning agent that turns "switch jobs in 3 months" into a dated, multi-horizon plan and keeps it true as circumstances change. This is the `develop_v2` worktree: a fresh, Python-only backend with a React web app.
 
 | Path | What it is |
 |---|---|
-| `apps/agent/` | **The planner — a library, not a service.** Python + LangGraph + OR-Tools CP-SAT. No HTTP surface. |
-| `apps/api/` | **The only HTTP surface.** FastAPI; serves `/plan/*` by importing `apps/agent` in-process. |
-| `apps/storybook/` | Standalone Storybook (React 19 + Vite) used as a UI harness to click through the app and file bugs. |
-| `docs/architecture/HLD-planning-agent.md` | The design of record for the planner: the graph, the invariants, the failure ladder. Read it before changing planning behaviour. |
-| `apps/api/openapi.yaml` | The product's HTTP contract (47 routes). |
-| `apps/api/CONTRACT-RECONCILIATION.md` | **Authoritative over `openapi.yaml`.** 39 shapes in the spec disagree with the app it claims to be derived from; this file resolves all 70 individually and says which way each went. Several corrections look wrong to a well-meaning reader and get "fixed" back to the broken state. |
-| `apps/web/`, `packages/*`, `tests/`, `supabase/`, `scripts/` | Empty placeholders. `apps/api` is imported in-process, so `packages/` does not exist yet. |
+| `apps/agentv2/` | **The agent — a library, not a service.** Python. Triage, goal intake, the hierarchical planner, the gateway (the one write path), and the coach (the Add-goal interview and chat). No HTTP surface. `docs/architecture/HLD-agentv2.md` is the design of record. |
+| `apps/api/` | **The only HTTP surface.** FastAPI (`sutra_api`); imports `agentv2` in-process. Owns the database, auth, uploads, streaming, cron and calendar feeds. |
+| `apps/web/` | The product UI (Create React App). Mobile-first. |
+| `apps/storybook/` | Standalone Storybook (React 19 + Vite) used as a UI harness; mirrors some `apps/web` components. |
+| `apps/api/openapi.yaml` | The product's HTTP contract. |
+| `apps/api/CONTRACT-RECONCILIATION.md` | **Authoritative over `openapi.yaml`.** Where the spec disagrees with the app it claims to be derived from, this file says which way each shape went. Several corrections look wrong to a well-meaning reader and get "fixed" back to the broken state. |
+| `docs/` | PRDs (`docs/prd/`), the agent design (`docs/architecture/HLD-agentv2.md`), and the deploy runbook (`docs/DEPLOY.md`). |
+| `api/index.py`, `vercel.json` | The Vercel entry for the API (see Deployment). |
+
+There is no v1 agent any more: `apps/agent`, the LangGraph planner, and the old `sutra_chat` package are gone. Do not reintroduce a second agent or a second chat package; add to `agentv2`.
 
 There are **no linters configured** (no ruff, mypy, eslint, or pre-commit). Do not claim a lint pass.
 
@@ -50,7 +53,7 @@ agent = create_agent(
 )
 ```
 
-This codebase already works this way and the pattern is to be followed, not reinvented: every tunable lives in a settings object (`apps/api/sutra_api/config.py`, `apps/agent/app/llm/client.py`), prompt prose lives in its own module (`apps/agent/app/prompts/`) rather than inline in a node, and shapes live in `contracts/schemas.py`. Model ids and endpoints come from the environment, never from a literal in a function body.
+This codebase already works this way and the pattern is to be followed, not reinvented: every tunable lives in a settings object or constants module (`apps/api/sutra_api/config.py`, `apps/agentv2/config.py`, `apps/web/src/constants/`), prompt prose lives in its own module (`apps/agentv2/prompts/`, `apps/agentv2/coach/prompts.py`) rather than inline in a stage, and shapes live in `apps/agentv2/contracts/`. Model ids and endpoints come from the environment, never from a literal in a function body.
 
 The judgement call is *what counts as a value worth naming*: a number or string that carries meaning (a cap, a default, a model name, a route prefix) is a constant; `0`, `1`, `""`, `True` used structurally, and one-off arithmetic inside a pure function, are not. Name it when a reader would otherwise have to guess why it is that number, or when changing it is a real possibility.
 
@@ -79,60 +82,40 @@ Set the limit where the feature genuinely needs it, ship it, and let real errors
 
 Two things this does **not** mean:
 
-- **It is not licence to remove a limit that exists for a real reason.** A cap that protects a shared budget, bounds an unbounded solver search, or stops a retry loop from spinning forever (`MAX_CLARIFYING_ROUNDS`, `n_place`'s `TimeoutPolicy`, `numWorkers=1`) is load-bearing — the answer there is a *generous but finite* value, not `None`. Principle 5's "each layer verified" still applies: bounds come from observed behaviour, not from optimism.
+- **It is not licence to remove a limit that exists for a real reason.** A cap that protects a shared budget, bounds an unbounded solver search, or stops a retry loop from spinning forever (`MAX_INTERVIEW_ROUNDS`, `MAX_QUESTIONS_PER_ROUND`, `FIX_MAX_LOOPS`) is load-bearing — the answer there is a *generous but finite* value, not `None`. Principle 5's "each layer verified" still applies: bounds come from observed behaviour, not from optimism.
 - **It is not a reason to leave a failure unhandled.** Loosening the limit does not excuse skipping the degradation path — the failure ladder still stands, so a timeout that does eventually fire still has somewhere sane to go.
+
 
 ## Commands
 
-### `apps/agent` — the planner library
+### `apps/agentv2` — the agent library
 
 ```bash
-cd apps/agent
-uv venv --python 3.14 .venv
-uv pip install --python .venv/bin/python ortools langgraph langgraph-checkpoint-postgres \
-    pydantic pydantic-settings fastapi uvicorn pytest pytest-asyncio
+cd apps/agentv2 && uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -e . pytest
+cd apps/agentv2 && .venv/bin/python -m pytest tests/unit -q
+cd apps/agentv2 && .venv/bin/python -m agentv2.demo <step>    # runs a step against the real model and Docker Postgres
 ```
 
-```bash
-cd apps/agent && .venv/bin/python -m pytest tests/unit -q
-```
-
-Single test: `.venv/bin/python -m pytest tests/unit/test_core.py::test_place_never_exceeds_capacity -q`
-
-```bash
-cd apps/agent && .venv/bin/python -m app.tui          # terminal UI; /demo walks every behaviour offline
-```
-
-```bash
-cd apps/agent && .venv/bin/python -m app.llm.client --check   # prints endpoint, model, per-stage JSON validity
-```
-
-With no `DEEPSEEK_API_KEY`/`SUTRA_LLM_API_KEY`, every stage falls back to a deterministic rule-based stub, so the whole thing runs with no network and no credentials. This means a broken model wiring is **indistinguishable from a working one** until you read the output — check it explicitly when a plan looks too tidy.
-
-Studio (`langgraph dev`, port 2024 → LangSmith Studio) is a scratch surface: `apps/agent/app/studio.py` is the only thing it imports, and no production path goes through it. Install with `uv pip install --python .venv/bin/python "langgraph-cli[inmem]"`, then `.venv/bin/langgraph dev`. The input **is** `PlanState` — paste `studio_input.json` first.
+The model is DeepSeek, configured in `apps/agentv2/config.py` and `apps/agentv2/.env` (`DEEPSEEK_API_KEY`, `DEEPSEEK_API_URL`, `DEEPSEEK_MODEL`). With no key, model-backed calls raise `ModelUnavailable` and the API answers 503; there is no offline stub, so a missing key is loud, not silent.
 
 ### `apps/api` — the service
 
 ```bash
 docker compose -f infra/docker-compose.yml up -d     # Postgres on 5433, NOT 5432
-```
-
-```bash
-cd apps/api && uv venv --python 3.14 .venv && uv pip install --python .venv/bin/python -e ".[dev]"
-```
-
-```bash
+cd apps/api && uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -e ".[dev]"
 cd apps/api && set -a; source .env; set +a && .venv/bin/alembic upgrade head
-```
-
-There is no hand-written first migration — `models.py` is the schema of record, so the initial revision comes from `alembic revision --autogenerate`.
-
-```bash
-cd apps/api && .venv/bin/uvicorn sutra_api.main:app --reload --port 8000
-```
-
-```bash
+cd apps/api && set -a; source .env; source ../agentv2/.env; set +a && .venv/bin/uvicorn sutra_api.main:app --reload --port 8000
 cd apps/api && .venv/bin/python -m pytest tests/unit -q
+cd apps/api && .venv/bin/python scripts/eval_intake.py       # 30 varied goals through the coach, real model
+```
+
+`models.py` is the schema of record; migrations are in `apps/api/migrations/versions/`. A revision id must be **32 characters or fewer** (`alembic_version.version_num` is `varchar(32)`).
+
+### `apps/web`
+
+```bash
+cd apps/web && npm install --legacy-peer-deps && npm start        # needs REACT_APP_BACKEND_URL for a cross-origin API
+cd apps/web && CI=false npm run build                              # CI=true turns lint warnings into errors
 ```
 
 ### `apps/storybook`
@@ -141,83 +124,56 @@ cd apps/api && .venv/bin/python -m pytest tests/unit -q
 cd apps/storybook && pnpm install && pnpm storybook    # port 6007, not Storybook's usual 6006
 ```
 
-```bash
-cd apps/storybook && pnpm build-storybook
-```
+When you change how the UI looks, call the Storybook MCP `stories-preview` and include the preview URLs in your reply.
 
 ### Tests
 
-Per design principle 2, new unit tests are written when the user asks to commit a feature — they are not a gate on mid-feature progress.
-
-Both apps default `pytest` to `tests/unit`, and that suite imports only pure modules: no database, no network, no credentials. Integration tests hit a **shared** Supabase/Postgres, so they are opt-in — running `pytest tests` (not `tests/unit`) writes to the served database. There is no fixture that fakes Postgres: the schema uses `JSONB` and `ARRAY`, which SQLite cannot express, so any DB test uses the real Docker Postgres.
-
-`apps/agent/tests/unit/test_purity.py` mechanically asserts that `app/core/` imports nothing from `store`, `llm`, `graph`, `api`, `psycopg`, `httpx`, `fastapi`, or `langgraph`.
+Per design principle 2, new unit tests are written when the user asks to commit a feature. Both Python apps default `pytest` to `tests/unit`, which imports only pure modules: no database, no network, no credentials. Integration tests hit a **shared** Postgres, so they are opt-in. There is no fixture that fakes Postgres: the schema uses `JSONB` and `ARRAY`, which SQLite cannot express.
 
 ## Architecture
 
-### The one locked boundary
+### The locked boundary
 
-> **The LLM owns meaning. Code owns dates.**
+> **The LLM owns meaning. Code owns dates and validity. Everything is written through the gateway.**
 
-The LLM decides goal title, phases, milestone titles, weekly step content, and prose. Code decides phase spans, milestone dates, week bands, the 20% buffer, and which day each step lands on. `app/core/place.py` is the **only writer of `plan_items` dates**; a step whose date the model chose is a bug, not a fallback. The schemas enforce this with a date-*key* check (`date`, `start_date`, `due_date`, `target_date`, `scheduled_for`, …) on `DecomposeStep` and `MilestoneSpec` rather than an all-or-nothing `extra="forbid"`.
+The model decides what the work is: goal title, milestones, which sessions a week needs, prose, the questions worth asking. Code supplies the calendar (free windows, capacity, blocked days, the user's profile), checks every change set (`core/validate.py`: no overlaps, capacity, blocks exist, nothing in the past), and is the only thing that writes. A model-chosen date that the code did not validate is a bug. The planner is hierarchical (month, week, day, slot), each level seeing one window; code checks the budget between levels.
 
-There is deliberately no "quick LLM first pass, solver only if needed" path — a first pass that emits dates is the same bug with an extra step.
+### One write path: the gateway
 
-### One graph, one write path
+`agentv2/gateway/` turns a `ChangeSet` into rows. It re-validates, auto-applies new goals, tasks, reminders and blocks, **proposes** anything that moves existing dated work, and writes an audit row in the same transaction. The audit row powers undo ("why this change?", and the link back to the Scratch entry). Nothing else writes plan rows.
 
-Planning and replanning are the *same* compiled graph, entered with a different intent. `apps/agent/app/graph/build.py` builds it; 12 nodes, one entry point, in `nodes.py` with routers in `routers.py`:
+### Where things live
 
-```
-n_intake → n_plan → n_lattice → n_decompose → n_place
-        → n_verify → [n_review ⇄ n_place] → n_headroom → n_propose → n_validate → END
-
-any of  n_intake | n_plan | n_decompose | n_review | n_propose
-        → n_clarify (the one interrupt) → resume at the node the origin declared
-```
-
-`n_clarify` is a **hub, not a stage**: any model stage that finds a material unknown writes a `clarify_request` and its router diverts there. No stage calls `interrupt()` itself — LangGraph re-executes a node from its first line on resume, so an interrupt after a model call would replay that call. The origin's `resume` target is a **code constant**, never model output, which is what keeps the control flow predetermined (the model may divert, never choose a destination).
-
-Two structural rules make it work:
-
-- **Every router reads `state["result"]` first and routes to `END` if it is set.** A node signals "the turn is over" by writing `result`; the turn then ends cleanly. This is what makes "never fail the user's action" structural rather than defensive.
-- **`n_verify` and `n_validate` are two entries into the same pure module** (`core/validate.py`) — placement invariants before the semantic review, action grounding after the proposal. `n_place` is re-entered, never duplicated, when `n_review` rejects.
-
-`n_place` is the only node with a `TimeoutPolicy` — the CP-SAT search is the only unbounded work. It runs `numWorkers=1`: a plan must be reproducible, and a deterministic solver is worth more than a fast one.
+- `agentv2/contracts/` — every shape. `_Strict` for models we build; lenient (`extra="ignore"`) for models the LLM fills, so a model volunteering `confidence` or `reason` never rejects the whole response. The prompt carries the real JSON schema, and a failed parse gets one repair round trip.
+- `agentv2/core/` — pure. No DB, network, or LLM client (a test enforces it): validation, free-window computation, calendar maths, recurrence, the user profile mapped to planner settings.
+- `agentv2/planner/`, `triage/`, `intake/`, `entrychat/`, `chatplan/` — the model-backed stages. Each takes an injected `chat` (a LangChain-style model) so tests pass a fake.
+- `agentv2/coach/` — the Add-goal interview and coach chat: prompt modes, guardrails, the question discipline (`questions.py`: never ask a repeat, only questions that change a milestone, a date or the hours), a crisis check (`safety.py`), and answer chips.
+- `apps/api/sutra_api/agent_store.py` — `SqlStore`, the database implementation of agentv2's `Store`.
 
 ### Failure ladder
 
-**No model or solver failure ever 500s.** Every stage degrades; the worst case is `no_change` with a `plan_rejects` row. Programmer errors still propagate loudly. HLD §13 is the full table — read it before adding an error handler.
+**No model or solver failure ever 500s.** An unreadable model reply leaves the Scratch entry in Waiting with Retry; a plan that still breaks a rule after `FIX_MAX_LOOPS` falls back to first-fit or a proposal; gateway re-validation that fails writes nothing and logs a reject row. Programmer errors still propagate loudly.
 
-### Contracts and the model boundary
+### Long jobs stream progress
 
-`apps/agent/app/contracts/schemas.py` is the single source of truth for every shape. There are **two base models and the distinction is load-bearing**:
-
-- `_Strict` (`extra="forbid"`) — for models we construct and for solver I/O. An unexpected key there is our own bug.
-- `_Llm` (`extra="ignore"`) — for models the *model* fills. A real model volunteers `confidence`, `reason`, `next_action`, `{"key": …, "reason": …}` where a string was asked for, and omits question `id`s. Rejecting the whole response over those is a reliability bug, not rigour — the first real DeepSeek run produced 23 validation errors and the agent could not plan at all.
-
-Two consequences that look like leniency but are not:
-
-- The prompt carries the real JSON schema (`model_json_schema()`, compacted) so the model is told the shape instead of guessing it, and a failed parse gets one repair round-trip carrying the validation error back.
-- `PlacementCritique` with `ok=False` and no `ConstraintDelta[]` is **coerced to `ok=True`** — CP-SAT is deterministic, so a rejection with no structural delta cannot change the solver's answer and would only spin the loop to its cap. Likewise `IntakeSpec` synthesises a question for an unknown the model listed but forgot to ask about.
-
-### State
-
-`PlanState` (`app/graph/state.py`) stores **raw data, not formatted text** — prompts are formatted in the node that needs them, which is also what keeps checkpoints small and diffable.
-
-**Returning `[]` does not clear an `Annotated[list, operator.add]` key** — the empty value is merged and the old entries survive. To replace a plan wholesale (the replan case), return `{"items": Overwrite([])}`.
+Planning a goal and filing a Scratch entry can take a minute or more. `sutra_api/stream.py:progress_stream` keeps the request open and emits `status` frames (the agent reports what it is doing via a `progress` callback) and a final `result` frame; clients ask with `Accept: text/event-stream` (`apps/web/src/lib/api.js:reqStream`). On a serverless host, work started after the response is not guaranteed to run, which is why the work runs inside the request. Scratch writes the entry first (`defer`), then files it with `POST /scratch/{id}/process`; entries left pending are filed on the next visit.
 
 ### Traps worth knowing before you edit
 
-- **The API package is `sutra_api`, not `app`.** `apps/agent` already owns the top-level `app` package and both are imported into one process; two packages named `app` cannot coexist. HLD §5 says `apps/api/app/` — that is now wrong.
-- **`app/studio.py` compiles with `checkpointer=None` on purpose.** The LangGraph Agent Server injects its own persistence and rejects a graph that brings one ("includes a custom checkpointer" is a hard startup error). Durable checkpointing for the product lives in `apps/api` against Postgres.
-- **Auth has exactly one resolver** (`deps.resolve_user`). v1's bearer bug — four routes with *their own inline resolvers* that accepted an ungated `Authorization: Bearer <any-id>` and used it as the `user_id` — is the reason. Do not add a second path. There is also no CSRF token; `security.origin_is_same_site` enforces an origin check on every mutating request and **fails closed**.
-- **Backward compatibility is a release constraint.** LangGraph runs the newest deployed graph against previously persisted checkpoints, so never rename or remove a node a thread may be paused at, never rename or remove a state key, and never tighten a field. Add keys as `NotRequired`. Edge topology is *not* persisted, so edges may be rerouted freely.
-- **`core/` must stay pure.** It imports no DB, network, or LLM client, and a test enforces it.
+- **The API package is `sutra_api`.** `agentv2` imports nothing from it; the dependency runs one way.
+- **Auth has exactly one resolver** (`deps.resolve_user`). v1's bearer bug (inline resolvers accepting an ungated `Authorization: Bearer <any-id>`) is why. Do not add a second path. There is no CSRF token: `security.origin_is_same_site` checks the origin on every mutating request and fails closed. `X-Timezone` must stay in the CORS allowed headers.
+- **`CORS_ALLOWED_ORIGINS` is a JSON list** (`["https://gurusutra.vercel.app"]`); a bare URL crashes settings parsing.
+- **Time zone:** `USE_CLIENT_TIMEZONE=False`, so every user is on `DEFAULT_TIMEZONE` (IST) until that is flipped.
+- **Uploads:** storage is Supabase Storage when configured, then local disk, then the `source_blobs` table (a serverless host has no writable disk). `sources.purpose` keeps Memories photos (`memory`) out of the Sources list (`source`).
+- **Guests can use the app but not calendar sync.** Each linked calendar is a `calendar_subscriptions` row with its own secret `.ics` URL; unlinking with "delete events" serves an empty feed for 30 days so the calendar app drops Sutra's events, and unlinking without it stops the feed.
+- **First-run guide:** a user with no goals is held on the Goal screen with a non-dismissible Add Goal dialog; then the timeline step; then Scratch. Other prompts (install sheet, greeting) wait for it (`lib/guideActive.js`).
+- **Backward compatibility is a release constraint** for anything persisted: add columns and keys as optional, never rename or tighten.
+- **Pinch zoom stays on.** The document never scrolls (`index.css`); each screen scrolls inside its own container, so the top bar and bottom nav stay put.
 
-### The seam that makes it testable
+### Deployment
 
-`complete` (the LLM call) is **injected**, never imported by a node — `build_plan_graph(*, complete, checkpointer)` captures it in the node closures. Tests pass a fake and run the whole graph with no model. `deps={"complete": fake_complete}` for pure-function tests, `context_schema` for graph-level ones. Do not reach for a module-level LLM client inside a node.
+Vercel for both apps, Supabase for Postgres (use the **pooler**: port 6543 for the app, the session pooler on 5432 for `alembic`). The API is `api/index.py` at the repo root (an ASGI shim that restores the original path from a rewrite) with `vercel.json`; the web app deploys from `apps/web`. `BACKGROUND_INLINE=true` runs background work inside the request. `docs/DEPLOY.md` is the runbook.
 
 ### What is not built
 
-`/chat/*` (needs a plan for a separate `sutra_chat` package), the motivation pipeline's `_generate()`, PDF/DOCX/image text extraction, and the `/plan/runs` baseline table. See `apps/api/README.md` for the current status table.
+Notification delivery for reminders, goal proposals from repeated Scratch themes, importing a user's own calendars into the planner, `.docx` text extraction, durable file storage on Supabase Storage (set `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` to enable).
