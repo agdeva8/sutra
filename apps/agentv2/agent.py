@@ -13,7 +13,7 @@ from datetime import datetime
 
 import asyncio
 
-from .config import REPLAN_DRIFT_HOURS, load_settings
+from .config import PROGRESS_APPLY, REPLAN_DRIFT_HOURS, load_settings
 from .core.calendar import week_start
 from .core.clock import local_now
 from .contracts import Applied, ChangeSet, Origin, Rejected, Violation
@@ -84,11 +84,13 @@ class PlanOutcome:
 
 
 async def plan_goals(
-    store: Store, goals: list[GoalSpec], *, now: datetime | None = None, tz: str | None = None, chat=None, ref: str | None = None
+    store: Store, goals: list[GoalSpec], *, now: datetime | None = None, tz: str | None = None, chat=None, ref: str | None = None, progress=None
 ) -> PlanOutcome:
     """Plan one or more goals together and write the result through the gateway."""
     now = now or local_now(tz)
-    cs, notes = await _plan_goals(chat or default_chat(), goals, await store.context(), now, Origin(source=ORIGIN_GOAL, ref=ref))
+    cs, notes = await _plan_goals(chat or default_chat(), goals, await store.context(), now, Origin(source=ORIGIN_GOAL, ref=ref), progress)
+    if progress:
+        progress(PROGRESS_APPLY)
     res = await apply(cs, store)
     if isinstance(res, Rejected):
         return PlanOutcome("rejected", notes, violations=res.violations)
@@ -110,7 +112,7 @@ class GoalCreated:
 
 
 async def create_goal(
-    store: Store, draft: GoalDraft, *, now: datetime | None = None, tz: str | None = None, chat=None, priority: int = 1
+    store: Store, draft: GoalDraft, *, now: datetime | None = None, tz: str | None = None, chat=None, priority: int = 1, progress=None
 ) -> GoalCreated:
     """Write a confirmed draft (goal + milestones), then plan it. Call inside one transaction."""
     now = now or local_now(tz)
@@ -118,7 +120,7 @@ async def create_goal(
     res = await apply(ChangeSet(origin=Origin(source=ORIGIN_GOAL, ref=spec.id), changes=changes), store)
     if isinstance(res, Rejected):
         return GoalCreated(spec.id, PlanOutcome("rejected", violations=res.violations))
-    return GoalCreated(spec.id, await plan_goals(store, [spec], now=now, chat=chat, ref=spec.id))
+    return GoalCreated(spec.id, await plan_goals(store, [spec], now=now, chat=chat, ref=spec.id, progress=progress))
 
 
 async def entry_chat(
@@ -186,15 +188,17 @@ async def tick(store: Store, *, now: datetime | None = None, tz: str | None = No
 
 
 async def replan_goal(
-    store: Store, goal_id: str, *, now: datetime | None = None, tz: str | None = None, chat=None
+    store: Store, goal_id: str, *, now: datetime | None = None, tz: str | None = None, chat=None, progress=None
 ) -> PlanOutcome:
     """Plan one goal again around what is on the calendar now (after a new commitment, an away
     stretch, a moved deadline). Only the agent's own planned time is replaced."""
     now = now or local_now(tz)
-    found = await asyncio.to_thread(replan_changes, chat or default_chat(), await store.context(), goal_id, now)
+    found = await asyncio.to_thread(replan_changes, chat or default_chat(), await store.context(), goal_id, now, progress)
     if found is None:
         return PlanOutcome("applied", ["nothing left to plan for this goal"])
     changes, notes = found
+    if progress:
+        progress(PROGRESS_APPLY)
     res = await apply(ChangeSet(origin=Origin(source=ORIGIN_GOAL, ref=goal_id), changes=changes), store)
     if isinstance(res, Rejected):
         return PlanOutcome("rejected", notes, violations=res.violations)

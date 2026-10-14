@@ -150,6 +150,9 @@ def has_questions(text: str) -> bool:
     return bool(extract_clarifying_questions(text))
 
 
+#: The lettered choices a model writes inline: "(a) ...", "(b) ...".
+INLINE_OPTIONS = re.compile(r"\(\s*[a-hA-H]\s*\)")
+
 #: Longest line taken as an answer chip; a longer bullet is a sentence, not a choice.
 OPTION_MAX_CHARS = 80
 
@@ -178,8 +181,16 @@ def extract_clarifying_questions(text: str, max_questions: int = 6) -> list[dict
             if option and len(option) <= OPTION_MAX_CHARS:
                 out[-1]["options"].append(option)
             continue
-        for sentence in re.split(r"(?<=[.!?])\s+", stripped):
-            cleaned = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", sentence).replace("**", "").strip().lstrip("*").strip()
+        cleaned_line = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", stripped).replace("**", "").strip()
+        # "Where are you? (a) just starting, (b) applying" — the lettered choices belong to the question.
+        inline: list[str] = []
+        marker = INLINE_OPTIONS.search(cleaned_line)
+        if marker:
+            inline = _inline_options(cleaned_line[marker.start():])
+            cleaned_line = cleaned_line[: marker.start()].strip()
+        added = 0
+        for sentence in re.split(r"(?<=[.!?])\s+", cleaned_line):
+            cleaned = sentence.strip().lstrip("*").strip()
             if not cleaned or not cleaned.endswith("?") or len(cleaned) > 220:
                 continue
             key = cleaned.lower()
@@ -187,4 +198,29 @@ def extract_clarifying_questions(text: str, max_questions: int = 6) -> list[dict
                 continue
             seen.add(key)
             out.append({"id": f"q{len(out) + 1}", "question": cleaned, "options": []})
+            added += 1
+        if inline and added:
+            out[-1]["options"] = inline
     return out[:max_questions]
+
+
+def _inline_options(text: str) -> list[str]:
+    """The choices in "(a) one, (b) two, (c) three)" — the lettered group a model writes inline."""
+    options: list[str] = []
+    for part in INLINE_OPTIONS.split(text):
+        option = part.strip().rstrip(",;.").strip()
+        if option.endswith(")") and option.count(")") > option.count("("):
+            option = option[:-1].strip()
+        option = re.sub(r"^(and|or)\s+", "", option).rstrip(",;.").strip()
+        if option and len(option) <= OPTION_MAX_CHARS:
+            options.append(option)
+    return options
+
+
+def strip_question_list(text: str) -> str:
+    """The prose before the first numbered question: the introduction, without the list the card replaces."""
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        if re.match(r"^\s*\d+[.)]\s", line):
+            return "\n".join(lines[:i]).strip()
+    return text

@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, time
 
-from ..config import DEFAULT_DAILY_CAPACITY_HOURS
+from ..config import ACTIVE_WINDOW_END, ACTIVE_WINDOW_START, DEFAULT_DAILY_CAPACITY_HOURS
 
 
 @dataclass(frozen=True)
@@ -72,6 +72,8 @@ class Context:
     #: Hours the user gives on each weekday (Monday = 0), when they have said. A weekday left out is a
     #: day off. None means they have not said, so the default capacity applies.
     weekday_hours: dict[int, float] | None = None
+    #: The most goal work one week may hold, from the user's own figure; None when they gave none.
+    weekly_cap_hours: float | None = None
     plan_weeks: tuple[PlanWeekRow, ...] = ()
     #: Active recurring commitments, so "stop my Tuesday class" can name the real one.
     recurring: tuple[RecurringRow, ...] = ()
@@ -83,6 +85,10 @@ class Context:
     expanded_weeks: frozenset[tuple[str, date]] = frozenset()
     #: Tentative hours already planned per day, outside the blocks list.
     planned_hours: dict[date, float] = field(default_factory=dict)
+    #: The parts of a day the agent may schedule into (the user's waking hours, from their profile).
+    active_spans: tuple[tuple[time, time], ...] = ((ACTIVE_WINDOW_START, ACTIVE_WINDOW_END),)
+    #: weekday -> spans the user is busy every week (their work or study hours, from their profile).
+    busy_weekly: dict[int, tuple[tuple[time, time], ...]] = field(default_factory=dict)
 
     def capacity_on(self, day: date) -> float:
         """Hours of planned work `day` can hold."""

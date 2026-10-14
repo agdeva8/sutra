@@ -17,7 +17,7 @@ from ..core.context import Context
 from .plan import plan_goal
 
 
-def replan_changes(chat, ctx: Context, goal_id: str, now: datetime) -> tuple[list, list[str]] | None:
+def replan_changes(chat, ctx: Context, goal_id: str, now: datetime, progress=None) -> tuple[list, list[str]] | None:
     """(changes, notes), or None if the goal has nothing left to plan."""
     this_week = week_start(now.date())
     open_weeks = [w for w in ctx.plan_weeks if w.goal_id == goal_id and w.week_start >= this_week]
@@ -34,5 +34,5 @@ def replan_changes(chat, ctx: Context, goal_id: str, now: datetime) -> tuple[lis
     cleared_ctx = replace(cleared_ctx, plan_weeks=tuple(w for w in ctx.plan_weeks if w.goal_id != goal_id))
     spec = GoalSpec(id=goal_id, title=ctx.goal_titles.get(goal_id, goal_id), total_hours=remaining,
                     deadline=ctx.goal_targets.get(goal_id) or now.date() + timedelta(weeks=12))
-    plan = plan_goal(chat, spec, cleared_ctx, now)
+    plan = plan_goal(chat, spec, cleared_ctx, now, progress)
     return [ClearGoalPlan(goal_id=goal_id, from_date=now.date()), *plan.changes], ["replanned"] + plan.notes

@@ -10,8 +10,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 
 from ..config import (
-    SLOT_GRID_MINUTES,
-    ACTIVE_WINDOW_END, ACTIVE_WINDOW_START, BLOCK_TENTATIVE, EFFORT_TOLERANCE_HOURS,
+    SLOT_GRID_MINUTES, PROFILE_WORK_LABEL,
+    BLOCK_COMMITTED, BLOCK_TENTATIVE, EFFORT_TOLERANCE_HOURS,
     MIN_GAP_BETWEEN_SESSIONS_MIN, MIN_WINDOW_MINUTES, SLOT_WINDOW_DAYS,
 )
 from ..contracts import AddBlock
@@ -38,26 +38,36 @@ def _at(day: date, t: time) -> datetime:
     return datetime.combine(day, t)
 
 
+def _day_rows(ctx: Context, day: date) -> list[BlockRow]:
+    """The day's blocks plus the user's weekly work or study hours, as fixed rows."""
+    rows = [b for b in ctx.blocks if b.day == day]
+    rows += [BlockRow(f"work_{day.isoformat()}_{s:%H%M}", day, s, e, BLOCK_COMMITTED, PROFILE_WORK_LABEL)
+             for s, e in ctx.busy_weekly.get(day.weekday(), ())]
+    return sorted(rows, key=lambda b: b.start)
+
+
 def free_windows(ctx: Context, now: datetime, days: int = SLOT_WINDOW_DAYS) -> list[Window]:
-    """Free gaps inside the active hours for the next `days` days (today from `now`)."""
+    """Free gaps inside the user's waking hours for the next `days` days (today from `now`)."""
     out: list[Window] = []
     for offset in range(days):
         day = now.date() + timedelta(days=offset)
         if day in ctx.blocked_dates:
             continue  # the user is away: zero capacity
-        lo, hi = _at(day, ACTIVE_WINDOW_START), _at(day, ACTIVE_WINDOW_END)
-        if offset == 0:
-            # Round up to the next half hour so we never offer a slot that has started.
-            minutes = (now.hour * 60 + now.minute + 29) // 30 * 30
-            lo = max(lo, datetime.combine(day, time()) + timedelta(minutes=minutes))
-        cursor = lo
-        for b in sorted((b for b in ctx.blocks if b.day == day), key=lambda b: b.start):
-            bs, be = _at(day, b.start), _at(day, b.end)
-            if bs > cursor:
-                _emit(out, day, cursor, min(bs, hi))
-            cursor = max(cursor, be)
-        if cursor < hi:
-            _emit(out, day, cursor, hi)
+        rows = _day_rows(ctx, day)
+        for span_start, span_end in ctx.active_spans:
+            lo, hi = _at(day, span_start), _at(day, span_end)
+            if offset == 0:
+                # Round up to the next half hour so we never offer a slot that has started.
+                minutes = (now.hour * 60 + now.minute + 29) // 30 * 30
+                lo = max(lo, datetime.combine(day, time()) + timedelta(minutes=minutes))
+            cursor = lo
+            for b in rows:
+                bs, be = _at(day, b.start), _at(day, b.end)
+                if bs > cursor:
+                    _emit(out, day, cursor, min(bs, hi))
+                cursor = max(cursor, be)
+            if cursor < hi:
+                _emit(out, day, cursor, hi)
     return out
 
 
@@ -134,7 +144,10 @@ def busy_by_day(ctx: Context, now: datetime, days: int = SLOT_WINDOW_DAYS) -> di
     judge a day, for instance to leave room after a heavy block instead of stacking."""
     out: dict[date, list[tuple[time, time, str, str]]] = {}
     last = now.date() + timedelta(days=days)
-    for b in sorted(ctx.blocks, key=lambda b: (b.day, b.start)):
-        if now.date() <= b.day < last:
-            out.setdefault(b.day, []).append((b.start, b.end, b.title or "busy", "fixed" if b.status == "committed" else "planned"))
+    for offset in range(days):
+        day = now.date() + timedelta(days=offset)
+        if day >= last:
+            break
+        for b in _day_rows(ctx, day):
+            out.setdefault(b.day, []).append((b.start, b.end, b.title or "busy", "fixed" if b.status == BLOCK_COMMITTED else "planned"))
     return out

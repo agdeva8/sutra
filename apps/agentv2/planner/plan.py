@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from ..config import DAY_WINDOW_WEEKS, FIX_MAX_LOOPS
+from ..config import DAY_WINDOW_WEEKS, FIX_MAX_LOOPS, PROGRESS_REVIEW, PROGRESS_WEEK, PROGRESS_WEEKS
+
+Progress = Callable[[str], None]
 from ..contracts import AddPlanWeek, Change, ChangeSet, Origin
 from ..contracts.planner import GoalSpec
 from ..core.context import Context
@@ -23,11 +26,15 @@ class GoalPlan:
     notes: list[str] = field(default_factory=list)
 
 
-def plan_week_with_critic(chat, goal: GoalSpec, w, ctx: Context, now: datetime, notes: list[str]):
+def plan_week_with_critic(chat, goal: GoalSpec, w, ctx: Context, now: datetime, notes: list[str], progress: Progress | None = None):
     """Plan a week's days, have it reviewed, and re-plan with the critic's problems as feedback."""
     feedback: str | None = None
     for attempt in range(1 + FIX_MAX_LOOPS):
+        if progress:
+            progress(PROGRESS_WEEK.format(week=f"{w.week:%d %b}"))
         changes, new_ctx, how = plan_day_level(chat, goal, w, ctx, now, feedback)
+        if progress:
+            progress(PROGRESS_REVIEW.format(week=f"{w.week:%d %b}"))
         verdict = critique_week(chat, goal, w, changes)
         if verdict is None or verdict.ok or not verdict.problems:
             if attempt:
@@ -38,7 +45,9 @@ def plan_week_with_critic(chat, goal: GoalSpec, w, ctx: Context, now: datetime, 
     return changes, new_ctx, how
 
 
-def plan_goal(chat, goal: GoalSpec, ctx: Context, now: datetime) -> GoalPlan:
+def plan_goal(chat, goal: GoalSpec, ctx: Context, now: datetime, progress: Progress | None = None) -> GoalPlan:
+    if progress:
+        progress(PROGRESS_WEEKS)
     wk = plan_weeks(chat, goal, ctx, now)
     notes = [f"week plan via {wk.how}"]
     if wk.shortfall > 0:
@@ -48,15 +57,15 @@ def plan_goal(chat, goal: GoalSpec, ctx: Context, now: datetime) -> GoalPlan:
     for i, w in enumerate(wk.allocs):
         changes.append(AddPlanWeek(id=new_id("pw"), goal_id=goal.id, week_start=w.week, focus=w.focus, hours=w.hours))
         if i < DAY_WINDOW_WEEKS:
-            day_changes, running, how = plan_week_with_critic(chat, goal, w, running, now, notes)
+            day_changes, running, how = plan_week_with_critic(chat, goal, w, running, now, notes, progress)
             changes += day_changes
             notes.append(f"{w.week:%d %b}: day plan via {how}")
     return GoalPlan(goal, changes, notes)
 
 
-async def plan_goals(chat, goals: list[GoalSpec], ctx: Context, now: datetime, origin: Origin) -> tuple[ChangeSet, list[str]]:
+async def plan_goals(chat, goals: list[GoalSpec], ctx: Context, now: datetime, origin: Origin, progress: Progress | None = None) -> tuple[ChangeSet, list[str]]:
     """Plan several goals at once. Each is planned from the same snapshot, in parallel;
     `merge` then resolves any time two goals both claimed, by priority."""
-    plans = await asyncio.gather(*(asyncio.to_thread(plan_goal, chat, g, ctx, now) for g in goals))
+    plans = await asyncio.gather(*(asyncio.to_thread(plan_goal, chat, g, ctx, now, progress) for g in goals))
     merged = merge([(p.goal.priority, p.changes) for p in plans], ctx, now)
     return ChangeSet(origin=origin, changes=merged), [n for p in plans for n in p.notes]

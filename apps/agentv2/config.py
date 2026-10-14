@@ -201,3 +201,22 @@ RECURRING_HORIZON_DAYS = 120
 #: The nightly tick plans a goal again when the hours still to do and the hours still planned differ by
 #: more than this (a missed week leaves too little planned; finishing early leaves too much).
 REPLAN_DRIFT_HOURS = 2.0
+
+
+# --- About-you profile (asked once in the first-run flow) ----------------------
+
+#: Label the planner shows the model for the user's own work or study hours, which it never plans into.
+PROFILE_WORK_LABEL = "Work or study"
+#: A day's last minute. A span that runs past midnight is split here and continues the next day.
+END_OF_DAY = _time(23, 59)
+#: Weekday keys the profile uses, Monday first (index = Python's weekday()).
+PROFILE_WEEKDAY_KEYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+# --- Progress wording (what a user is told while the planner works) ----------
+
+#: Called from the planner's worker thread; must be thread-safe. `None` means nobody is listening.
+PROGRESS_WEEKS = "Working out how the effort spreads across your weeks…"
+PROGRESS_WEEK = "Planning the week of {week} — choosing days and times…"
+PROGRESS_REVIEW = "Checking the week of {week} against your calendar…"
+PROGRESS_APPLY = "Placing everything on your calendar…"

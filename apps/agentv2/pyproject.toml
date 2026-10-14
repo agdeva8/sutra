@@ -17,6 +17,6 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 package-dir = { agentv2 = "." }
 packages = [
-    "agentv2", "agentv2.chatplan", "agentv2.contracts", "agentv2.core", "agentv2.entrychat", "agentv2.gateway", "agentv2.intake",
+    "agentv2", "agentv2.chatplan", "agentv2.coach", "agentv2.contracts", "agentv2.core", "agentv2.entrychat", "agentv2.gateway", "agentv2.intake",
     "agentv2.planner", "agentv2.prompts", "agentv2.triage",
 ]

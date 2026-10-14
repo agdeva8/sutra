@@ -20,6 +20,9 @@ def free_hours_by_week(ctx: Context, now: datetime, n_weeks: int) -> dict[date, 
         k = week_start(w.day)
         if k in out:
             out[k] += w.hours
+    if ctx.weekly_cap_hours is not None:
+        # The user's own weekly figure caps what goals may take of a week, however much of it is free.
+        out = {k: min(h, ctx.weekly_cap_hours) for k, h in out.items()}
     return out
 
 
