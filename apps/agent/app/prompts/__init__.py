@@ -5,8 +5,14 @@ Two rules these prompts are written to respect, both from HLD §3:
 * The model is never asked for a date on a task. Effort and dependencies yes;
   dates are the solver's job.
 * The prompt is not trusted to enforce anything structural. "Ask when a
-  material fact is unknown" is enforced by `IntakeSpec`'s validator, not by
+  material fact is unknown" is enforced by `_MayClarify`'s validator, not by
   asking nicely (HLD §10).
+
+Every stage that may ask carries the same forcing-rule paragraph, at a bar that
+rises the further down the graph it sits: intake asks readily, propose almost
+never. The paragraph is not what enforces it — the validator is — but a stage
+that has never been told it may ask will simply plan around what it does not
+know.
 """
 from __future__ import annotations
 
@@ -58,6 +64,13 @@ The goal's size horizon sets its window: weekly = 7–14 days, short = 30–90,
 medium = 90–270, long = 270–540. Pick the horizon that matches what the user
 asked for and keep target_date inside it.
 
+MATERIAL UNKNOWNS — the same forcing rule as intake, with a high bar. If the
+goal rests on an unstated assumption that changes its whole shape — the target
+role, whether they are starting fresh or switching, a deadline you were not
+told — list it in `material_unknowns` and ask about it in
+`clarifying_questions`. Do not ask about anything you can reasonably infer, or
+that would change only detail. Asking costs the user a turn.
+
 Today is {today}.
 What the user already has: {existing}
 Context: {context}
@@ -76,9 +89,17 @@ really takes, what must come first, and which steps are load-bearing.
 
 Do NOT give a step a date. The solver places steps on days.
 
+MATERIAL UNKNOWNS — the same forcing rule as intake, with a high bar. A fact
+about the user's life that changes what the steps ARE — their current level, a
+hard deadline, the hours they actually have — belongs in `material_unknowns`,
+with a question in `clarifying_questions`. Being unsure how long a step takes
+does not qualify: estimate it and move on. Asking costs the user a turn.
+
 Availability: {availability}
 Weekly rows to decompose:
-{rows}"""
+{rows}
+
+Context: {context}"""
 
 
 REVIEW = """You are reviewing a placement the solver produced. Judge whether it
@@ -101,11 +122,20 @@ Your deltas are the only thing that changes the answer.
 Delta kinds: precedence, allowed_days, avoid_week, max_per_day, session_max,
 pin, priority_bump.
 
+ASKING vs DELTAS — these are not interchangeable, and this is the one stage
+where the two overlap. Use a delta for anything about the SCHEDULE: the solver
+can act on it, and the plan is repaired without costing the user a turn. Use
+`material_unknowns` only for a missing FACT ABOUT THE USER'S LIFE — the hours
+they actually have, a deadline, a constraint that cannot be written as a delta.
+If a delta can express it, emit the delta.
+
 Availability: {availability}
 Blockers: {blockers}
 
 Placement under review:
-{placement}"""
+{placement}
+
+Context: {context}"""
 
 
 PROPOSE = """Propose exactly one action.
@@ -113,7 +143,13 @@ PROPOSE = """Propose exactly one action.
 Return a ReplanAction with an intent, the goal it applies to, and the SEMANTIC
 change. Never include task dates — the solver owns those.
 
-Keep the change surgical: change what the user asked for and nothing else."""
+Keep the change surgical: change what the user asked for and nothing else.
+
+MATERIAL UNKNOWNS — the same forcing rule as intake, at the highest bar in the
+graph. You are the last stage before the user gets an answer, so asking here
+costs them the whole wait. Use `material_unknowns` only when you genuinely
+cannot choose between actions without the answer, and the answer is a fact
+about the user's life — not a preference, which belongs in the action itself."""
 
 
 FACTS = """Extract durable facts about the user worth remembering across

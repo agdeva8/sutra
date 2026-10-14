@@ -21,6 +21,7 @@ Two rules this module enforces in code rather than in prose:
 """
 from __future__ import annotations
 
+import hashlib
 from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -256,6 +257,106 @@ class PlanItemRow(_Strict):
 # --------------------------------------------------------------------------
 
 
+class ClarifyQuestion(_Llm):
+    """One question for the user. `id` is OPTIONAL — the model has no reason to
+    invent a stable key, and the graph keys answers positionally anyway."""
+
+    id: str = ""
+    question: str
+    options: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _ensure_id(self) -> ClarifyQuestion:
+        if not self.id:
+            # A stable digest, NOT `hash()`: `str.__hash__` is randomized by
+            # PYTHONHASHSEED, so `hash()` hands the same question a different id
+            # in every process — an API restart or a second worker renumbers the
+            # questions under a thread that is paused on them. Nothing keys on
+            # the id today, which is exactly why it is worth fixing before
+            # something does.
+            self.id = "q" + hashlib.blake2s(
+                self.question.encode("utf-8"), digest_size=4
+            ).hexdigest()
+        return self
+
+    @field_validator("options", mode="before")
+    @classmethod
+    def _options_are_strings(cls, v: Any) -> Any:
+        if not isinstance(v, list):
+            return []
+        out: list[str] = []
+        for o in v:
+            if isinstance(o, str):
+                out.append(o)
+            elif isinstance(o, dict):
+                # {"label": "…"} / {"value": "…"} — take the first string-ish value
+                for key in ("label", "value", "text", "option", "title"):
+                    if isinstance(o.get(key), str):
+                        out.append(o[key])
+                        break
+        return out
+
+
+class _MayClarify(_Llm):
+    """Base for the stage outputs that may report a material unknown.
+
+    The forcing rule (HLD §10) lives here rather than in a prompt, so a model
+    cannot forget to ask: a listed unknown with no question is *completed* with
+    one rather than failing the turn. Extracted out of `IntakeSpec` once the
+    interrupt stopped being an intake-only event — `n_plan`, `n_decompose`,
+    `n_review` and `n_propose` can each find one.
+
+    `origin` and `resume` are deliberately NOT fields. The model decides
+    *whether* to divert to the interrupt; which node execution returns to is a
+    per-stage constant in `nodes.py`. Keeping the destination out of the schema
+    is what leaves the control flow statically enumerable (HLD §6).
+    """
+
+    material_unknowns: list[str] = Field(default_factory=list)
+    clarifying_questions: list[ClarifyQuestion] = Field(default_factory=list)
+    framing_line: str = ""
+
+    @field_validator("material_unknowns", mode="before")
+    @classmethod
+    def _unknowns_are_strings(cls, v: Any) -> Any:
+        """A model returns `{"key": …, "reason": …}`; downstream wants a name."""
+        if not isinstance(v, list):
+            return []
+        out: list[str] = []
+        for u in v:
+            if isinstance(u, str):
+                out.append(u)
+            elif isinstance(u, dict):
+                for key in ("key", "name", "unknown", "field", "what"):
+                    if isinstance(u.get(key), str):
+                        out.append(u[key])
+                        break
+                else:
+                    if isinstance(u.get("reason"), str):
+                        out.append(u["reason"])
+        return out
+
+    @model_validator(mode="after")
+    def _material_unknown_forces_a_question(self) -> _MayClarify:
+        """HLD §10: a material unknown makes the clarify interrupt MANDATORY.
+
+        Enforced here rather than trusted to the prompt, so the model cannot
+        forget to ask. A model that lists an unknown and forgets the question is
+        completed rather than rejected — the invariant is "we must ask", and
+        synthesising the question satisfies it more usefully than failing the
+        whole turn.
+        """
+        if self.material_unknowns and not self.clarifying_questions:
+            self.clarifying_questions = [
+                ClarifyQuestion(
+                    id=f"u{i}",
+                    question=f"What is the {u}?",
+                )
+                for i, u in enumerate(self.material_unknowns, start=1)
+            ]
+        return self
+
+
 class MilestoneSpec(_Llm):
     """A milestone is an OUTCOME checkpoint — an overlay chip, not a plan level.
 
@@ -291,7 +392,7 @@ class GoalSpec(_Llm):
         return out[:4]
 
 
-class PlanSpec(_Llm):
+class PlanSpec(_MayClarify):
     """Stage `n_plan` output — goal + milestones. No dates on milestones."""
 
     goal: GoalSpec | None = None
@@ -311,7 +412,7 @@ class DecomposeStep(_Llm):
     session_max_hours: float | None = Field(default=None, gt=0)
 
 
-class DecomposeSpec(_Llm):
+class DecomposeSpec(_MayClarify):
     """Keyed by the weekly row's title; each value is that week's steps."""
 
     steps: dict[str, list[DecomposeStep]] = Field(default_factory=dict)
@@ -334,84 +435,9 @@ def _as_step_list(v: Any) -> Any:
     return v
 
 
-class ClarifyQuestion(_Llm):
-    """One question for the user. `id` is OPTIONAL — the model has no reason to
-    invent a stable key, and the graph keys answers positionally anyway."""
-
-    id: str = ""
-    question: str
-    options: list[str] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def _ensure_id(self) -> ClarifyQuestion:
-        if not self.id:
-            self.id = f"q{abs(hash(self.question)) % 10**6}"
-        return self
-
-    @field_validator("options", mode="before")
-    @classmethod
-    def _options_are_strings(cls, v: Any) -> Any:
-        if not isinstance(v, list):
-            return []
-        out: list[str] = []
-        for o in v:
-            if isinstance(o, str):
-                out.append(o)
-            elif isinstance(o, dict):
-                # {"label": "…"} / {"value": "…"} — take the first string-ish value
-                for key in ("label", "value", "text", "option", "title"):
-                    if isinstance(o.get(key), str):
-                        out.append(o[key])
-                        break
-        return out
-
-
-class IntakeSpec(_Llm):
+class IntakeSpec(_MayClarify):
     intent: Intent
-    material_unknowns: list[str] = Field(default_factory=list)
-    clarifying_questions: list[ClarifyQuestion] = Field(default_factory=list)
     referenced_goal_titles: list[str] = Field(default_factory=list)
-    framing_line: str = ""
-
-    @field_validator("material_unknowns", mode="before")
-    @classmethod
-    def _unknowns_are_strings(cls, v: Any) -> Any:
-        """A model returns `{"key": …, "reason": …}`; downstream wants a name."""
-        if not isinstance(v, list):
-            return []
-        out: list[str] = []
-        for u in v:
-            if isinstance(u, str):
-                out.append(u)
-            elif isinstance(u, dict):
-                for key in ("key", "name", "unknown", "field", "what"):
-                    if isinstance(u.get(key), str):
-                        out.append(u[key])
-                        break
-                else:
-                    if isinstance(u.get("reason"), str):
-                        out.append(u["reason"])
-        return out
-
-    @model_validator(mode="after")
-    def _material_unknown_forces_a_question(self) -> IntakeSpec:
-        """HLD §10: a material unknown makes the clarify interrupt MANDATORY.
-
-        Enforced here rather than trusted to the prompt, so the model cannot
-        forget to ask. A model that lists an unknown and forgets the question is
-        completed rather than rejected — the invariant is "we must ask", and
-        synthesising the question satisfies it more usefully than failing the
-        whole turn.
-        """
-        if self.material_unknowns and not self.clarifying_questions:
-            self.clarifying_questions = [
-                ClarifyQuestion(
-                    id=f"u{i}",
-                    question=f"What is the {u}?",
-                )
-                for i, u in enumerate(self.material_unknowns, start=1)
-            ]
-        return self
 
 
 # --------------------------------------------------------------------------
@@ -429,7 +455,7 @@ class PlanChanges(_Llm):
     phase_objectives: list[str] = Field(default_factory=list)
 
 
-class ReplanAction(_Llm):
+class ReplanAction(_MayClarify):
     """The ONE tool action, replacing v1's nine."""
 
     intent: Intent
@@ -477,7 +503,7 @@ class ConstraintDelta(_Llm):
         return self
 
 
-class PlacementCritique(_Llm):
+class PlacementCritique(_MayClarify):
     """`n_review` output. On rejection, deltas are mandatory.
 
     Without them the loop cannot converge: CP-SAT is deterministic, so

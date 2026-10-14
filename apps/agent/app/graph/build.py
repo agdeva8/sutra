@@ -6,8 +6,9 @@ checkpointer is the shared, durable piece.
 """
 from __future__ import annotations
 
+import inspect
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
@@ -30,6 +31,23 @@ from app.graph.nodes import (
 from app.graph.state import PlanState, initial_state
 from app.llm.client import CompleteFn
 from app.observability import configure_tracing, run_url, turn_trace
+
+
+def _node_meta(fn: Callable[..., Any]) -> dict[str, Any]:
+    """The node's docstring, as node metadata, for the Studio node panel.
+
+    LangGraph has no description field on a node in this version: `add_node(...,
+    description=…)` is accepted and then silently dropped, and the served graph
+    payload carries only `{"name": "n_intake"}`. `metadata` *is* forwarded into
+    that payload (`Pregel.get_graph` → `draw_graph` → `Graph.add_node`), so the
+    docstring rides there rather than being written a second time next to it.
+
+    First paragraph only: the rest of these docstrings argues about HLD rules,
+    which is the right thing to read in the source and the wrong thing in a
+    side panel. The node function's own docstring stays the single source.
+    """
+    summary = (inspect.getdoc(fn) or "").split("\n\n", 1)[0].strip()
+    return {"description": summary} if summary else {}
 
 
 def build_plan_graph(*, complete: CompleteFn, checkpointer: Any):
@@ -59,36 +77,49 @@ def build_plan_graph(*, complete: CompleteFn, checkpointer: Any):
     async def _propose(s: dict) -> dict:
         return await n_propose(s, complete=complete)
 
-    g.add_node("n_intake", _intake)
-    g.add_node("n_clarify", n_clarify)
-    g.add_node("n_plan", _plan)
-    g.add_node("n_lattice", n_lattice)
-    g.add_node("n_decompose", _decompose)
-    g.add_node("n_place", n_place)
-    g.add_node("n_verify", n_verify)
-    g.add_node("n_review", _review)
-    g.add_node("n_headroom", n_headroom)
-    g.add_node("n_propose", _propose)
-    g.add_node("n_validate", n_validate)
-    g.add_node("n_replan_done", n_replan_done)
+    # `metadata` carries each node's own docstring into the graph payload
+    # Studio draws from — see `_node_meta`. The wrapper closures have no
+    # docstring of their own, so each points at the node it wraps.
+    g.add_node("n_intake", _intake, metadata=_node_meta(n_intake))
+    g.add_node("n_clarify", n_clarify, metadata=_node_meta(n_clarify))
+    g.add_node("n_plan", _plan, metadata=_node_meta(n_plan))
+    g.add_node("n_lattice", n_lattice, metadata=_node_meta(n_lattice))
+    g.add_node("n_decompose", _decompose, metadata=_node_meta(n_decompose))
+    g.add_node("n_place", n_place, metadata=_node_meta(n_place))
+    g.add_node("n_verify", n_verify, metadata=_node_meta(n_verify))
+    g.add_node("n_review", _review, metadata=_node_meta(n_review))
+    g.add_node("n_headroom", n_headroom, metadata=_node_meta(n_headroom))
+    g.add_node("n_propose", _propose, metadata=_node_meta(n_propose))
+    g.add_node("n_validate", n_validate, metadata=_node_meta(n_validate))
+    g.add_node("n_replan_done", n_replan_done, metadata=_node_meta(n_replan_done))
 
     # START is conditional so a replan can enter deeper (HLD §9.1). Safe for
     # threads paused before this edge existed: edge topology is not part of a
     # checkpoint, so a thread waiting at `n_clarify` resumes exactly as it did.
     g.add_conditional_edges(START, R.at_start, ["n_intake", "n_place"])
     g.add_conditional_edges("n_intake", R.after_intake, ["n_clarify", "n_plan", END])
-    g.add_conditional_edges("n_clarify", R.after_clarify, ["n_intake"])
-    g.add_conditional_edges("n_plan", R.after_plan, ["n_lattice", END])
+    # The resume set is every origin's declared `resume` constant plus intake.
+    # It is a fixed list, not a dynamic one: which node execution returns to is
+    # decided by code, never by the model, so the reachable paths stay
+    # enumerable even though any of five stages may divert here (HLD §6).
+    g.add_conditional_edges(
+        "n_clarify",
+        R.after_clarify,
+        ["n_intake", "n_plan", "n_decompose", "n_review", "n_propose"],
+    )
+    g.add_conditional_edges("n_plan", R.after_plan, ["n_clarify", "n_lattice", END])
     g.add_conditional_edges("n_lattice", R.after_lattice, ["n_decompose", END])
-    g.add_conditional_edges("n_decompose", R.after_decompose, ["n_place", END])
+    g.add_conditional_edges("n_decompose", R.after_decompose, ["n_clarify", "n_place", END])
     g.add_conditional_edges("n_place", R.after_place, ["n_verify", END])
     g.add_conditional_edges("n_verify", R.after_verify, ["n_review", END])
     g.add_conditional_edges(
-        "n_review", R.after_review, ["n_headroom", "n_place", "n_replan_done", END]
+        "n_review",
+        R.after_review,
+        ["n_clarify", "n_headroom", "n_place", "n_replan_done", END],
     )
     g.add_edge("n_replan_done", END)
     g.add_conditional_edges("n_headroom", R.after_headroom, ["n_propose", END])
-    g.add_conditional_edges("n_propose", R.after_propose, ["n_validate", END])
+    g.add_conditional_edges("n_propose", R.after_propose, ["n_clarify", "n_validate", END])
     g.add_conditional_edges("n_validate", R.after_validate, ["n_propose", END])
 
     return g.compile(checkpointer=checkpointer)
@@ -125,7 +156,7 @@ async def run_plan(
     # whatever prefix it chose — that is what makes the retention rule in
     # `store/checkpointer.py` expressible as a prefix match.
     thread = thread_id or f"ephemeral-{uuid.uuid4()}"
-    run_config = {"configurable": {"thread_id": thread}}
+    run_config = {"configurable": {"thread_id": thread}, "recursion_limit": _RECURSION_LIMIT}
 
     graph_input = Command(resume=resume) if resume is not None else initial_state(message=message, **state_kw)
 
@@ -207,7 +238,7 @@ async def run_replan(
         checkpointer = _memory_checkpointer()
 
     graph = build_plan_graph(complete=complete, checkpointer=checkpointer)
-    run_config = {"configurable": {"thread_id": thread_id}}
+    run_config = {"configurable": {"thread_id": thread_id}, "recursion_limit": _RECURSION_LIMIT}
 
     graph_input: dict[str, Any] = {
         **_REPLAN_RESET,
@@ -226,6 +257,16 @@ async def run_replan(
     ) as turn:
         out = await graph.ainvoke(graph_input, run_config)
     return _shape_result(out, thread_id, run_url(turn))
+
+
+#: The superstep budget for one `ainvoke`, set explicitly rather than inherited.
+#:
+#: LangChain's default is 25 and it was never chosen here; the longest path (a
+#: mid-graph clarify, its resume, a review-rejection round and a validate retry)
+#: now runs ~18, leaving a margin that was a coincidence rather than a decision.
+#: It matters because `GraphRecursionError` is neither `LlmError` nor `ValueError`
+#: — it would escape `ainvoke` and break the "never fail" invariant (HLD §13).
+_RECURSION_LIMIT = 50
 
 
 #: The turn-scoped keys a replan has to clear before it runs.
@@ -249,6 +290,16 @@ _REPLAN_RESET: dict[str, Any] = {
     "renegotiation": None,
     "headroom": None,
     "place": None,
+    # A stale request would divert the replan's first node. `clarify_asked` is
+    # reset because a replan is a new turn: leaving it set is what made the
+    # mandatory-clarify invariant unable to fire on an *escalated* replan — the
+    # gate read the previous turn's answers and concluded the user had already
+    # been asked. `clarify_answers` is deliberately kept: it is the fold's input,
+    # and the answers are already folded into `context`, which a replan reuses.
+    "clarify_request": None,
+    "clarify_resume": None,
+    "clarify_rounds": 0,
+    "clarify_asked": [],
 }
 
 _MEMORY_CP: Any = None

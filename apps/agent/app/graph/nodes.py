@@ -1,4 +1,4 @@
-"""The eleven nodes, one function each.
+"""The twelve nodes, one function each.
 
 Every node obeys the same two rules:
 
@@ -26,7 +26,11 @@ from app.core.util import add_days, days_between
 from app.core.validate import cross_validate, summarise, verify_placement
 from app.llm.client import CompleteFn, LlmError
 
-MAX_CLARIFYING_ROUNDS = 2
+#: The clarify budget for one turn. Not the livelock guard any more — `dedupe
+#: on the unknown name` is (see `_clarify_request`) — because several stages can
+#: now ask, and a budget spent refusing to repeat a question is a budget that
+#: silently stops a *legitimate* one. This is the backstop on user patience.
+MAX_CLARIFYING_ROUNDS = 3
 MAX_REVIEW_ROUNDS = 2
 MAX_EMIT_ATTEMPTS = 2
 
@@ -51,27 +55,161 @@ def _no_change(stage: str, reason: str, prose: str = "") -> dict:
 
 
 # --------------------------------------------------------------------------
+# Clarify — the one interrupt, and the one way to ask for it
+# --------------------------------------------------------------------------
+
+#: The delimiter `app.llm.client._answers` parses back out to drive the offline
+#: stub. Changing it silently changes what the stub believes the user said.
+_ANSWERS_HEADER = "ANSWERS ALREADY GIVEN:"
+
+
+def _strip_answers(context: str) -> str:
+    """Drop a previously folded answers block, so re-folding is idempotent.
+
+    The fold runs once per clarify round now, and the guarantee that it ran at
+    most once used to come from intake's `not clarify_answers` gate. Without the
+    strip a second round appends a second block, and `client._answers` reads only
+    the first — so the duplication is invisible and the context grows every round.
+    """
+    head, sep, _ = context.partition(f"\n\n{_ANSWERS_HEADER}\n")
+    if sep:
+        return head
+    head, sep, _ = context.partition(f"{_ANSWERS_HEADER}\n")
+    return head if sep else context
+
+
+def _fold_answers(context: str, answers: list[dict]) -> str:
+    """Fold every answer so far into the context every downstream stage reads.
+
+    Written by `n_clarify` rather than `n_intake` because a mid-plan resume can
+    land on a stage that never re-enters intake — and that stage still has to see
+    the answer, or it plans around the question it just asked.
+    """
+    lines = "\n".join(f"- {a.get('id')}: {a.get('answer')}" for a in answers)
+    return f"{_strip_answers(context or '')}\n\n{_ANSWERS_HEADER}\n{lines}"
+
+
+def _clarify_request(
+    state: dict,
+    *,
+    origin: str,
+    resume: str,
+    prompt: str,
+    unknowns: list[str],
+    questions: list[dict],
+    reason: str = "",
+) -> dict:
+    """The one way a stage asks the graph to interrupt. `{}` when it may not.
+
+    Every stage that can find a material unknown calls this instead of calling
+    `interrupt()` itself — it *cannot* call it: LangGraph re-executes a node from
+    its first line on resume (`langgraph/types.py`: "The graph resumes from the
+    start of the node, re-executing all logic"), so an interrupt placed after a
+    model call would replay that call on every resume. Worse than paying twice,
+    the second completion is what the resumed turn proceeds with, while the user
+    answered questions from the first. One interrupt node, kept free of model and
+    solver work above the `interrupt()` call, is what avoids that.
+
+    The forcing rule (HLD §10) lives here rather than in a router, so it is one
+    gate instead of two that can disagree.
+
+    `origin` and `resume` are code constants, never model output: the model may
+    divert to the interrupt, but it never chooses where control returns. That is
+    what keeps the reachable path set statically enumerable (HLD §6).
+    """
+    if state.get("result") is not None:
+        # A stage that is ending the turn must not also ask. `_early` would drop
+        # the request anyway, but making it structural means no future router has
+        # to be careful about the order.
+        return {}
+
+    if not questions and not unknowns:
+        # Nothing to ask — the ordinary case for a stage that found no unknown.
+        # A *deliberate* move without a question is `_reroute`, not this: they
+        # are not the same request and conflating them makes every stage divert.
+        return {}
+
+    asked = list(state.get("clarify_asked") or [])
+    fresh = [u for u in unknowns if u not in asked]
+    if not fresh:
+        # Nothing new to ask. This is what stops a resumed stage re-asking the
+        # unknown it was just answered on — without it a turn burns its whole
+        # budget repeating itself and then plans around the unknown anyway.
+        return {}
+    if state.get("clarify_rounds", 0) >= MAX_CLARIFYING_ROUNDS:
+        return {}
+
+    return {
+        "clarify_request": {
+            "origin": origin,
+            "resume": resume,
+            "prompt": prompt,
+            "questions": questions,
+            "reason": reason,
+        },
+        "clarify_asked": [*asked, *fresh],
+    }
+
+
+def _reroute(state: dict, *, origin: str, resume: str, reason: str) -> dict:
+    """Ask the graph to move, without asking the user anything.
+
+    A resumed stage that finds the answer has invalidated the plan needs to
+    regress — `n_decompose` was answered "complete beginner" and the milestones
+    assume five years. It expresses that as a clarify request carrying a target
+    and no questions, which travels the same key, node and edges as a real one:
+    the router diverts, `n_clarify` finds nothing to ask, and simply re-routes.
+
+    Reusing the clarify plumbing rather than adding a routing key of its own is
+    deliberate. A routing key would have to be cleared by whichever node it
+    landed on, and every origin router reads it — so a stale value would send the
+    graph back to the same node forever. This one is consumed by `n_clarify` in
+    the same turn it was written, so it cannot outlive its use.
+    """
+    if state.get("result") is not None:
+        return {}
+    return {
+        "clarify_request": {
+            "origin": origin,
+            "resume": resume,
+            "prompt": "",
+            "questions": [],
+            "reason": reason,
+        }
+    }
+
+
+def _clarify_payload(state: dict) -> tuple[list[dict], str, str]:
+    """Resolve `(questions, prompt, resume)` for this `n_clarify` invocation.
+
+    Split out of the node so the compatibility promise below is testable:
+    `interrupt()` needs a running task's scratchpad, so a node that calls it
+    cannot be invoked directly from a test.
+
+    The `intake` fallback is compatibility, not defensiveness — a thread paused
+    here by an older deploy has no `clarify_request` in its checkpoint, and
+    `n_clarify` re-executes from its first line when that thread resumes
+    (HLD §11.1). Without it, every already-paused thread comes back with nothing
+    to ask.
+    """
+    req = state.get("clarify_request") or {}
+    intake = state.get("intake") or {}
+    questions = req.get("questions") or intake.get("clarifying_questions") or []
+    prompt = req.get("prompt") or intake.get("framing_line") or ""
+    return questions, prompt, req.get("resume") or "n_intake"
+
+
+# --------------------------------------------------------------------------
 # 1. intake
 # --------------------------------------------------------------------------
 
 
 async def n_intake(state: dict, *, complete: CompleteFn) -> dict:
     """Classify the turn. May route to clarify, or end the turn early."""
-    answers = state.get("clarify_answers") or []
-    context = state.get("context") or ""
-    if answers:
-        # Fold prior answers into context so the next intake pass sees them —
-        # this is what makes the clarify loop terminate. The augmented context
-        # is WRITTEN BACK to state, not just used locally: every downstream
-        # stage (plan, decompose, review, propose) needs to know what the user
-        # said, or it plans around the question it just asked.
-        lines = "\n".join(f"- {a.get('id')}: {a.get('answer')}" for a in answers)
-        context = f"{context}\n\nANSWERS ALREADY GIVEN:\n{lines}"
-
     user = prompts.INTAKE.format(
         today=state.get("today"),
         existing=", ".join(state.get("existing_goal_titles") or []) or "none",
-        context=context or "none",
+        context=state.get("context") or "none",
         message=state.get("message", ""),
     )
     try:
@@ -83,36 +221,57 @@ async def n_intake(state: dict, *, complete: CompleteFn) -> dict:
             "result": _no_change("intake", str(exc)),
         }
 
-    data = intake.model_dump()
-    updates: dict[str, Any] = {"intake": data, "intent": intake.intent, "context": context}
-
-    # The mandatory-clarify invariant (HLD §10). `IntakeSpec` already refuses a
-    # material unknown without a question; this is the second gate — the graph
-    # will not plan around an unknown even if a question was asked and ignored.
-    rounds = state.get("clarify_rounds", 0)
-    if intake.material_unknowns and not answers and rounds < MAX_CLARIFYING_ROUNDS:
-        return updates  # router sends us to n_clarify
-
+    updates: dict[str, Any] = {"intake": intake.model_dump(), "intent": intake.intent}
+    # The mandatory-clarify invariant (HLD §10), through the same gate every
+    # other stage uses. The answers reach this prompt via `state["context"]`,
+    # which `n_clarify` folds — intake no longer folds them itself, because a
+    # mid-plan resume can reach a stage that never comes back through here.
+    updates.update(
+        _clarify_request(
+            state,
+            origin="n_intake",
+            resume="n_intake",
+            prompt=intake.framing_line,
+            unknowns=intake.material_unknowns,
+            questions=[q.model_dump() for q in intake.clarifying_questions],
+            reason="material unknown at intake",
+        )
+    )
     return updates
 
 
 async def n_clarify(state: dict) -> dict:
-    """Pause for the user. One `interrupt()` per invocation (HLD §6)."""
-    intake = state.get("intake") or {}
-    questions = intake.get("clarifying_questions") or []
+    """Pause for the user — or re-route. One `interrupt()` per invocation (HLD §6).
+
+    Deliberately does no model or solver work before the `interrupt()` call:
+    LangGraph re-executes this node from its first line on resume, so anything
+    expensive above it would be paid for twice, and the second result is the one
+    that would drive the resumed turn.
+    """
+    questions, prompt, resume = _clarify_payload(state)
+
+    if not questions:
+        # A reroute, not a question: the origin saw the answer and the premise
+        # changed. No round is spent and no interrupt is raised.
+        return {"clarify_request": None, "clarify_resume": resume}
+
     answers = interrupt(
         {
             "kind": "clarify",
-            "prompt": intake.get("framing_line")
-            or "A couple of details would change the plan meaningfully:",
+            "prompt": prompt or "A couple of details would change the plan meaningfully:",
             "questions": questions,
         }
     )
     if isinstance(answers, dict):
         answers = [answers]
+    all_answers = [*(state.get("clarify_answers") or []), *list(answers or [])]
+
     return {
-        "clarify_answers": list(answers or []),
+        "clarify_answers": all_answers,
         "clarify_rounds": state.get("clarify_rounds", 0) + 1,
+        "context": _fold_answers(state.get("context") or "", all_answers),
+        "clarify_request": None,  # consume the inbox
+        "clarify_resume": resume,  # publish the outbox
     }
 
 
@@ -122,6 +281,11 @@ async def n_clarify(state: dict) -> dict:
 
 
 async def n_plan(state: dict, *, complete: CompleteFn) -> dict:
+    """MEANING ONLY: the goal, its phases and its milestones.
+
+    No dates — those come from the solver in `n_place`. A plan with no goal is
+    a rejection, not a plan to repair.
+    """
     user = prompts.PLAN.format(
         today=state.get("today"),
         existing=", ".join(state.get("existing_goal_titles") or []) or "none",
@@ -139,7 +303,22 @@ async def n_plan(state: dict, *, complete: CompleteFn) -> dict:
             "result": _no_change("plan", "the model returned no goal"),
         }
 
-    return {"plan": plan.model_dump(), "intent": state.get("intent") or "add_goal"}
+    updates: dict[str, Any] = {
+        "plan": plan.model_dump(),
+        "intent": state.get("intent") or "add_goal",
+    }
+    updates.update(
+        _clarify_request(
+            state,
+            origin="n_plan",
+            resume="n_plan",
+            prompt=plan.framing_line,
+            unknowns=plan.material_unknowns,
+            questions=[q.model_dump() for q in plan.clarifying_questions],
+            reason="material unknown at plan",
+        )
+    )
+    return updates
 
 
 # --------------------------------------------------------------------------
@@ -192,6 +371,7 @@ async def n_decompose(state: dict, *, complete: CompleteFn) -> dict:
     user = prompts.DECOMPOSE.format(
         availability=state.get("availability") or "{}",
         rows=rows,
+        context=state.get("context") or "none",
     )
     try:
         spec = await complete(prompts.BASE, user, S.DecomposeSpec)
@@ -209,6 +389,17 @@ async def n_decompose(state: dict, *, complete: CompleteFn) -> dict:
     updates: dict[str, Any] = {"tasks": [t.model_dump() for t in tasks]}
     if "note" in dir():
         updates["rejects"] = note
+    updates.update(
+        _clarify_request(
+            state,
+            origin="n_decompose",
+            resume="n_decompose",
+            prompt=spec.framing_line,
+            unknowns=spec.material_unknowns,
+            questions=[q.model_dump() for q in spec.clarifying_questions],
+            reason="material unknown at decompose",
+        )
+    )
     return updates
 
 
@@ -335,6 +526,7 @@ async def n_review(state: dict, *, complete: CompleteFn) -> dict:
         availability=state.get("availability") or "{}",
         blockers=state.get("blocked_dates") or "none",
         placement=placement,
+        context=state.get("context") or "none",
     )
     try:
         critique = await complete(prompts.BASE, user, S.PlacementCritique)
@@ -346,6 +538,25 @@ async def n_review(state: dict, *, complete: CompleteFn) -> dict:
         }
 
     updates: dict[str, Any] = {"critique": critique.model_dump()}
+
+    # A critique that reports a material unknown is ASKING, not rejecting, and
+    # it short-circuits. `PlacementCritique` already coerces a delta-less
+    # rejection to ok, so letting an unknown-bearing critique fall through would
+    # give this one node two overlapping escape hatches for "the placement is
+    # wrong" — and the model would take whichever is cheaper to emit.
+    request = _clarify_request(
+        state,
+        origin="n_review",
+        resume="n_plan",
+        prompt=critique.framing_line,
+        unknowns=critique.material_unknowns,
+        questions=[q.model_dump() for q in critique.clarifying_questions],
+        reason="material unknown at review",
+    )
+    if request:
+        updates.update(request)
+        return updates
+
     if not critique.ok:
         # Accumulate: round 2 sees round 1's constraints, so the loop converges.
         # `deltas` has no reducer (unlike `rejects`), so the merge is written out
@@ -378,6 +589,11 @@ async def n_review(state: dict, *, complete: CompleteFn) -> dict:
 
 
 async def n_headroom(state: dict) -> dict:
+    """Pure capacity gate: does the new goal fit beside the active ones?
+
+    Over budget ends the turn as `renegotiate` with the options to pick from.
+    Pure — no model call, no solver.
+    """
     plan = state.get("plan") or {}
     goal = plan.get("goal") or {}
     new_hours = float(goal.get("weekly_hours") or 0)
@@ -406,6 +622,11 @@ async def n_headroom(state: dict) -> dict:
 
 
 async def n_propose(state: dict, *, complete: CompleteFn) -> dict:
+    """One action, discriminated by intent, emitted as a `ReplanAction`.
+
+    On a retry the previous rejection is folded back into the prompt — that is
+    what makes the re-emit a repair rather than a fresh guess.
+    """
     plan = state.get("plan") or {}
     goal = plan.get("goal") or {}
     context = state.get("context") or "none"
@@ -434,7 +655,22 @@ async def n_propose(state: dict, *, complete: CompleteFn) -> dict:
     if action.intent != "add_goal" and not action.goal_id:
         action = action.model_copy(update={"goal_id": state.get("goal_id") or "goal"})
 
-    return {"proposals": [action.model_dump()], "attempts": state.get("attempts", 0) + 1}
+    updates: dict[str, Any] = {
+        "proposals": [action.model_dump()],
+        "attempts": state.get("attempts", 0) + 1,
+    }
+    updates.update(
+        _clarify_request(
+            state,
+            origin="n_propose",
+            resume="n_propose",
+            prompt=action.framing_line,
+            unknowns=action.material_unknowns,
+            questions=[q.model_dump() for q in action.clarifying_questions],
+            reason="material unknown at propose",
+        )
+    )
+    return updates
 
 
 # --------------------------------------------------------------------------
@@ -443,6 +679,12 @@ async def n_propose(state: dict, *, complete: CompleteFn) -> dict:
 
 
 async def n_validate(state: dict) -> dict:
+    """Grounding: is every claimed item actually in the plan? Verdict in code.
+
+    A failure bounces back to `n_propose` while attempts remain; past
+    `MAX_EMIT_ATTEMPTS` the turn ends `no_change` rather than shipping an
+    ungrounded proposal. Pure — no model call.
+    """
     actions = [S.ReplanAction.model_validate(p) for p in state.get("proposals", [])]
     items = [S.PlanItemRow.model_validate(i) for i in state.get("items", [])]
     plan = state.get("plan") or {}

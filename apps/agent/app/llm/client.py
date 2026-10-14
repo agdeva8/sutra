@@ -417,14 +417,23 @@ _DOMAIN = re.compile(
     re.I,
 )
 _HOURS = re.compile(r"(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\b", re.I)
+# The hours question's own options ("3–5", "11–15", "16+") carry no unit, so a
+# card answer never matches `_HOURS`. Without this the stub re-asks the
+# question it was just answered. Used only for "was hours already answered".
+_HOURS_ANSWER = re.compile(r"\b\d+\s*[-–—]\s*\d+\b|\b\d+\s*\+")
 _MONTHS = re.compile(r"\b(\d+)\s*(?:months?|mo)\b", re.I)
 _WEEKS = re.compile(r"\b(\d+)\s*(?:weeks?|w)\b", re.I)
 
 
 def _user_message(user: str) -> str:
-    """The last `User:` line — the stub only needs the actual request."""
-    m = re.findall(r"^User:\s*(.+)$", user, re.M)
-    return m[-1].strip() if m else user.strip()
+    """Everything after the last `User:` marker — the stub only needs the request.
+
+    The message is the final thing in every stage prompt and can span lines (a
+    clarify card submits one line per answer), so this reads to the end rather
+    than stopping at the first newline.
+    """
+    parts = re.split(r"^User:\s*", user, flags=re.M)
+    return parts[-1].strip() if len(parts) > 1 else user.strip()
 
 
 def _today(user: str) -> str:
@@ -482,7 +491,7 @@ def _stub_intake(user: str):
                 options=["software engineering", "data / ML", "product", "other"],
             )
         )
-    if intent == "add_goal" and not _HOURS.search(msg):
+    if intent == "add_goal" and not (_HOURS.search(msg) or _HOURS_ANSWER.search(msg)):
         unknowns.append("hours available per week")
         questions.append(
             S.ClarifyQuestion(
@@ -513,6 +522,25 @@ def _answers(user: str) -> dict[str, str]:
         if m:
             out[m.group(1)] = m.group(2).strip()
     return out
+
+
+def _strip_answers_block(user: str) -> str:
+    """Drop the folded `ANSWERS ALREADY GIVEN` block before parsing a prompt.
+
+    The block is a run of `- ` lines, and so are the two prompt formats the
+    stubs parse: `_weekly_rows` would turn `- domain: data engineering` into a
+    phantom weekly row and then decompose the question the graph just asked, and
+    `_placement_lines` would turn a date-valued answer into a phantom slot and
+    invent a review rejection out of it. Both fail *quietly* — the plan still
+    comes out looking tidy — which is why it is stripped here rather than worked
+    around by moving `{context}` in the prompt. The order-dependent parsing is
+    the bug, not the layout.
+    """
+    head, sep, _ = user.partition("\n\nANSWERS ALREADY GIVEN:\n")
+    if sep:
+        return head
+    head, sep, _ = user.partition("ANSWERS ALREADY GIVEN:\n")
+    return head if sep else user
 
 
 def _hours_from(user: str) -> float | None:
@@ -716,7 +744,7 @@ def _size_from(msg: str) -> tuple[str, int]:
 def _weekly_rows(user: str) -> list[tuple[str, float]]:
     """Read the weekly rows out of the decompose prompt."""
     out: list[tuple[str, float]] = []
-    for line in user.splitlines():
+    for line in _strip_answers_block(user).splitlines():
         m = re.match(r"\s*[-*]\s*(.+?)\s*(?:\|\s*([\d.]+)\s*h)?\s*$", line)
         if m and m.group(1) and not m.group(1).lower().startswith(("availability", "weekly rows")):
             title = m.group(1).strip()
@@ -729,7 +757,7 @@ def _weekly_rows(user: str) -> list[tuple[str, float]]:
 def _placement_lines(user: str) -> list[tuple[str, str]]:
     """Read `task_id  date` pairs out of the review prompt."""
     out: list[tuple[str, str]] = []
-    for line in user.splitlines():
+    for line in _strip_answers_block(user).splitlines():
         m = re.match(r"\s*[-*]?\s*([\w\-]+)\s+(\d{4}-\d{2}-\d{2})\b", line)
         if m:
             out.append((m.group(1), m.group(2)))

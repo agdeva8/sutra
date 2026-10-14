@@ -3,16 +3,38 @@
 That single rule is what makes "never fail" structural rather than defensive: a
 node sets `result` and the turn is over, cleanly, without each edge having to
 know which failure produced it.
+
+The origin routers read one more key before their default, through `_early`: a
+pending `clarify_request` diverts to the interrupt. Only an *origin's* router
+reads it — `n_clarify` consumes the request in the same turn it was written, so
+no other router can ever see one.
 """
 from __future__ import annotations
 
 from langgraph.graph import END
 
-from app.graph.nodes import MAX_CLARIFYING_ROUNDS, MAX_EMIT_ATTEMPTS, MAX_REVIEW_ROUNDS
+from app.graph.nodes import MAX_EMIT_ATTEMPTS, MAX_REVIEW_ROUNDS
 
 
 def _done(state: dict) -> bool:
     return state.get("result") is not None
+
+
+def _early(state: dict) -> str | None:
+    """The two writes that pre-empt a router's default: `result`, then a request.
+
+    `result` wins: a stage that is ending the turn must not also be asking, and
+    `_clarify_request` refuses to build a request when `result` is set, so the
+    ordering is belt-and-braces rather than the only guard.
+
+    Deliberately NOT used by `at_start`, which runs against checkpointed state on
+    every new turn — a request left behind by a crashed turn would hijack the
+    next turn's entry. Staleness is handled where the state is seeded instead
+    (`initial_state`, `_REPLAN_RESET`).
+    """
+    if _done(state):
+        return END
+    return "n_clarify" if state.get("clarify_request") else None
 
 
 def _replan_slim(state: dict) -> bool:
@@ -43,25 +65,25 @@ def at_start(state: dict) -> str:
 
 
 def after_intake(state: dict) -> str:
-    if _done(state):
-        return END
-    intake = state.get("intake") or {}
-    rounds = state.get("clarify_rounds", 0)
-    # The mandatory-clarify invariant: a material unknown routes to the
-    # interrupt even though the model already produced a plan-shaped answer.
-    if intake.get("material_unknowns") and not state.get("clarify_answers"):
-        if rounds < MAX_CLARIFYING_ROUNDS:
-            return "n_clarify"
-    return "n_plan"
+    # The mandatory-clarify invariant (HLD §10) is enforced by `n_intake`'s call
+    # to `_clarify_request`, not here — one gate for every stage that can ask,
+    # instead of a router gate and a node gate that can drift apart.
+    return _early(state) or "n_plan"
 
 
 def after_clarify(state: dict) -> str:
-    """Always loop back to intake so the answers are folded into context."""
-    return "n_intake"
+    """Resume where the origin said, defaulting to intake.
+
+    The origin declares the target in `clarify_request["resume"]` and `n_clarify`
+    republishes it as `clarify_resume`. Both are code constants per stage, never
+    model output — which is what keeps the set of reachable destinations
+    enumerable even though any stage may now divert here.
+    """
+    return _early(state) or state.get("clarify_resume") or "n_intake"
 
 
 def after_plan(state: dict) -> str:
-    return END if _done(state) else "n_lattice"
+    return _early(state) or "n_lattice"
 
 
 def after_lattice(state: dict) -> str:
@@ -70,7 +92,7 @@ def after_lattice(state: dict) -> str:
 
 
 def after_decompose(state: dict) -> str:
-    return END if _done(state) else "n_place"
+    return _early(state) or "n_place"
 
 
 def after_place(state: dict) -> str:
@@ -82,8 +104,9 @@ def after_verify(state: dict) -> str:
 
 
 def after_review(state: dict) -> str:
-    if _done(state):
-        return END
+    early = _early(state)
+    if early:
+        return early
     critique = state.get("critique") or {}
     if critique.get("ok", True):
         # A slim replan stops here. It re-solved a task set whose goal hours are
@@ -104,7 +127,7 @@ def after_headroom(state: dict) -> str:
 
 
 def after_propose(state: dict) -> str:
-    return END if _done(state) else "n_validate"
+    return _early(state) or "n_validate"
 
 
 def after_validate(state: dict) -> str:

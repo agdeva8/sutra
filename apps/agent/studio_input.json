@@ -1,0 +1,14 @@
+{
+  "message": "want to switch job in 3 months",
+  "today": "2026-10-10",
+  "mode": "ask",
+  "user_id": "local",
+  "availability": { "mon": 2, "tue": 2, "wed": 2, "thu": 2, "fri": 2, "sat": 0, "sun": 0 },
+  "blocked_dates": [],
+  "weekly_budget_hours": 10.0,
+  "capacity_hours": 40.0,
+  "existing_goal_titles": [],
+  "active_goal_weekly_hours": [],
+  "goal_id": "goal-1",
+  "context": ""
+}

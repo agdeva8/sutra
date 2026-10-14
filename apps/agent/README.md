@@ -99,6 +99,53 @@ expensive part — would be the one thing missing from the trace.
 The TUI prints the trace URL under every result, and `/provider` shows whether
 tracing is on.
 
+## Driving it in LangSmith Studio
+
+Studio is the hosted UI for a LangGraph agent — the graph, the state at every
+node, the clarify interrupt rendered as a form, and the trace, in one page. It
+talks to a local **Agent Server** (`langgraph dev`) that imports
+`app/studio.py`, so nothing in `app/` changes and no production path goes
+through it.
+
+```bash
+cd apps/agent
+uv pip install --python .venv/bin/python "langgraph-cli[inmem]"
+.venv/bin/langgraph dev
+```
+
+That prints `http://localhost:2024` plus a Studio link. Open:
+
+```
+https://smith.langchain.com/studio/?baseUrl=http://127.0.0.1:2024
+```
+
+Press `Send` in the input box to run the graph. The input **is** `PlanState`,
+so paste [studio_input.json](studio_input.json) first — it is a complete
+starting state, and Studio remembers it between runs. Change `message` and
+`today` and you have a new turn.
+
+Two things to know:
+
+- **`langgraph.json` loads `.env`.** Without it the module falls back to the
+  offline stub and the run is indistinguishable from a real one until you read
+  the answer. The server prints nothing about this, so confirm with
+  `.venv/bin/python -c "import app.studio as s; print(s.graph_provider())"` if a
+  plan looks too tidy.
+- **The clarify interrupt is the interesting part.** `n_clarify` calls
+  `interrupt()`, the server pauses the thread, and Studio renders the questions
+  as a form. Submitting resumes with `Command(resume=…)` exactly as the TUI
+  does — the same mechanism, driven by a click instead of stdin. Any of the five
+  model stages can divert there (`n_intake`, `n_plan`, `n_decompose`, `n_review`,
+  `n_propose`) by writing a `clarify_request`; none of them calls `interrupt()`
+  itself, because LangGraph re-executes a node from its first line on resume.
+
+The checkpointer is the platform's, not ours. The Agent Server injects
+persistence and **rejects** a graph that brings its own — compiling with an
+`InMemorySaver` fails startup with "includes a custom checkpointer". So
+`app/studio.py` compiles with `checkpointer=None`, and the interrupt still
+works, because the platform's saver is what makes the thread resumable.
+Durable checkpointing for the product stays in `apps/api` against Postgres.
+
 ## Layout
 
 ```
@@ -113,7 +160,7 @@ app/
     staleness    blast radius, tier, the toaster strings
   contracts/   every pydantic model — the source of truth for every shape
   prompts/     one prompt per LLM stage — prose, not shapes
-  graph/       the LangGraph StateGraph (11 nodes, 1 entry point)
+  graph/       the LangGraph StateGraph (12 nodes, 1 entry point)
   llm/         the one LLM seam
   observability  LangSmith tracing — opt-in, inert when unconfigured
   tui.py       the terminal UI
@@ -132,8 +179,9 @@ These are checked in code, not trusted to a prompt:
   `MilestoneSpec` reject any date-shaped key (`date`, `start_date`,
   `target_date`, `scheduled_for`, …). Everything else the model volunteers is
   ignored, not fatal — see the boundary note below.
-- **A material unknown forces a clarifying question.** `IntakeSpec` will not
-  validate a material unknown with no question: it synthesises one.
+- **A material unknown forces a clarifying question.** `_MayClarify` will not
+  validate a material unknown with no question: it synthesises one. It is the
+  base for every stage that can ask, so the rule is not intake-only.
 - **A rejection must carry constraint deltas.** `PlacementCritique` coerces a
   bare `ok=False` to `ok=True` — because CP-SAT is deterministic, a rejection
   with no deltas cannot change the answer, so it is not a rejection.
@@ -148,11 +196,11 @@ These are checked in code, not trusted to a prompt:
 .venv/bin/python -m pytest tests/unit -q
 ```
 
-72 tests, no network and no database. The load-bearing ones assert the shared
+110 tests, no network and no database. The load-bearing ones assert the shared
 weekly budget across goals, placement reproducibility, that a task is never
 dropped, that a step longer than a day gets split, that the review loop
-converges, and that a clarifying answer reaches the plan stage rather than only
-intake.
+converges, and that a clarifying answer reaches the stage that asked — decompose
+and review as well as plan, not only intake.
 
 `tests/unit/test_contracts.py` is the model boundary, and every payload in it is
 one a real model actually returned — the verbatim DeepSeek response that failed

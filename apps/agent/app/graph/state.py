@@ -34,6 +34,20 @@ class PlanState(TypedDict, total=False):
     intake: dict | None
     clarify_rounds: int
     clarify_answers: list[dict]
+    #: The clarify inbox. A stage that finds a material unknown writes one of
+    #: these and its router diverts to `n_clarify`, which clears it. Kept
+    #: separate from `clarify_resume` (the outbox `n_clarify` writes) because the
+    #: inbox must be consumed in the same update that publishes the outbox — one
+    #: key would leave a stale request for a later router to trip over.
+    clarify_request: dict | None
+    #: Where execution resumes once the answer is in. Written by `n_clarify`,
+    #: read only by `after_clarify`. Never model output — see `_clarify_request`.
+    clarify_resume: str | None
+    #: Unknowns already asked *this turn*, by name. The livelock guard: a stage
+    #: that re-detects the unknown it was just answered on must not re-ask it.
+    #: `clarify_rounds` is a blunter budget and is not enough on its own now that
+    #: several stages can ask.
+    clarify_asked: list[str]
 
     # --- planning ----------------------------------------------------------
     plan: dict | None
@@ -89,6 +103,9 @@ def initial_state(**kw: Any) -> dict:
         "intake": None,
         "clarify_rounds": 0,
         "clarify_answers": [],
+        "clarify_request": None,
+        "clarify_resume": None,
+        "clarify_asked": [],
         "plan": None,
         "lattice": None,
         "tasks": [],

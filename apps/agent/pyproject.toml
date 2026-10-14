@@ -20,7 +20,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    # `langgraph dev` — the local Agent Server that LangSmith Studio connects
+    # to (`langgraph.json` → `app/studio.py`). `[inmem]` is the in-memory
+    # variant; it needs no Postgres, which is what keeps Studio a scratch
+    # surface next to the real store in `apps/api`.
+    "langgraph-cli[inmem]>=0.4",
+]
 
 [project.scripts]
 sutra-agent = "app.tui:main"
