@@ -7,15 +7,17 @@ import {
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
 import { SCREENS, SCREEN_BY_KEY, screenKeyFromSearch } from "../constants/screens";
+import SoonPill from "./SoonPill";
 
 /**
  * GoalMenu — the app-wide navigation dropdown. On mobile it's the
  * large-title bar (the active screen name IS the trigger); on desktop
  * it's the complementary jump-to next to the tab strip.
  *
- * Lists the eight screens in `SCREENS` (Overview · Plan · Goal · Today ·
- * Timeline · Memories · Sources · Curated) with the active one marked, so
- * labels, icons and destinations never drift from constants/screens.js.
+ * Lists every screen in `SCREENS` (Overview · Today · Goal · Timeline ·
+ * Memories · Sources · Curated for you) with the active one marked and the
+ * unfinished one carrying its Soon pill, so labels, icons, destinations and
+ * the coming-soon marker never drift from constants/screens.js.
  *
  * The TRIGGER resolves through `SCREEN_BY_KEY`, which is the lookup that
  * knows every routable key — so a panel reachable by URL without being a tab
@@ -74,6 +76,10 @@ export default function GoalMenu({ align = "end", className = "", large = false 
               >
                 <Icon className={active ? "w-4 h-4 text-[var(--accent)]" : "w-4 h-4 text-[var(--text-muted)]"} aria-hidden="true" />
                 <span className="flex-1 whitespace-nowrap">{s.label}</span>
+                {/* The pill describes the screen, not where you are, so it
+                    stays put on the screen itself; "here" is the separate
+                    fact and the two sit side by side. */}
+                {s.comingSoon && <SoonPill />}
                 {active && (
                   <span className="text-[10px] uppercase tracking-widest text-[var(--accent)]">
                     here

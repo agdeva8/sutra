@@ -3,6 +3,7 @@ import { Image as ImageIcon, Link2, Plus, Trash2, X, Loader2, Camera, ChevronLef
 import { api, API } from "../lib/api";
 import { usePersistentState } from "../hooks/useDraftPersistence";
 import AutoTextarea from "./AutoTextarea";
+import { useWebcamCapture } from "./WebcamCaptureDialog";
 
 /**
  * Memories — user-pinned photos and Instagram embeds.
@@ -41,6 +42,7 @@ export default function Memories({ state, onChange }) {
   const [adding, setAdding] = useState(false)
   const [kind, setKind] = usePersistentState("memory:new:kind", "photo")
   const [file, setFile] = useState(null)
+  const { openCamera, cameraUi } = useWebcamCapture(setFile)
   const [url, setUrl] = usePersistentState("memory:new:url", "")
   const [caption, setCaption] = usePersistentState("memory:new:caption", "")
   const [goalId, setGoalId] = useState("")
@@ -209,19 +211,16 @@ export default function Memories({ state, onChange }) {
                     onChange={(e) => setFile(e.target.files?.[0] || null)}
                   />
                 </label>
-                <label className="min-h-11 inline-flex items-center gap-2 px-3.5 rounded-lg border border-[var(--border)] text-[13px] font-medium text-[var(--text-secondary)] hover:border-[var(--border-accent)] hover:text-[var(--text-primary)] cursor-pointer transition-colors">
+                <button
+                  type="button"
+                  data-testid="memories-camera-button"
+                  onClick={openCamera}
+                  className="min-h-11 inline-flex items-center gap-2 px-3.5 rounded-lg border border-[var(--border)] text-[13px] font-medium text-[var(--text-secondary)] hover:border-[var(--border-accent)] hover:text-[var(--text-primary)] transition-colors"
+                >
                   <Camera className="w-4 h-4" aria-hidden="true" />
                   Take photo
-                  <input
-                    data-testid="memories-camera-input"
-                    type="file"
-                    accept="image/*"
-                    capture="environment"
-                    aria-label="Take a photo"
-                    hidden
-                    onChange={(e) => setFile(e.target.files?.[0] || null)}
-                  />
-                </label>
+                </button>
+                {cameraUi}
               </div>
               {file && (
                 <div className="mt-1.5 text-[11px] text-[var(--text-muted)]">

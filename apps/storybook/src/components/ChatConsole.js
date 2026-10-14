@@ -1,5 +1,6 @@
 import { useRef, useEffect, useLayoutEffect, useState } from "react";
-import { ArrowUp, Paperclip, Link2, X, FileText, Trash2, Mic, Square, Camera, Check, Send, ChevronDown, ChevronUp } from "lucide-react";
+import { useWebcamCapture } from "./WebcamCaptureDialog";
+import { ArrowUp, Paperclip, Link2, X, FileText, Trash2, Mic, Square, Camera, Check, Send } from "lucide-react";
 import ToolConfirmationPrompt from "./ToolConfirmationPrompt";
 import ChatModeSelect from "./ChatModeSelect";
 import MarkdownMessage from "./MarkdownMessage";
@@ -267,7 +268,7 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
   const endRef = useRef(null);
   const taRef = useRef(null);
   const fileRef = useRef(null);
-  const cameraRef = useRef(null);
+  const { openCamera, cameraUi } = useWebcamCapture((f) => onUploadFile(f));
   const [empty] = useState(messages.length === 0);
   const [isTyping, setIsTyping] = useState(false);
   const typingTimeoutRef = useRef(null);
@@ -285,14 +286,15 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
   //   drafts: { [questionIndex]: string }    — per-question free-text alternative
   const [picked, setPicked] = useState({});
   const [drafts, setDrafts] = useState({});
-  const [clarificationsCollapsed, setClarificationsCollapsed] = useState(false);
+  // One question on screen at a time; Back / Next move between them.
+  const [questionIndex, setQuestionIndex] = useState(0);
   const clarificationKey = pendingClarifications
     ? pendingClarifications.messageId || `q${pendingClarifications.questions?.length || 0}`
     : "";
   useEffect(() => {
     setPicked({});
     setDrafts({});
-    setClarificationsCollapsed(false);
+    setQuestionIndex(0);
   }, [clarificationKey]);
 
   const isPicked = (i, option) => (picked[i] || []).includes(option);
@@ -333,6 +335,9 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
     Boolean(answerFor(i)),
   ).length;
   const answerCount = answeredCount;
+  const activeQuestion = Math.min(questionIndex, Math.max(questionCount - 1, 0));
+  const goToQuestion = (n) =>
+    setQuestionIndex(Math.min(Math.max(n, 0), Math.max(questionCount - 1, 0)));
 
   const submitClarifications = () => {
     const questions = pendingClarifications?.questions || [];
@@ -746,133 +751,128 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
             composer: it is part of the coach's turn, so it scrolls with the
             reply and the composer stays pinned. Picking options no longer sends
             immediately — answers accumulate and go in one Submit. */}
-        {pendingClarifications && pendingClarifications.questions?.length > 0 && (
-          <div
-            ref={clarificationRef}
-            data-testid="clarification-chips"
-            className="rounded-2xl border border-[var(--border)] bg-[var(--bg-secondary)] p-4"
-          >
-            <div className="flex items-start gap-3">
-              <div className="min-w-0 flex-1">
-                <button
-                  type="button"
-                  data-testid="clarification-toggle"
-                  onClick={() => setClarificationsCollapsed((v) => !v)}
-                  aria-expanded={!clarificationsCollapsed}
-                  aria-controls="clarification-body"
-                  className="w-full rounded text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
-                >
-                  <span className="flex items-center justify-between gap-2">
-                    <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--accent)]">
-                      A few details
-                    </span>
-                    <span className="shrink-0 inline-flex items-center gap-1 font-mono text-[10px] tabular-nums uppercase tracking-wider text-[var(--text-muted)]">
-                      {answeredCount} of {questionCount}
-                      {clarificationsCollapsed
-                        ? <ChevronDown className="w-3.5 h-3.5" aria-hidden="true" />
-                        : <ChevronUp className="w-3.5 h-3.5" aria-hidden="true" />}
-                    </span>
+        {pendingClarifications && pendingClarifications.questions?.length > 0 && (() => {
+          const i = activeQuestion;
+          const q = pendingClarifications.questions[i];
+          const item = typeof q === "string" ? { question: q } : (q || {});
+          const opts = Array.isArray(item.options)
+            ? item.options.filter((o) => typeof o === "string" && o.trim())
+            : [];
+          const multi = item.multi === true;
+          const isLast = i === questionCount - 1;
+          return (
+            <div
+              ref={clarificationRef}
+              data-testid="clarification-chips"
+              className="rounded-2xl border border-[var(--border)] bg-[var(--bg-secondary)] p-4"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--accent)]">
+                  A few details
+                </span>
+                {questionCount > 1 && (
+                  <span
+                    data-testid="clarification-progress"
+                    className="font-mono text-[10px] tabular-nums uppercase tracking-wider text-[var(--text-muted)]"
+                  >
+                    {i + 1} of {questionCount}
                   </span>
-                  <span className="mt-1.5 block text-sm leading-relaxed text-[var(--text-primary)]">
-                    {pendingClarifications.prompt || "I want to make a real proposal, but I need a couple of details first."}
-                  </span>
-                </button>
+                )}
+              </div>
 
-                {!clarificationsCollapsed && (
-                  <div id="clarification-body" className="mt-3 space-y-3">
-                    {!autoAnswer && (
-                      <p data-testid="auto-mode-escape-hint" className="text-[11px] leading-relaxed text-[var(--text-muted)]">
-                        I ask at most a round or two, then plan with assumptions. Answer what you
-                        can and submit — or switch to <span className="text-[var(--accent)]">Auto</span> to plan right now.
-                      </p>
-                    )}
-
-                    {pendingClarifications.questions.map((q, i) => {
-                      const item = typeof q === "string" ? { question: q } : (q || {});
-                      const opts = Array.isArray(item.options)
-                        ? item.options.filter((o) => typeof o === "string" && o.trim())
-                        : [];
-                      const multi = item.multi === true;
+              <div key={i} data-testid={`clarification-question-${i}`} className="mt-3">
+                <div className="flex items-baseline gap-2">
+                  <span className="text-[15px] font-medium leading-snug text-[var(--text-primary)]">{item.question}</span>
+                  {multi && (
+                    <span className="ml-auto shrink-0 text-[10px] uppercase tracking-wide text-[var(--text-muted)]">Select all</span>
+                  )}
+                </div>
+                {opts.length > 0 && (
+                  <div
+                    role={multi ? "group" : "radiogroup"}
+                    aria-label={item.question}
+                    className="mt-3 divide-y divide-[var(--border)] overflow-hidden rounded-[12px] border border-[var(--border)] bg-[var(--bg-primary)]"
+                  >
+                    {opts.map((o, j) => {
+                      const on = isPicked(i, o);
                       return (
-                        <div key={i} data-testid={`clarification-question-${i}`}>
-                          <div className="flex items-baseline gap-2">
-                            <span className="font-mono text-[10px] tabular-nums text-[var(--text-muted)]">{String(i + 1).padStart(2, "0")}</span>
-                            <span className="text-sm font-medium leading-snug text-[var(--text-primary)]">{item.question}</span>
-                            {multi && (
-                              <span className="ml-auto shrink-0 text-[10px] uppercase tracking-wide text-[var(--text-muted)]">Select all</span>
-                            )}
-                          </div>
-                          {opts.length > 0 && (
-                            <div
-                              role={multi ? "group" : "radiogroup"}
-                              aria-label={item.question}
-                              className="mt-2 divide-y divide-[var(--border)] overflow-hidden rounded-[12px] border border-[var(--border)] bg-[var(--bg-primary)]"
-                            >
-                              {opts.map((o, j) => {
-                                const on = isPicked(i, o);
-                                return (
-                                  <button
-                                    key={j}
-                                    type="button"
-                                    role={multi ? "checkbox" : "radio"}
-                                    aria-checked={on}
-                                    data-testid={`clarification-option-${i}-${j}`}
-                                    onClick={() => togglePick(i, o, multi)}
-                                    className={`flex min-h-11 w-full items-center gap-3 px-4 text-left text-sm transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--accent)] ${
-                                      on
-                                        ? "bg-[color-mix(in_srgb,var(--accent)_10%,transparent)] text-[var(--text-primary)]"
-                                        : "text-[var(--text-primary)] hover:bg-[color-mix(in_srgb,var(--accent)_8%,transparent)]"
-                                    }`}
-                                  >
-                                    <span className="min-w-0 flex-1 py-2.5">{o}</span>
-                                    {on ? (
-                                      <Check className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />
-                                    ) : (
-                                      <span
-                                        aria-hidden="true"
-                                        className={`h-4 w-4 shrink-0 border border-[var(--border-accent)] ${multi ? "rounded-[4px]" : "rounded-full"}`}
-                                      />
-                                    )}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          )}
-                          <div className="mt-2">
-                            <input
-                              type="text"
-                              data-testid={`clarification-free-text-${i}`}
-                              value={drafts[i] || ""}
-                              onChange={(e) => setDraft(i, e.target.value)}
-                              placeholder={opts.length > 0 ? "Add your own answer…" : "Type your answer…"}
-                              aria-label={`Your own answer for question ${i + 1}`}
-                              className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] px-2.5 py-2 text-xs text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-[var(--border-accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+                        <button
+                          key={j}
+                          type="button"
+                          role={multi ? "checkbox" : "radio"}
+                          aria-checked={on}
+                          data-testid={`clarification-option-${i}-${j}`}
+                          onClick={() => togglePick(i, o, multi)}
+                          className={`flex min-h-11 w-full items-center gap-3 px-4 text-left text-sm transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--accent)] ${
+                            on
+                              ? "bg-[color-mix(in_srgb,var(--accent)_10%,transparent)] text-[var(--text-primary)]"
+                              : "text-[var(--text-primary)] hover:bg-[color-mix(in_srgb,var(--accent)_8%,transparent)]"
+                          }`}
+                        >
+                          <span className="min-w-0 flex-1 py-2.5">{o}</span>
+                          {on ? (
+                            <Check className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />
+                          ) : (
+                            <span
+                              aria-hidden="true"
+                              className={`h-4 w-4 shrink-0 border border-[var(--border-accent)] ${multi ? "rounded-[4px]" : "rounded-full"}`}
                             />
-                            <p className="mt-1 text-[10px] leading-relaxed text-[var(--text-muted)]">
-                              Pick one or more above (or none), then add your own here — everything is included.
-                            </p>
-                          </div>
-                        </div>
+                          )}
+                        </button>
                       );
                     })}
                   </div>
                 )}
-                {(answerCount > 0 || !clarificationsCollapsed) && (
+                <input
+                  type="text"
+                  data-testid={`clarification-free-text-${i}`}
+                  value={drafts[i] || ""}
+                  onChange={(e) => setDraft(i, e.target.value)}
+                  placeholder={opts.length > 0 ? "Something else…" : "Type your answer…"}
+                  aria-label={`Your own answer for question ${i + 1}`}
+                  className="mt-2 w-full rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-[var(--border-accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+                />
+              </div>
+
+              {/* Linear flow: Back · Next … Submit on the last question. Next
+                  never blocks (a question can be skipped); Submit needs at
+                  least one answer. Earlier answers stay editable via Back. */}
+              <div className="mt-4 flex items-center justify-between gap-2">
+                {i > 0 ? (
+                  <button
+                    type="button"
+                    data-testid="clarification-prev"
+                    onClick={() => goToQuestion(i - 1)}
+                    className="min-h-11 px-3 rounded-lg text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+                  >
+                    Back
+                  </button>
+                ) : <span />}
+                {isLast ? (
                   <button
                     type="button"
                     data-testid="clarification-submit"
                     onClick={submitClarifications}
                     disabled={!answerCount || sending}
-                    className="mt-3 flex min-h-11 w-full items-center justify-center gap-2 rounded-[12px] bg-[var(--accent)] text-sm font-semibold text-[var(--bg-primary)] transition-opacity disabled:opacity-30 hover:opacity-90 active:scale-[0.99]"
+                    className="min-h-11 px-6 inline-flex items-center justify-center gap-2 rounded-[12px] bg-[var(--accent)] text-sm font-semibold text-[var(--bg-primary)] transition-opacity disabled:opacity-30 hover:opacity-90 active:scale-[0.99]"
                   >
                     <Send className="w-3.5 h-3.5" aria-hidden="true" />
-                    {answerCount > 0 ? `Submit ${answerCount} answer${answerCount === 1 ? "" : "s"}` : "Submit"}
+                    Submit
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    data-testid="clarification-next"
+                    onClick={() => goToQuestion(i + 1)}
+                    className="min-h-11 px-6 inline-flex items-center justify-center rounded-[12px] bg-[var(--accent)] text-sm font-semibold text-[var(--bg-primary)] hover:opacity-90 active:scale-[0.99] transition-opacity"
+                  >
+                    Next
                   </button>
                 )}
               </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
         <div ref={endRef} />
       </div>
 
@@ -940,11 +940,11 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
               {showSources && (
                 <>
                   <input ref={fileRef} type="file" hidden accept=".pdf,.md,.txt,.csv,.json,.png,.jpg,.jpeg" onChange={(e) => { if (e.target.files[0]) { onUploadFile(e.target.files[0]); e.target.value = ""; } }} />
-                  <input ref={cameraRef} type="file" hidden accept="image/*" capture="environment" onChange={(e) => { if (e.target.files[0]) { onUploadFile(e.target.files[0]); e.target.value = ""; } }} />
+                  {cameraUi}
                   <button data-testid="chat-attach-file" onClick={() => fileRef.current?.click()} title="Attach a file (PDF, .md, .txt…)" aria-label="Attach a file" className="h-11 w-9 flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors shrink-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] rounded">
                     <Paperclip className="w-4 h-4" />
                   </button>
-                  <button data-testid="chat-attach-camera" onClick={() => cameraRef.current?.click()} title="Take a photo" aria-label="Take a photo" className="h-11 w-9 flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors shrink-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] rounded">
+                  <button data-testid="chat-attach-camera" onClick={openCamera} title="Take a photo" aria-label="Take a photo" className="h-11 w-9 flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors shrink-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] rounded">
                     <Camera className="w-4 h-4" />
                   </button>
                   <button

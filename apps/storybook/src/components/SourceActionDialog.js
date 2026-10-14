@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Paperclip, Link2, Trash2, Send, ExternalLink, RefreshCw, AlertTriangle, Loader2, Camera, Image as ImageIcon } from "lucide-react";
 import CenteredDialog from "./CenteredDialog";
+import { useWebcamCapture } from "./WebcamCaptureDialog";
 import { API } from "../lib/api";
 import { usePersistentState } from "../hooks/useDraftPersistence";
 import { canAutofocus } from "../lib/utils";
@@ -35,7 +36,7 @@ export default function SourceActionDialog({
   goalTitle = "",
 }) {
   const fileRef = useRef(null)
-  const cameraRef = useRef(null)
+  const { openCamera, cameraUi } = useWebcamCapture((f) => submitUpload(f))
   const [progress, setProgress] = useState(null) // {name, status: 'uploading'|'done'|'error', msg?}
 
   // ----- link-mode local state -----
@@ -146,19 +147,7 @@ export default function SourceActionDialog({
             e.target.value = ""
           }}
         />
-        <input
-          ref={cameraRef}
-          data-testid="source-camera-input"
-          type="file"
-          hidden
-          accept="image/*"
-          capture="environment"
-          onChange={(e) => {
-            const f = e.target.files?.[0]
-            if (f) submitUpload(f)
-            e.target.value = ""
-          }}
-        />
+        {cameraUi}
         <div className="grid grid-cols-2 gap-2">
           <button
             type="button"
@@ -172,7 +161,7 @@ export default function SourceActionDialog({
           <button
             type="button"
             data-testid="source-camera-button"
-            onClick={() => cameraRef.current?.click()}
+            onClick={openCamera}
             className="flex items-center justify-center gap-2 h-11 border border-[var(--border)] hover:border-[var(--border-accent)] text-sm text-[var(--text-secondary)] rounded-xl transition-colors"
           >
             <Camera className="w-4 h-4" aria-hidden="true" />

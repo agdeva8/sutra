@@ -42,6 +42,10 @@ const FONT_SIZE_STORAGE_KEY = "sutra_font_size";
 // Settings sections render as an iOS-style SEGMENTED CONTROL: a single
 // pill track with a raised "selected" segment. Same trigger for every
 // breakpoint (the control is `w-full` on phones, auto-width on desktop).
+// The Coach settings tab (model, persona, honesty tone) is parked, not removed:
+// flip this to bring the trigger back. Its panel below is untouched.
+const SHOW_COACH_TAB = false;
+
 const SECTION_TAB_TRIGGER =
   "flex-1 sm:flex-none font-medium rounded-lg text-[13px] px-3.5 py-1.5 " +
   "text-[var(--text-secondary)] transition-colors whitespace-nowrap " +
@@ -266,12 +270,14 @@ export default function Settings() {
               the original horizontal strip. `orientation` keeps Radix's
               arrow-key semantics (aria-orientation) matching whichever
               layout is visible. */}
-          <Tabs defaultValue="coach">
+          <Tabs defaultValue={SHOW_COACH_TAB ? "coach" : "preferences"}>
             {/* iOS segmented control. */}
             <TabsList className="mb-6 w-full sm:w-auto inline-flex p-[3px] bg-[var(--bg-tertiary)] rounded-[11px] gap-0.5">
-              <TabsTrigger value="coach" className={SECTION_TAB_TRIGGER}>
-                Coach
-              </TabsTrigger>
+              {SHOW_COACH_TAB && (
+                <TabsTrigger value="coach" className={SECTION_TAB_TRIGGER}>
+                  Coach
+                </TabsTrigger>
+              )}
               <TabsTrigger value="preferences" className={SECTION_TAB_TRIGGER}>
                 Preferences
               </TabsTrigger>

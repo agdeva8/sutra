@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect } from "react";
 import { Sparkles, Plus, MessageSquare, ArrowRight } from "lucide-react";
 import AddGoalDialog from "./AddGoalDialog";
+import GoalIntakeDialog from "./GoalIntakeDialog";
+import { USE_AGENT_INTAKE } from "../constants/features";
 import GoalBoard from "./GoalBoard";
 // The indicator is its own module — TrackingDashboard is one of two surfaces
 // that render it (Overview carries the other), so a single definition keeps
@@ -188,18 +190,22 @@ export default function TrackingDashboard({
       {/* Motivation / curated nudges moved to the Home tab (founder
           feedback) so the Goals tab is purely about the goals. */}
 
-      <AddGoalDialog
-        open={addGoalOpen}
-        onClose={closeAddGoalDialog}
-        onStepBack={(fn) => { addGoalStepBackRef.current = fn; }}
-        registerCloser={registerCloser}
-        autoAnswer={autoAnswer}
-        grillMe={grillMe}
-        onUploadSource={onUploadSource}
-        onAddLink={onAddLink}
-        onDeleteSource={onDeleteSource}
-        onGoalConfirmed={onCreated}
-      />
+      {USE_AGENT_INTAKE ? (
+        <GoalIntakeDialog open={addGoalOpen} onClose={closeAddGoalDialog} onCreated={onCreated} />
+      ) : (
+        <AddGoalDialog
+          open={addGoalOpen}
+          onClose={closeAddGoalDialog}
+          onStepBack={(fn) => { addGoalStepBackRef.current = fn; }}
+          registerCloser={registerCloser}
+          autoAnswer={autoAnswer}
+          grillMe={grillMe}
+          onUploadSource={onUploadSource}
+          onAddLink={onAddLink}
+          onDeleteSource={onDeleteSource}
+          onGoalConfirmed={onCreated}
+        />
+      )}
     </div>
   );
 }

@@ -1,9 +1,13 @@
 import Motivation from "./Motivation";
 
 /**
- * Motivation is the "Curated for you" screen: a page frame around
- * MotivationCard, which fetches its own recommendations. With no goals
- * the card hides itself and the empty-state copy shows.
+ * Motivation is the "Curated for you" screen. The feature has not shipped, so
+ * what it renders today is the coming-soon card — see `CURATED_IS_COMING_SOON`
+ * in Motivation.jsx.
+ *
+ * The `api` fixture below is kept wired to the recommend route even though the
+ * coming-soon branch never fetches: it is what the screen reads the moment that
+ * flag flips, and it doubles as the fixtures behind Components/MotivationCard.
  */
 export default {
   title: "Components/Motivation",
@@ -11,8 +15,6 @@ export default {
   tags: ["autodocs"],
   parameters: {
     layout: "fullscreen",
-    // MotivationCard fetches /api/motivation/recommend on mount. A 'hit'
-    // cache stops it from polling for a background refresh.
     api: {
       "motivation/recommend": {
         cache: "hit",
@@ -24,7 +26,7 @@ export default {
             author: "James Clear",
             duration: "12 min read",
             url: "https://example.com/atomic-habits",
-            frame: "Pairs with your habit-building goal \u2014 start smaller than feels satisfying.",
+            frame: "Pairs with your habit-building goal — start smaller than feels satisfying.",
           },
           {
             id: "m2",
@@ -49,9 +51,5 @@ export default {
   },
 };
 
-export const Default = {};
-
-/** No goals yet → the card hides, the screen shows its empty-state copy. */
-export const Empty = {
-  args: { state: { goals: [], milestones: [] } },
-};
+/** Today's shipped state of the screen: the coming-soon card. */
+export const ComingSoon = {};

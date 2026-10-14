@@ -3,6 +3,7 @@ import { Camera, Link2, Loader2, Image as ImageIcon } from "lucide-react";
 import AutoTextarea from "./AutoTextarea";
 import { toast } from "sonner";
 import CenteredDialog from "./CenteredDialog";
+import { useWebcamCapture } from "./WebcamCaptureDialog";
 import { api } from "../lib/api";
 import { usePersistentState } from "../hooks/useDraftPersistence";
 
@@ -24,7 +25,7 @@ export default function GoalMemoryDialog({ open, onClose, goalId, goalTitle, onS
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const fileRef = useRef(null);
-  const cameraRef = useRef(null);
+  const { openCamera, cameraUi } = useWebcamCapture((f) => { setFile(f); setSubmitError(""); });
 
   const reset = () => {
     setKind("photo");
@@ -153,15 +154,7 @@ export default function GoalMemoryDialog({ open, onClose, goalId, goalTitle, onS
               onChange={(e) => { setFile(e.target.files?.[0] || null); setSubmitError(""); }}
               data-testid="goal-memory-file-input"
             />
-            <input
-              ref={cameraRef}
-              type="file"
-              hidden
-              accept="image/*"
-              capture="environment"
-              onChange={(e) => { setFile(e.target.files?.[0] || null); setSubmitError(""); }}
-              data-testid="goal-memory-camera-input"
-            />
+            {cameraUi}
             <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
@@ -174,7 +167,7 @@ export default function GoalMemoryDialog({ open, onClose, goalId, goalTitle, onS
               </button>
               <button
                 type="button"
-                onClick={() => cameraRef.current?.click()}
+                onClick={openCamera}
                 data-testid="goal-memory-camera-button"
                 className="flex items-center justify-center gap-2 h-11 border border-[var(--border)] hover:border-[var(--border-accent)] text-sm text-[var(--text-secondary)] rounded-xl transition-colors"
               >

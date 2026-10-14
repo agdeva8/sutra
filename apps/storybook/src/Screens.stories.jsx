@@ -18,6 +18,8 @@ import { useEffect, useState } from "react";
 
 import AppShell from "@/AppShell";
 import { missingRoutes, onStoreChange } from "@/mock/backend";
+import { store } from "@/mock/fixtures";
+import { SCRATCH_OPENED_KEY } from "@/lib/scratchIntro";
 
 /**
  * Status pill — bottom-left, away from the app's own bottom-right controls.
@@ -153,6 +155,11 @@ export default {
 
 /** Overview — the default landing screen. */
 export const Overview = { args: { initialPath: "/" } };
+/** Phone width — shows the bottom tab bar (4 screens + More). */
+export const OverviewMobile = {
+  args: { initialPath: "/" },
+  parameters: { viewport: { defaultViewport: "mobile1" } },
+};
 
 /**
  * The panel routes. `?panel=` is how Coach picks a screen
@@ -160,6 +167,56 @@ export const Overview = { args: { initialPath: "/" } };
  */
 export const Plan = { args: { initialPath: "/?panel=plan" } };
 export const Goals = { args: { initialPath: "/?panel=state" } };
+/** Scratch — reflex capture, phone only (not in the desktop tab strip). Demo data, no API yet. */
+export const ScratchMobile = {
+  args: { initialPath: "/?panel=scratch" },
+  parameters: { viewport: { defaultViewport: "mobile1" } },
+};
+
+/**
+ * Phone landing (open "/" with no panel): the user has goals, so the app opens
+ * on Scratch. Desktop would stay on Overview.
+ */
+export const LandingMobileWithGoals = {
+  args: { initialPath: "/" },
+  parameters: { viewport: { defaultViewport: "mobile1" } },
+};
+
+/**
+ * A user with goals who has never opened Scratch: the screen blurs with a bright
+ * ring and an arrow on the Scratch tab. "What can I do here?" opens the explainer;
+ * the spotlight leaves only when the ring is tapped.
+ */
+export const ScratchIntroHint = {
+  args: { initialPath: "/?panel=state" },
+  parameters: { viewport: { defaultViewport: "mobile1" } },
+  beforeEach: () => {
+    try {
+      localStorage.removeItem(SCRATCH_OPENED_KEY);
+    } catch {
+      /* storage blocked: the hint still shows */
+    }
+  },
+};
+
+/** The same spotlight on desktop web: the ring sits on the Scratch tab in the top strip and the message opens below it. */
+export const ScratchIntroHintDesktop = {
+  args: { initialPath: "/?panel=state" },
+  beforeEach: ScratchIntroHint.beforeEach,
+};
+
+/** Phone landing with no goals: opens on the Goal screen, where a goal is added. */
+export const LandingMobileNoGoals = {
+  args: { initialPath: "/" },
+  parameters: { viewport: { defaultViewport: "mobile1" } },
+  beforeEach: () => {
+    const goals = store.state.goals;
+    store.state.goals = [];
+    return () => {
+      store.state.goals = goals;
+    };
+  },
+};
 export const Today = { args: { initialPath: "/?panel=today" } };
 export const Timeline = { args: { initialPath: "/?panel=timeline" } };
 export const Memories = { args: { initialPath: "/?panel=memories" } };

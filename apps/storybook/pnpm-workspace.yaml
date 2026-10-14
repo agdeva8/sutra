@@ -1,0 +1,5 @@
+# pnpm 12 no longer reads the "pnpm" field in package.json; settings live here.
+# esbuild ships a native binary via a postinstall script, so its build must be
+# approved explicitly or `pnpm install` fails with ERR_PNPM_IGNORED_BUILDS.
+onlyBuiltDependencies:
+  - esbuild

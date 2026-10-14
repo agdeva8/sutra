@@ -123,7 +123,89 @@ function streamChat(body, messageIdPrefix = "msg") {
  * arrives as `params.name`. Handlers return a plain body (JSON-serialised) or a
  * `Response` (SSE, downloads).
  */
+// Scratch mock: an entry lands "pending", then is "handled" a moment later with
+// canned lines, so the Scratch screen can be clicked through with no model.
+const SCRATCH_MOCK_DELAY_MS = 1800;
+const scratchRows = [];
+function scratchHandled(row) {
+  const lines =
+    row.kind === "image"
+      ? ["Reminder: Take Tab Azithromycin 500 mg, 1 tablet once daily on 3 day(s) at 09:00", "Kept in Sources: Prescription"]
+      : [`New task: ${row.body.slice(0, 40)} (1h)`, "Planned: Thu 15 Oct 09:00-10:00"];
+  Object.assign(row, { status: "handled", result: { bucket: row.kind === "image" ? "reminder+source" : "task", lines, proposed: false }, handled_at: new Date().toISOString() });
+  notifyStoreChange();
+}
+
+// Calendar feed mock: mirrors apps/api/sutra_api/api/calendar.py's envelope.
+const CAL_MOCK_TOKEN = "mockFeedToken123";
+const calFeed = { enabled: false, prompted: false, last_fetched_at: null };
+function calEnvelope() {
+  if (!calFeed.enabled) return { ...calFeed };
+  const ics = `https://api.sutra.app/api/calendar/ics/${CAL_MOCK_TOKEN}.ics`;
+  const webcal = ics.replace("https://", "webcal://");
+  return {
+    ...calFeed,
+    ics_url: ics,
+    webcal_url: webcal,
+    google_url: `https://calendar.google.com/calendar/r?cid=${encodeURIComponent(webcal)}`,
+    outlook_url: `https://outlook.live.com/calendar/0/addfromweb?url=${encodeURIComponent(ics)}&name=Sutra%20plan`,
+  };
+}
+/** Stories call this to start from a known feed state. */
+export function setMockCalendarFeed(next) {
+  Object.assign(calFeed, { enabled: false, prompted: false, last_fetched_at: null }, next);
+}
+
 const ROUTES = {
+  "GET calendar/feed": () => calEnvelope(),
+  "POST calendar/feed": () => {
+    Object.assign(calFeed, { enabled: true, prompted: true });
+    return calEnvelope();
+  },
+  "POST calendar/feed/dismiss": () => {
+    calFeed.prompted = true;
+    return calEnvelope();
+  },
+  "DELETE calendar/feed": () => {
+    Object.assign(calFeed, { enabled: false, last_fetched_at: null });
+    return calEnvelope();
+  },
+  "GET scratch": () => ({
+    waiting: scratchRows.filter((r) => r.status !== "handled").reverse(),
+    handled: scratchRows.filter((r) => r.status === "handled").reverse(),
+  }),
+  "POST scratch": ({ body }) => {
+    const row = { id: `scratch_${scratchRows.length + 1}`, kind: body.kind || "text", body: body.body || "", source_id: body.source_id || null, status: "pending", question: null, error: null, result: null, created_at: new Date().toISOString(), handled_at: null };
+    scratchRows.push(row);
+    setTimeout(() => scratchHandled(row), SCRATCH_MOCK_DELAY_MS);
+    return row;
+  },
+  "POST scratch/:id/retry": ({ params }) => {
+    const row = scratchRows.find((r) => r.id === params.id);
+    if (row) setTimeout(() => scratchHandled(row), SCRATCH_MOCK_DELAY_MS);
+    return row;
+  },
+  "POST scratch/:id/chat": ({ params, body }) => {
+    const row = scratchRows.find((r) => r.id === params.id);
+    if (row) setTimeout(() => scratchHandled(row), SCRATCH_MOCK_DELAY_MS);
+    if (row) Object.assign(row, { status: "pending", question: null });
+    return { reply: `Got it, filing “${(body.message || "").slice(0, 40)}”.`, resolved: true, entry: row };
+  },
+  "POST scratch/:id/undo": ({ params }) => {
+    const i = scratchRows.findIndex((r) => r.id === params.id);
+    if (i >= 0) scratchRows.splice(i, 1);
+    return { reverted: 1, not_restored: [] };
+  },
+  "POST goals/intake": ({ body }) =>
+    body.state?.turns?.length
+      ? { kind: "draft", question: null, options: [], state: body.state, draft: { title: "Learn to drive and get licensed", why: body.message, life_area: "", total_hours: 40, deadline_weeks: 12, milestones: [{ title: "Book driving school", week: 2 }, { title: "Pass the theory test", week: 6 }, { title: "Road test", week: 12 }] } }
+      : { kind: "question", question: "Where are you starting from right now?", options: ["No permit yet", "Permit, no car", "Permit and a car"], state: { turns: [{ role: "user", text: body.message }, { role: "assistant", text: "Where are you starting from right now?" }], questions_asked: 1 }, draft: null },
+  "POST goals/intake/confirm": () => ({ goal_id: "goal_mock", plan: { status: "applied", applied: 34, proposed: 0, notes: [] } }),
+  "DELETE scratch/:id": ({ params }) => {
+    const i = scratchRows.findIndex((r) => r.id === params.id);
+    if (i >= 0) scratchRows.splice(i, 1);
+    return { ok: true };
+  },
   "GET auth/me": () => store.user,
   "POST auth/guest": () => ({ user: store.user }),
   "POST auth/session": () => ({ user: store.user }),

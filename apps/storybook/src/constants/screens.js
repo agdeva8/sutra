@@ -7,6 +7,7 @@ import {
   CalendarClock,
   Image as ImageIcon,
   FileText,
+  PenLine,
 } from "lucide-react";
 
 /**
@@ -26,7 +27,7 @@ import {
  * survive every switch, and browser/system back still steps
  * screen-by-screen because each switch is a history push.
  *
- * Six screens, one per tab, in this order:
+ * Seven screens, one per tab, in this order:
  *   - **Overview** — the landing: greeting, today at a glance, and a
  *     read-only preview of the goals that links through to Goal.
  *   - **Today** — the day's timetable.
@@ -34,19 +35,51 @@ import {
  *     each card carrying its own actions) and where the plan opens from.
  *   - **Timeline** — the calendar's Day → Year zoom surface.
  *   - **Memories** / **Sources** — the coach's material for the goals.
+ *   - **Curated for you** — recommendations for the goals you're working on.
+ *     Flagged `comingSoon`: the screen is still a placeholder, and the nav
+ *     draws its Soon pill from that same flag rather than its own list.
  *
- * Plan and Curated no longer own tabs. Neither is deleted: both stay
- * routable through ROUTABLE_SCREENS and Coach's panel switch, so an old
- * link or a chat "take me there" still lands on them.
+ * Plan still has no tab. It is not deleted — it stays routable through
+ * ROUTABLE_SCREENS and Coach's panel switch, so an old link or a chat
+ * "take me there" still lands on it.
  */
 export const SCREENS = [
+  // Scratch is the phone's front door (reflex capture) and a desktop tab too.
+  // `mobileOnly` is still honoured by DESKTOP_SCREENS for any screen that needs it.
+  { key: "scratch", label: "Scratch", to: "/?panel=scratch", Icon: PenLine },
   { key: "home", label: "Overview", to: "/", Icon: LayoutDashboard },
   { key: "today", label: "Today", to: "/?panel=today", Icon: CalendarDays },
   { key: "state", label: "Goal", to: "/?panel=state", Icon: Flag },
   { key: "timeline", label: "Timeline", to: "/?panel=timeline", Icon: CalendarClock },
   { key: "memories", label: "Memories", to: "/?panel=memories", Icon: ImageIcon },
   { key: "sources", label: "Sources", to: "/?panel=sources", Icon: FileText },
+  // `comingSoon` is the only source of the Soon marker — the nav reads it
+  // instead of keeping its own list of unfinished screens.
+  { key: "motivation", label: "Curated for you", shortLabel: "Curated", to: "/?panel=motivation", Icon: Sparkles, comingSoon: true },
 ];
+
+/**
+ * Screens pinned to the mobile bottom tab bar, in order. The rest of
+ * `SCREENS` collapses behind the bar's trailing "More" button, so the bar
+ * stays at five targets however many screens exist.
+ */
+export const MOBILE_TAB_KEYS = ["scratch", "home", "today", "state"];
+
+/** Screens drawn in the desktop tab strip: everything not flagged `mobileOnly`. */
+export const DESKTOP_SCREENS = SCREENS.filter((s) => !s.mobileOnly);
+
+/**
+ * Which screen a fresh phone-width open lands on. With at least one goal the
+ * user lands on Scratch; with none, on the Goal screen, where they add one
+ * (Scratch can only file against existing goals). Desktop keeps Overview.
+ */
+export const MOBILE_LANDING_WITH_GOALS = "scratch";
+export const MOBILE_LANDING_NO_GOALS = "state";
+export const MOBILE_MAX_WIDTH_PX = 639; // Tailwind `sm` starts at 640
+
+export function mobileLandingKey(goalCount) {
+  return goalCount > 0 ? MOBILE_LANDING_WITH_GOALS : MOBILE_LANDING_NO_GOALS;
+}
 
 /**
  * Every routable screen — the lookup `?panel=` resolves through.
@@ -60,10 +93,9 @@ export const SCREENS = [
 export const ROUTABLE_SCREENS = [
   ...SCREENS,
   { key: "plan", label: "Plan", to: "/?panel=plan", Icon: Target },
-  { key: "motivation", label: "Curated for you", shortLabel: "Curated", to: "/?panel=motivation", Icon: Sparkles },
 ];
 
-/** Every routable screen by key — the six tabs plus the tabless keys. */
+/** Every routable screen by key — the tabs plus the tabless keys. */
 export const SCREEN_BY_KEY = Object.fromEntries(ROUTABLE_SCREENS.map((s) => [s.key, s]));
 
 /**

@@ -4,10 +4,18 @@ import { MessageSquare, Plus, Sparkles, ChevronLeft } from "lucide-react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { api } from "../lib/api";
-import { SCREENS, screenKeyFromSearch, searchForScreen } from "../constants/screens";
+import {
+  DESKTOP_SCREENS,
+  MOBILE_MAX_WIDTH_PX,
+  SCREEN_BY_KEY,
+  mobileLandingKey,
+  screenKeyFromSearch,
+  searchForScreen,
+} from "../constants/screens";
 import { goalPlans } from "../lib/planNodes";
 import Header from "../components/Header";
-import GoalMenu from "../components/GoalMenu";
+import MobileTabBar from "../components/MobileTabBar";
+import SoonPill from "../components/SoonPill";
 // The panel views are all gated behind `panelView`, so exactly one is mounted
 // at a time and none of them are on the first-paint path — the default view
 // renders Overview alone. Importing them statically shipped 155 kB of source
@@ -22,6 +30,7 @@ const Overview = lazy(() => import("../components/Overview"));
 const TrackingDashboard = lazy(() => import("../components/TrackingDashboard"));
 const Motivation = lazy(() => import("../components/Motivation"));
 const Timeline = lazy(() => import("../components/Timeline"));
+const ScratchScreen = lazy(() => import("../components/ScratchScreen"));
 
 // Fallback while a panel's chunk fetches. Declared at module level rather
 // than inside Coach — a component defined during render is a new component
@@ -51,6 +60,8 @@ import ReplanSuggestions from "../components/ReplanSuggestions";
 import ReplanToast from "../components/ReplanToast";
 import ChatModal from "../components/ChatModal";
 import WelcomeToast from "../components/WelcomeToast";
+import ScratchSpotlight from "../components/ScratchSpotlight";
+import { CalendarSyncPrompt } from "../components/CalendarSync";
 
 /**
  * Coach (post Slice-2)
@@ -472,6 +483,20 @@ export default function Coach() {
   const [searchParams, setSearchParams] = useSearchParams();
   const panelView = screenKeyFromSearch(searchParams.toString());
 
+  // Phone landing: on a fresh open with no `?panel=`, go to Scratch when the
+  // user has a goal and to the Goal screen (add a goal) when they have none.
+  // Runs once, after the first state load, and replaces the entry so Back does
+  // not bounce through "/". Desktop is untouched.
+  const landedRef = useRef(false);
+  useEffect(() => {
+    if (landedRef.current || !state) return;
+    landedRef.current = true;
+    const isPhone = window.matchMedia(`(max-width: ${MOBILE_MAX_WIDTH_PX}px)`).matches;
+    if (!isPhone || searchParams.has("panel")) return;
+    const goals = (state.goals || []).filter((g) => g.status !== "dropped");
+    setSearchParams(searchForScreen(mobileLandingKey(goals.length)), { replace: true });
+  }, [state, searchParams, setSearchParams]);
+
   // Push a screen onto history so browser/system back steps
   // screen-by-screen. Clicking the screen you're already on is a no-op —
   // otherwise every tab tap would stack a duplicate history entry.
@@ -583,9 +608,8 @@ export default function Coach() {
       <main id="main" tabIndex={-1} className="flex-1 min-h-0 overflow-y-auto focus:outline-none">
         <div className="shrink-0 flex items-center sm:border-b sm:border-[var(--border)] px-4 sm:px-6 pt-2 bg-[color-mix(in_srgb,var(--bg-primary)_85%,transparent)] sticky top-0 z-10 backdrop-blur-md overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none]">
           {/* Mobile — an iOS large-title bar. The active screen name is
-              the page title (via GoalMenu's large variant) and is itself
-              the dropdown trigger — one affordance, not two. A back
-              chevron appears when there's history to pop. */}
+              the page title; navigation lives in the bottom MobileTabBar.
+              A back chevron appears when there's history to pop. */}
           <div className="sm:hidden flex items-center gap-1.5 min-w-0 w-full">
             {canGoBack && (
               <button
@@ -598,14 +622,19 @@ export default function Coach() {
                 <ChevronLeft className="w-5 h-5" aria-hidden="true" />
               </button>
             )}
-            <GoalMenu large />
+            <h1
+              data-testid="mobile-screen-title"
+              className="min-h-11 flex items-center text-[19px] font-semibold tracking-tight whitespace-nowrap text-[var(--text-primary)]"
+            >
+              {SCREEN_BY_KEY[panelView]?.label || "Overview"}
+            </h1>
           </div>
 
           {/* Desktop — the horizontal strip stays, now route-driven:
               each tab is a real URL, and the active screen carries
               aria-current. Visually unchanged. */}
           <nav aria-label="Screens" className="hidden sm:flex items-center">
-            {SCREENS.map((s) => {
+            {DESKTOP_SCREENS.map((s) => {
               const Icon = s.Icon;
               const active = s.key === panelView;
               return (
@@ -621,6 +650,7 @@ export default function Coach() {
                   }`}
                 >
                   <Icon className="w-3.5 h-3.5 shrink-0" /> {s.shortLabel || s.label}
+                  {s.comingSoon && <SoonPill />}
                 </Link>
               );
             })}
@@ -657,6 +687,8 @@ export default function Coach() {
                 autoAnswer={autoAnswer}
                 grillMe={grillMe}
               />
+            ) : panelView === "scratch" ? (
+              <ScratchScreen />
             ) : panelView === "motivation" ? (
               <Motivation state={state} />
             ) : panelView === "plan" ? (
@@ -714,13 +746,15 @@ export default function Coach() {
         </div>
       </main>
 
+      <MobileTabBar activeKey={panelView} />
+
       {/* Floating chat button — always visible, opens the centered modal. */}
       <button
         data-testid="fab-chat"
         onClick={() => setChatOpen(true)}
         title="Chat with your coach"
         aria-label="Chat with your coach"
-        className="fixed right-[max(1.5rem,env(safe-area-inset-right))] bottom-[calc(1.5rem+env(safe-area-inset-bottom))] z-40 h-14 w-14 rounded-full bg-[var(--accent)] text-[var(--bg-primary)] shadow-2xl flex items-center justify-center hover:opacity-90 transition-opacity"
+        className="fixed right-[max(1.5rem,env(safe-area-inset-right))] bottom-[calc(4.5rem+env(safe-area-inset-bottom))] sm:bottom-[calc(1.5rem+env(safe-area-inset-bottom))] z-40 h-14 w-14 rounded-full bg-[var(--accent)] text-[var(--bg-primary)] shadow-2xl flex items-center justify-center hover:opacity-90 transition-opacity"
       >
         <MessageSquare className="w-6 h-6" />
       </button>
@@ -751,6 +785,12 @@ export default function Coach() {
       />
 
       <WelcomeToast user={user} state={state} signedIn={!isGuest} />
+      {/* Asks once per account; guests are skipped — their account expires. */}
+      {user && !isGuest && <CalendarSyncPrompt />}
+      <ScratchSpotlight
+        goalCount={(state?.goals || []).filter((g) => g.status !== "dropped").length}
+        onOpenScratch={() => goPanel("scratch")}
+      />
       <ReplanToast
         suggestions={state?.replan_suggestions || []}
         onReplan={openReplanSuggestion}

@@ -11,6 +11,15 @@ export const API = `${BACKEND_URL}/api`;
 
 const DEFAULT_TIMEOUT_MS = 30000;
 
+/** The browser's IANA zone, e.g. "Asia/Kolkata". Empty if the browser will not say; the server then uses its default. */
+const USER_TIMEZONE = (() => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+  } catch {
+    return "";
+  }
+})();
+
 async function req(path, opts = {}) {
   const { quiet, timeout = DEFAULT_TIMEOUT_MS, ...fetchOpts } = opts;
   const controller = new AbortController();
@@ -19,7 +28,8 @@ async function req(path, opts = {}) {
   const res = await withTimeout(
     fetch(`${API}${path}`, {
       credentials: "include",
-      headers: { "Content-Type": "application/json", ...(fetchOpts.headers || {}) },
+      // The agent works out "today" and free hours in the user's own timezone.
+      headers: { "Content-Type": "application/json", "X-Timezone": USER_TIMEZONE, ...(fetchOpts.headers || {}) },
       ...fetchOpts,
       signal,
     }),
@@ -80,6 +90,21 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ message_id, proposal_id, thought }),
     }),
+  // Scratch — reflex capture; the server files each entry in the background.
+  scratch: () => req("/scratch"),
+  createScratch: (body) => req("/scratch", { method: "POST", body: JSON.stringify(body) }),
+  retryScratch: (id) => req(`/scratch/${id}/retry`, { method: "POST" }),
+  discardScratch: (id) => req(`/scratch/${id}`, { method: "DELETE" }),
+  chatScratch: (id, message) => req(`/scratch/${id}/chat`, { method: "POST", body: JSON.stringify({ message }) }),
+  undoScratch: (id) => req(`/scratch/${id}/undo`, { method: "POST" }),
+  // Goal intake — one dialogue turn, then confirm to create and plan the goal.
+  goalIntake: (message, state) => req("/goals/intake", { method: "POST", body: JSON.stringify({ message, state }), timeout: 90000 }),
+  goalIntakeConfirm: (draft) => req("/goals/intake/confirm", { method: "POST", body: JSON.stringify({ draft }), timeout: 180000 }),
+  // Calendar subscription feed — the plan as a .ics URL calendar apps poll.
+  calendarFeed: () => req("/calendar/feed"),
+  enableCalendarFeed: () => req("/calendar/feed", { method: "POST" }),
+  dismissCalendarPrompt: () => req("/calendar/feed/dismiss", { method: "POST" }),
+  revokeCalendarFeed: () => req("/calendar/feed", { method: "DELETE" }),
   // Blockers (direct edit)
   blockers: () => req("/blockers"),  createBlocker: (b) => req("/blockers", { method: "POST", body: JSON.stringify(b) }),
   updateBlocker: (id, b) => req(`/blockers/${id}`, { method: "PUT", body: JSON.stringify(b) }),

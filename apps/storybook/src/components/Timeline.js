@@ -6,6 +6,7 @@
  */
 
 import { useEffect, useMemo, useState, useRef, useCallback } from "react";
+import { CalendarSyncButton } from "./CalendarSync";
 import {
   ChevronLeft,
   ChevronRight,
@@ -1551,6 +1552,8 @@ function CalendarNav({ span, setSpan, anchor, setAnchor, today, children, onAddT
           </>
         )}
         {children}
+        {/* Always present: the way in after "Not now", and the way out (Stop syncing). */}
+        <CalendarSyncButton compact={isNarrow} />
       </div>
     </div>
   );
