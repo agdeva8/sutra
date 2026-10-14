@@ -1,0 +1,80 @@
+Last login: Wed Sep 30 02:27:03 on ttys019
+deva@Devanshus-MacBook-Pro goalcoachv2 % vim api/.env
+deva@Devanshus-MacBook-Pro goalcoachv2 % vim api/.env
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Local dev placeholder values — replace with real keys when ready
+# This file is gitignored; safe to keep placeholders here for local-only testing.
+
+# Database (placeholder — replace with your Supabase connection string)
+DATABASE_URL="postgresql://postgres.jmympxpoavpbyylnfxiw:[YOUR-PASSWORD]@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
+DATABASE_URL_UNPOOLED=postgresql://postgres:[YOUR-PASSWORD]@db.[YOUR-REF].supabase.co:5432/postgres
+
+# Auth (placeholder AUTH_SECRET — generate with: openssl rand -base64 32)
+AUTH_SECRET=hw1XhV4fwWnYLb4ca6pXbnIlXkneWGzYDe5TJuljd5s=
+
+# App URLs (local dev) — port 4000 for the API
+AUTH_URL=http://localhost:4000
+NEXT_PUBLIC_APP_URL=http://localhost:4000
+
+# Emergent Universal Key (placeholder — replace with real key from Emergent dashboard)
+EMERGENT_LLM_KEY=sk-emergent-f560844Ef03D3A38c0
+
+# Emergent proxy (default)
+INTEGRATION_PROXY_URL=https://integrations.emergentagent.com
+
+# Local-only dev auth bypass: enables /api/auth/dev-login and shows the
+# "Continue as Dev User" button on the SignInModal. Set to anything
+# other than "true" (or unset) to disable the bypass entirely — the
+# route then returns 404 and the button is hidden. NEVER enable in
+# production.
+ALLOW_DEV_LOGIN=true
+
+~                                                                                                                                                                
+~                                                                                                                                                                
+~                                                                                                                                                                
+~                                                                                                                                                                
+~                                                                                                                                                                
+~                                                                                                                                                                
+~                                                                                                                                                                
+~                                                                                                                                                                
+~                                                                                                                                                                
+~                                                                                                                                                                
+~                                                                                                                                                                
+~                                                                                                                                                                
+

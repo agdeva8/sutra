@@ -49,6 +49,11 @@ def frame(payload: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
+def status(content: str) -> dict:
+    """A progress line for the user ("Reading what you wrote…"). Shown in place of the pending reply."""
+    return {"type": "status", "content": content}
+
+
 def delta(content: str, *, ref_id: str | None = None) -> dict:
     """One chunk of prose. The client accumulates `content` — not `text`."""
     out: dict[str, Any] = {"type": "delta", "content": content}

@@ -6,7 +6,7 @@
 |---|---|
 | `md`, `txt`, `csv` | decode as UTF-8 |
 | `json` | parse and re-serialise, so a minified file becomes readable |
-| `pdf` | **not yet** — needs a PDF parser |
+| `pdf` | text layer via `pypdf`; a scanned PDF has none and says so |
 | `docx` | **not yet** — needs a docx reader |
 | images (`png`, `jpg`, …) | **not yet** — needs OCR |
 
@@ -48,7 +48,7 @@ IMAGE_EXTENSIONS = frozenset(
 
 #: Types whose extraction is deferred. Named so the upload route can mark the
 #: row honestly instead of pretending the excerpt is final.
-DEFERRED_EXTENSIONS = frozenset({"pdf", "docx"}) | IMAGE_EXTENSIONS
+DEFERRED_EXTENSIONS = frozenset({"docx"}) | IMAGE_EXTENSIONS
 
 
 def extension_of(filename: str) -> str:
@@ -81,6 +81,8 @@ def extract_text(
         return ("", True)
 
     text: str
+    if ext == "pdf":
+        return (_pdf_text(data), False)
     if ext == "json":
         try:
             text = json.dumps(json.loads(data.decode("utf-8", errors="replace")), indent=2)
@@ -100,3 +102,29 @@ def extract_text(
 def _looks_textual(content_type: str) -> bool:
     ct = (content_type or "").lower()
     return not ct or ct.startswith("text/") or "json" in ct or "csv" in ct
+
+
+#: What a PDF with no text layer (a scan) reads as, so "unreadable" is distinguishable from "empty".
+PDF_NO_TEXT = "[PDF has no readable text — it may be a scan]"
+
+
+def _pdf_text(data: bytes) -> str:
+    """The text layer of a PDF, capped at the excerpt size. Never raises: a broken file reads as unreadable."""
+    from io import BytesIO
+
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(BytesIO(data))
+        parts: list[str] = []
+        size = 0
+        for page in reader.pages:
+            page_text = (page.extract_text() or "").strip()
+            parts.append(page_text)
+            size += len(page_text)
+            if size >= TEXT_EXCERPT_MAX:
+                break
+        text = "\n\n".join(p for p in parts if p).strip()
+    except Exception:  # noqa: BLE001 — a corrupt or encrypted PDF must not fail the upload
+        return PDF_NO_TEXT
+    return text[:TEXT_EXCERPT_MAX] or PDF_NO_TEXT

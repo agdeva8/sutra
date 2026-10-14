@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from ..vision import describe_image
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -145,11 +146,20 @@ async def upload_source(
 
     content_type = file.content_type or "application/octet-stream"
     key = object_key(user_id=user.user_id, filename=file.filename)
-    await put(key=key, data=data, content_type=content_type)
+    try:
+        await put(key=key, data=data, content_type=content_type)
+    except OSError:
+        # Read-only or full disk (a serverless host with no object storage). The extracted text below is
+        # what chat and planning use, so the upload still succeeds; only the original bytes are not kept.
+        key = ""
 
     excerpt, pending = extract_mod.extract_text(
         filename=file.filename, content_type=content_type, data=data
     )
+    if pending and extract_mod.is_image(file.filename, content_type):
+        # Read the image now, while the bytes are in hand; the text is what chat and planning use.
+        excerpt = await describe_image(data, content_type)
+        pending = False
 
     row = Source(
         id=new_id("src"),

@@ -54,6 +54,7 @@ from ..stream import (
     frame,
     needs_clarification,
     sse_response,
+    status as status_frame,
     tools as tools_frame,
 )
 from ..wire import chat_message, proposal_sse
@@ -129,6 +130,48 @@ async def _build_context(session: AsyncSession, *, user_id: str) -> str:
     if not active:
         lines.append("\nNo active goals yet.")
     return "\n".join(lines)
+
+
+#: What the user is told while the coach works, in the order it happens. Plain words, no jargon.
+STATUS_READING = "Reading what you wrote…"
+STATUS_SOURCES = "Going through what you attached ({n})…"
+STATUS_HISTORY = "Going back over what we've talked about…"
+STATUS_INTERVIEW = "Working out what would change your plan the most…"
+STATUS_PROPOSE = "Putting your goal and first steps together…"
+
+
+def _status_lines(scoped_kind: str, *, n_sources: int, has_history: bool, interview: bool) -> list[str]:
+    """The progress lines for one chat turn, sent before the model is called."""
+    lines = [STATUS_READING]
+    if n_sources:
+        lines.append(STATUS_SOURCES.format(n=n_sources))
+    if has_history:
+        lines.append(STATUS_HISTORY)
+    lines.append(STATUS_INTERVIEW if scoped_kind == KIND_ADD_GOAL and interview else STATUS_PROPOSE)
+    return lines
+
+
+#: Per source, how much of its text goes into the prompt. Matches the stored excerpt cap.
+SOURCE_PROMPT_CHARS = 8000
+
+
+async def _sources_block(session: AsyncSession, *, user_id: str, source_ids: list[str]) -> str:
+    """What the user attached to this chat, as a block the model must use.
+
+    Without it the coach never sees an attachment: the ids only ride along to be linked to the goal.
+    """
+    rows = await repo.sources_by_ids(session, user_id=user_id, ids=source_ids)
+    parts: list[str] = []
+    for row in rows:
+        name = row.url or row.original_filename
+        text = (row.text_excerpt or "").strip()
+        parts.append(f"--- {name} ---\n{text[:SOURCE_PROMPT_CHARS] or '[no readable text in this source yet]'}")
+    if not parts:
+        return ""
+    return (
+        "\n\nATTACHED SOURCES (the user attached these to this goal — read them, ask about what they leave "
+        "unclear, and build the plan from what they say):\n" + "\n\n".join(parts)
+    )
 
 
 async def _history_text(
@@ -271,6 +314,9 @@ async def chat_stream(
         if isinstance(s, str) and s
     ][:10]
 
+    if source_ids:
+        context += await _sources_block(session, user_id=user.user_id, source_ids=source_ids)
+
     async def complete(system: str, user_text: str) -> str:
         """The seam. `apps/agent`'s completion, wrapped so this route owns no
         provider logic — see `sutra_api/llm.py`."""
@@ -279,6 +325,8 @@ async def chat_stream(
     async def events():
         delivered: list[str] = []
         try:
+            for line in _status_lines(scoped_kind, n_sources=len(source_ids), has_history=bool(turns), interview=not auto_answer):
+                yield frame(status_frame(line))
             async for event, payload in stream_turn(
                 complete=complete,
                 message=message,

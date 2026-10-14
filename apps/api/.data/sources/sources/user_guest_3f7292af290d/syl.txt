@@ -1,0 +1,1 @@
+Week 1: arrays. Week 2: graphs. Week 3: dynamic programming. Mock interview every Sunday.

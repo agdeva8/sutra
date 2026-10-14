@@ -158,13 +158,12 @@ class TestExtract:
         )
         assert pending is True
 
-    def test_a_pdf_is_deferred_not_faked(self):
-        """Extraction is not built yet, and the gap is named rather than
-        returning an empty string that reads as an empty document."""
-        _, pending = extract.extract_text(
+    def test_an_unreadable_pdf_says_so_rather_than_reading_as_empty(self):
+        text, pending = extract.extract_text(
             filename="paper.pdf", content_type="application/pdf", data=b"%PDF"
         )
-        assert pending is True
+        assert pending is False
+        assert text == extract.PDF_NO_TEXT
 
     def test_is_image_trusts_the_content_type_too(self):
         """A camera roll can upload `IMG_1234` with no extension."""

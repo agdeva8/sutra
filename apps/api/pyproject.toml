@@ -13,6 +13,7 @@ dependencies = [
     "alembic>=1.13",
     "httpx>=0.27",
     "python-multipart>=0.0.9",
+    "pypdf>=4.0",
     # The v2 agent, also a sibling checkout imported in-process.
     "sutra-agentv2",
 ]

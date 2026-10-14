@@ -43,3 +43,26 @@ def test_plan_hands_add_goal_to_the_chat():
 
     out = asyncio.run(chat_routes.chat_plan(_Req(), session=None, user=None))
     assert out["status"] == "not_planned"
+
+
+def test_pdf_text_layer_is_read_and_a_broken_pdf_reads_as_unreadable():
+    from sutra_api.core.extract import PDF_NO_TEXT, extract_text
+
+    text, pending = extract_text(filename="x.pdf", content_type="application/pdf", data=b"not a pdf")
+    assert (text, pending) == (PDF_NO_TEXT, False)
+
+
+def test_attached_sources_reach_the_prompt():
+    from types import SimpleNamespace
+
+    rows = [SimpleNamespace(url="", original_filename="syllabus.txt", text_excerpt="Week 1: arrays")]
+
+    async def fake(_session, *, user_id, ids):
+        return rows
+
+    chat_routes.repo.sources_by_ids, saved = fake, chat_routes.repo.sources_by_ids
+    try:
+        block = asyncio.run(chat_routes._sources_block(None, user_id="u", source_ids=["s1"]))
+    finally:
+        chat_routes.repo.sources_by_ids = saved
+    assert "syllabus.txt" in block and "Week 1: arrays" in block
