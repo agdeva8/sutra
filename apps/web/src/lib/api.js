@@ -1,4 +1,5 @@
 import { withTimeout, TimeoutError } from "./fetch-with-timeout";
+import { withProgress } from "./progress";
 
 export { TimeoutError };
 
@@ -20,7 +21,11 @@ const USER_TIMEZONE = (() => {
   }
 })();
 
-async function req(path, opts = {}) {
+function req(path, opts = {}) {
+  return withProgress((opts.method || "GET").toUpperCase(), path, () => send(path, opts));
+}
+
+async function send(path, opts = {}) {
   const { quiet, timeout = DEFAULT_TIMEOUT_MS, ...fetchOpts } = opts;
   const controller = new AbortController();
   const signal = fetchOpts.signal || controller.signal;

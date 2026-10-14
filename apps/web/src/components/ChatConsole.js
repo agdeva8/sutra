@@ -1,6 +1,8 @@
 import { useRef, useEffect, useLayoutEffect, useState } from "react";
 import { useWebcamCapture } from "./WebcamCaptureDialog";
 import { ArrowUp, Paperclip, Link2, X, FileText, Trash2, Mic, Square, Camera, Check, Send } from "lucide-react";
+import { useReopenLink } from "./ReopenableLink";
+import PendingStatus from "./PendingStatus";
 import ToolConfirmationPrompt from "./ToolConfirmationPrompt";
 import ChatModeSelect from "./ChatModeSelect";
 import MarkdownMessage from "./MarkdownMessage";
@@ -229,7 +231,7 @@ function Message({ m, settled = false, onConfirm, onReject, onRefine, onOpenRefi
             data-testid="chat-response-pending"
             className="max-w-[92%] text-xs leading-relaxed text-[var(--text-muted)]"
           >
-            Checking your goals, milestones, and attached sources…
+            <PendingStatus status={m.status} />
             <span className="gc-caret text-[var(--accent)]">▋</span>
           </div>
         )
@@ -264,8 +266,9 @@ function Message({ m, settled = false, onConfirm, onReject, onRefine, onOpenRefi
   );
 }
 
-export default function ChatConsole({ messages, onSend, sending, input, setInput, onConfirm, onReject, onRefine, onOpenRefine, onOpenReject, onNavigate = null, onAnswerChoice = null, showConfirm = true, busyProposal, autoAnswer, setAutoAnswer, grillMe = false, setGrillMe = () => {}, onUploadFile = () => {}, onAddLink = () => {}, sources = [], onDeleteSource = () => {}, onClearChat = () => {}, pendingClarifications = null, onAnswerClarification = () => {}, onDismissClarifications = () => {}, showSources = true, focusOnMount = false, scopeLabel = "", scopeIntent = "", goalContext = "", emptyPrompt = "", loading = false, onViewGoal = null, showModeSelect = true }) {
+export default function ChatConsole({ messages, onSend, sending, input, setInput, onConfirm, onReject, onRefine, onOpenRefine, onOpenReject, onNavigate = null, onAnswerChoice = null, showConfirm = true, busyProposal, autoAnswer, setAutoAnswer, grillMe = false, setGrillMe = () => {}, onUploadFile = () => {}, onAddLink = () => {}, sources = [], onDeleteSource = () => {}, onClearChat = () => {}, pendingClarifications = null, onAnswerClarification = () => {}, onDismissClarifications = () => {}, showSources = true, focusOnMount = false, scopeLabel = "", scopeIntent = "", goalContext = "", emptyPrompt = "", loading = false, onViewGoal = null, showModeSelect = true, readOnly = false }) {
   const endRef = useRef(null);
+  const reopenLink = useReopenLink(goalContext);
   const taRef = useRef(null);
   const fileRef = useRef(null);
   const { openCamera, cameraUi } = useWebcamCapture((f) => onUploadFile(f));
@@ -514,6 +517,21 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
   //      add gold" duplication bug where the browser cut off, the user
   //      saw the stop, and the next tap replayed the buffer.
   const expectedStopRef = useRef(false);
+  // Where the live transcript goes: the composer by default, or a clarification's free-text box.
+  const inputRef = useRef(input);
+  inputRef.current = input;
+  const draftsRef = useRef({});
+  draftsRef.current = drafts;
+  const voiceTargetRef = useRef(null); // null = composer, else the question index
+  const voiceBaseRef = useRef("");
+  const listeningRef = useRef(false);
+  listeningRef.current = voiceListening;
+  const voiceSink = () => {
+    const i = voiceTargetRef.current;
+    return i === null
+      ? { get: () => inputRef.current, set: setInput }
+      : { get: () => draftsRef.current[i] || "", set: (v) => setDraft(i, v) };
+  };
   useEffect(() => {
     if (typeof window === "undefined") return;
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -542,30 +560,17 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
     };
 
     recognition.onresult = (event) => {
-      let finalText = "";
-      let interimText = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const t = event.results[i][0].transcript;
-        if (event.results[i].isFinal) finalText += t;
-        else interimText += t;
-      }
       // Reset the 60s timer on every result — the user is still active.
       armSilenceTimer();
 
-      setInput((prev) => {
-        // Dedupe: if the new interim already appears in `prev` (the
-        // browser sometimes re-emits the last interim on every event),
-        // keep `prev` as-is. Otherwise concatenate. Fixes the
-        // "I want to add gold I want to add gold" duplication bug.
-        const incoming = (finalText || interimText).trim();
-        if (!incoming) return prev;
-        const cur = prev.trim();
-        if (cur === incoming) return prev;
-        if (cur.endsWith(incoming)) return prev;
-        if (!cur) return incoming;
-        // Append with a space if neither already ends/begins with it.
-        return `${cur} ${incoming}`;
-      });
+      // The text box shows the live transcript: what was there when listening began, plus everything
+      // heard so far (final words and the still-forming interim words), rewritten on every result.
+      let heard = "";
+      for (let i = 0; i < event.results.length; i++) heard += event.results[i][0].transcript;
+      const base = voiceBaseRef.current;
+      const spoken = heard.trim();
+      const joined = !base ? spoken : !spoken ? base : `${base.replace(/\s+$/, "")} ${spoken}`;
+      voiceSink().set(joined);
     };
 
     recognition.onerror = (event) => {
@@ -596,19 +601,13 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
       // Unexpected end — Chromium stopped us. If the user is still in
       // "listening" mode, restart in 250ms. This is the bug fix for
       // the founder's "voice stops in the middle" report.
-      // We can't read the latest voiceListening here without re-binding
-      // the listener; instead, use a small trick: peek at the DOM
-      // button's aria-pressed (set by us) to detect intent.
-      try {
-        const btn = document.querySelector('[data-testid="chat-voice-button"]');
-        if (btn?.getAttribute("aria-pressed") === "true") {
-          setTimeout(() => {
-            try { recognition.start(); } catch { /* still in flight */ }
-          }, 250);
-        } else {
-          setVoiceListening(false);
-        }
-      } catch {
+      // `listeningRef` mirrors the voiceListening state, so this long-lived listener sees intent.
+      if (listeningRef.current) {
+        voiceBaseRef.current = voiceSink().get();
+        setTimeout(() => {
+          try { recognition.start(); } catch { /* still in flight */ }
+        }, 250);
+      } else {
         setVoiceListening(false);
       }
     };
@@ -620,11 +619,20 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
       try { recognition.stop(); } catch { /* ignore */ }
       recognitionRef.current = null;
     };
+  // voiceSink only reads refs and stable setters, so the listener built once stays correct.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setInput]);
 
-  const toggleVoice = () => {
+  const toggleVoice = (target = null) => {
     const r = recognitionRef.current;
     if (!r) return;
+    if (voiceListening && voiceTargetRef.current !== target) {
+      // Tapped a different box's mic while listening: stop here, the next tap starts there.
+      expectedStopRef.current = true;
+      try { r.stop(); } catch { /* ignore */ }
+      setVoiceListening(false);
+      return;
+    }
     if (voiceListening) {
       // Manual stop — set the expected flag so the onend path takes
       // the "user wanted to stop" branch and doesn't auto-restart.
@@ -634,6 +642,8 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
     } else {
       setVoiceError("");
       expectedStopRef.current = false;
+      voiceTargetRef.current = target;
+      voiceBaseRef.current = voiceSink().get();
       try {
         r.start();
         setVoiceListening(true);
@@ -751,7 +761,7 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
             composer: it is part of the coach's turn, so it scrolls with the
             reply and the composer stays pinned. Picking options no longer sends
             immediately — answers accumulate and go in one Submit. */}
-        {pendingClarifications && pendingClarifications.questions?.length > 0 && (() => {
+        {!readOnly && pendingClarifications && pendingClarifications.questions?.length > 0 && (() => {
           const i = activeQuestion;
           const q = pendingClarifications.questions[i];
           const item = typeof q === "string" ? { question: q } : (q || {});
@@ -823,6 +833,7 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
                     })}
                   </div>
                 )}
+                <div className="mt-2 flex items-center gap-2">
                 <input
                   type="text"
                   data-testid={`clarification-free-text-${i}`}
@@ -830,8 +841,25 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
                   onChange={(e) => setDraft(i, e.target.value)}
                   placeholder={opts.length > 0 ? "Something else…" : "Type your answer…"}
                   aria-label={`Your own answer for question ${i + 1}`}
-                  className="mt-2 w-full rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-[var(--border-accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+                  className="min-w-0 flex-1 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-[var(--border-accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
                 />
+                {voiceSupported && (
+                  <button
+                    type="button"
+                    data-testid={`clarification-voice-${i}`}
+                    onClick={() => toggleVoice(i)}
+                    aria-label={voiceListening && voiceTargetRef.current === i ? "Stop dictating" : "Answer with your voice"}
+                    aria-pressed={voiceListening && voiceTargetRef.current === i}
+                    className={`h-11 w-11 shrink-0 flex items-center justify-center rounded-lg transition-colors ${
+                      voiceListening && voiceTargetRef.current === i
+                        ? "bg-[var(--danger)] text-[var(--bg-primary)]"
+                        : "text-[var(--text-muted)] hover:text-[var(--accent)]"
+                    }`}
+                  >
+                    {voiceListening && voiceTargetRef.current === i ? <Square className="w-3.5 h-3.5" aria-hidden="true" /> : <Mic className="w-4 h-4" aria-hidden="true" />}
+                  </button>
+                )}
+                </div>
               </div>
 
               {/* Linear flow: Back · Next … Submit on the last question. Next
@@ -876,13 +904,19 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
         <div ref={endRef} />
       </div>
 
-      <div className="shrink-0 px-3 pt-2.5 pb-2 sm:px-4 sm:pt-3 sm:pb-2.5 bg-[var(--bg-primary)]"
+      {readOnly && (
+        <div data-testid="chat-read-only" className="shrink-0 px-4 py-3 text-center text-xs text-[var(--text-muted)] bg-[var(--bg-primary)]">
+          This plan is confirmed, so the conversation is now read-only.
+        </div>
+      )}
+      <div className={`shrink-0 px-3 pt-2.5 pb-2 sm:px-4 sm:pt-3 sm:pb-2.5 bg-[var(--bg-primary)]${readOnly ? " hidden" : ""}`}
         style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}>
         {sources.length > 0 && (
           <div data-testid="attached-sources" className="mb-2 flex flex-wrap gap-1.5">
             {sources.map((s) => (
               <span key={s.id} className="flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-[var(--bg-tertiary)] text-[var(--text-secondary)]">
-                <FileText className="w-3 h-3" /> <span className="max-w-[140px] truncate">{s.original_filename}</span>
+                <FileText className="w-3 h-3" />{" "}
+                <button type="button" data-testid={`source-chip-${s.id}`} onClick={() => reopenLink.open(s)} title="See what the coach read" className="max-w-[140px] truncate text-left hover:text-[var(--text-primary)] hover:underline">{s.original_filename}</button>
                 <button onClick={() => onDeleteSource(s.id)} aria-label={`Remove source ${s.original_filename}`} className="min-h-11 min-w-11 inline-flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--danger)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] rounded"><X className="w-3 h-3" /></button>
               </span>
             ))}
@@ -941,6 +975,7 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
                 <>
                   <input ref={fileRef} type="file" hidden accept=".pdf,.md,.txt,.csv,.json,.png,.jpg,.jpeg" onChange={(e) => { if (e.target.files[0]) { onUploadFile(e.target.files[0]); e.target.value = ""; } }} />
                   {cameraUi}
+      {reopenLink.dialog}
                   <button data-testid="chat-attach-file" onClick={() => fileRef.current?.click()} title="Attach a file (PDF, .md, .txt…)" aria-label="Attach a file" className="h-11 w-9 flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors shrink-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] rounded">
                     <Paperclip className="w-4 h-4" />
                   </button>
@@ -967,7 +1002,7 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
                 <button
                   type="button"
                   data-testid="chat-voice-button"
-                  onClick={toggleVoice}
+                  onClick={() => toggleVoice(null)}
                   title={voiceListening ? "Stop listening (or wait 60s for auto-pause)" : "Dictate with your voice"}
                   aria-label={voiceListening ? "Stop dictating" : "Dictate with your voice"}
                   aria-pressed={voiceListening}

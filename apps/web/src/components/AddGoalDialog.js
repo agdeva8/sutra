@@ -18,6 +18,7 @@ import CenteredDialog from "./CenteredDialog";
 import ChatConsole from "./ChatConsole";
 import RefineModal from "./RefineModal";
 import RejectModal from "./RejectModal";
+import SourcesAskCard from "./SourcesAskCard";
 import RenegotiationDialog from "./RenegotiationDialog";
 import { useDialogBack } from "../hooks/useDialogBack";
 import { usePlanSend, renegotiationChoiceLabel, clearRenegotiation } from "../hooks/use-plan-send";
@@ -35,6 +36,12 @@ import { readDraftBucket, writeDraftBucket, clearDraftBucket } from "../hooks/us
  * palette. The "Something else" tile is the only one that uses the
  * canonical --accent so it reads as the meta / catch-all choice.
  */
+/**
+ * The dialog opens straight into the chat: the user writes the goal in their own words and the
+ * coach works out the area. The category tiles are kept below for a future "browse by area" entry.
+ */
+const INITIAL_STEP = "chat";
+
 const CATEGORIES = [
   {
     id: "health",
@@ -144,7 +151,7 @@ export default function AddGoalDialog({
 
   // UI state for the 2-step flow.
   const [activeCategory, setActiveCategory] = useState(null);
-  const [step, setStep] = useState("tiles"); // "tiles" | "chat"
+  const [step, setStep] = useState(INITIAL_STEP); // "tiles" | "chat"
   // Iteration 5 (Bug 10) — bump every tiles→chat transition so React
   // remounts <ChatConsole> via `key` and re-fires its focus effect.
   // The old `focusOnMount={step === "chat"}` only flipped once on the
@@ -190,6 +197,10 @@ export default function AddGoalDialog({
   // Sources attached within this dialog session (attached to a goal
   // once it's created — shown as chips above the chat textarea).
   const [sources, setSources] = useState([]);
+  // The first message is held while the user is asked about sources; null when nothing is held.
+  const [heldFirst, setHeldFirst] = useState(null);
+  // Once the plan is confirmed the conversation is a record, not a draft: the composer goes away.
+  const [planConfirmed, setPlanConfirmed] = useState(false);
   const autoResumePendingRef = useRef(false);
   const reusedDraftRef = useRef(false);
   // Set to the source's label when a source is attached while a plan is
@@ -239,20 +250,26 @@ export default function AddGoalDialog({
           } else {
             setMessages([]);
             setActiveCategory(null);
-            setStep("tiles");
+            setStep(INITIAL_STEP);
+    setHeldFirst(null);
+    setPlanConfirmed(false);
           }
         })
         .catch(() => {
           if (cancelled) return;
           setMessages([]);
           setActiveCategory(null);
-          setStep("tiles");
+          setStep(INITIAL_STEP);
+    setHeldFirst(null);
+    setPlanConfirmed(false);
         });
     } else {
       // Fresh draft — mint a bucket and remember it for the session.
       setMessages([]);
       setActiveCategory(null);
-      setStep("tiles");
+      setStep(INITIAL_STEP);
+    setHeldFirst(null);
+    setPlanConfirmed(false);
       reusedDraftRef.current = false;
       refIdRef.current = `new_goal_${crypto.randomUUID()}`;
       writeDraftBucket("add_goal", refIdRef.current);
@@ -347,7 +364,9 @@ export default function AddGoalDialog({
       let finalId = null;
 
       const handle = (data) => {
-        if (data.type === "delta") {
+        if (data.type === "status") {
+          setMessages((prev) => prev.map((m) => (m.id === streamId ? { ...m, status: data.content } : m)));
+        } else if (data.type === "delta") {
           setMessages((prev) => prev.map((m) => (m.id === streamId ? { ...m, content: m.content + data.content } : m)));
         } else if (data.type === "tools") {
           finalId = data.message_id;
@@ -453,7 +472,20 @@ export default function AddGoalDialog({
   const handleSend = () => {
     const msg = buildMessage();
     if (!msg) return;
+    // The first message opens with "anything to attach?" so sources can shape the questions.
+    if (messages.length === 0 && sources.length === 0 && heldFirst === null) {
+      setHeldFirst(msg);
+      setInput("");
+      return;
+    }
     send(msg);
+  };
+
+  const releaseHeldFirst = () => {
+    const msg = heldFirst;
+    setHeldFirst(null);
+    setPlanConfirmed(false);
+    if (msg) send(msg);
   };
 
   const pickCategory = (cat) => {
@@ -468,7 +500,9 @@ export default function AddGoalDialog({
   };
 
   const goBackToTiles = () => {
-    setStep("tiles");
+    setStep(INITIAL_STEP);
+    setHeldFirst(null);
+    setPlanConfirmed(false);
     setInput("");
   };
 
@@ -479,7 +513,7 @@ export default function AddGoalDialog({
   // handler always calls this — it doesn't need to know the current
   // step.
   const handleStepBack = () => {
-    if (step === "chat") {
+    if (step === "chat" && activeCategory) {
       goBackToTiles();
     } else {
       onClose?.();
@@ -522,6 +556,7 @@ export default function AddGoalDialog({
         ...prev,
         {
           id: created.id,
+          kind: "file",
           original_filename: created.original_filename || file.name,
           url: created.url || file.name,
         },
@@ -538,6 +573,7 @@ export default function AddGoalDialog({
         ...prev,
         {
           id: created.id,
+          kind: "link",
           original_filename: created.original_filename || url,
           url: created.url || url,
         },
@@ -618,6 +654,7 @@ export default function AddGoalDialog({
           createdAt: new Date().toISOString(),
         },
       ]);
+      setPlanConfirmed(true);
       onGoalConfirmed?.(proposalId);
       setTimeout(() => onClose?.(), 700);
     } catch (e) {
@@ -894,7 +931,9 @@ export default function AddGoalDialog({
     setMessages([]);
     setPendingClarifications(null);
     setActiveCategory(null);
-    setStep("tiles");
+    setStep(INITIAL_STEP);
+    setHeldFirst(null);
+    setPlanConfirmed(false);
     setShowDraftPrompt(false);
   }, []);
 
@@ -911,7 +950,7 @@ export default function AddGoalDialog({
           ? "Pick what area this goal is in. You can refine the details once we start talking."
           : activeCat
           ? `Tell the coach about your ${activeCat.label.toLowerCase()} goal — or just hit send and they'll propose something.`
-          : "Describe what you're working on."
+          : "Tell me in your own words — what do you want to achieve, and by when?"
       }
       maxWidth="max-w-3xl"
       testId="add-goal-dialog"
@@ -1015,6 +1054,7 @@ export default function AddGoalDialog({
         </div>
       ) : (
         <>
+          {activeCategory && (
           <div className="flex items-center justify-between mb-2">
             <button
               type="button"
@@ -1025,6 +1065,7 @@ export default function AddGoalDialog({
               <ArrowLeft className="w-3 h-3" /> Change category
             </button>
           </div>
+          )}
 
           {/* Isolated ChatConsole — own messages/sending/input, NOT
               shared with the left-hand console. "Same component,
@@ -1032,7 +1073,20 @@ export default function AddGoalDialog({
               showSources={false} hides the attach / link buttons —
               sources don't apply to a goal-add chat, and the no-op
               stubs were surfacing as a confusing dead UI. */}
-          <div className="flex-1 min-h-0 -mx-5 sm:mx-0 border-t border-[var(--border)] flex flex-col">
+          {heldFirst !== null && (
+            <div className="mb-3">
+              <p className="mb-3 rounded-lg bg-[var(--bg-tertiary)] px-3 py-2 text-sm text-[var(--text-primary)]">{heldFirst}</p>
+              <SourcesAskCard
+                sources={sources}
+                onUploadFile={handleUploadFile}
+                onAddLink={handleAddLink}
+                onDeleteSource={handleDeleteSource}
+                onNotNow={releaseHeldFirst}
+                onDone={releaseHeldFirst}
+              />
+            </div>
+          )}
+          <div className={`flex-1 min-h-0 -mx-5 sm:mx-0 border-t border-[var(--border)] flex flex-col ${heldFirst !== null ? "hidden" : ""}`}>
             <ChatConsole
               key={focusToken}
               messages={messages}
@@ -1068,6 +1122,7 @@ export default function AddGoalDialog({
               onAnswerClarification={(text) => { setPendingClarifications(null); send(text); }}
               onDismissClarifications={() => setPendingClarifications(null)}
               showSources={true}
+              readOnly={planConfirmed}
               focusOnMount={true}
               goalContext={activeCategory ? `Adding a "${activeCategory}" goal` : "Adding a new goal"}
               // AddGoalDialog uses its own pinned Confirm button; suppress

@@ -195,7 +195,6 @@ function SourcesChip({ goal, sources, onUpload, onAddLink, onDelete }) {
       <LinkPreviewDialog
         open={!!exploringSource}
         existingSource={exploringSource}
-        showAsk={false}
         title={goal.title ? `Add a link to "${goal.title}"` : "Add a link as a source"}
         goalContext={goal.title}
         onClose={() => setExploringSource(null)}

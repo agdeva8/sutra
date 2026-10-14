@@ -338,7 +338,9 @@ export default function ChatModal({
         let buf = "";
         let finalId = null;
         const handle = (data) => {
-          if (data.type === "delta") {
+          if (data.type === "status") {
+          setMessages((prev) => prev.map((m) => (m.id === streamId ? { ...m, status: data.content } : m)));
+        } else if (data.type === "delta") {
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === streamId
