@@ -1,0 +1,1024 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sutra MVP — Visual Synthesis</title>
+<style>
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+</style>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  // ── Tab switching ──────────────────────────────────────
+  document.querySelectorAll('.tab-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var tab = this.dataset.tab;
+      document.querySelectorAll('.tab-btn').forEach(function(b) {
+        b.classList.remove('active');
+        b.style.background = 'var(--surface2)';
+        b.style.color = 'var(--text-dim)';
+        b.style.border = '1px solid var(--border)';
+      });
+      this.classList.add('active');
+      this.style.background = '#6366f1';
+      this.style.color = 'white';
+      this.style.border = 'none';
+      document.querySelectorAll('.tab-content').forEach(function(p) { p.classList.remove('active'); });
+      document.getElementById('tab-' + tab).classList.add('active');
+    });
+  });
+
+  // ── Undo buttons ──────────────────────────────────────
+  document.querySelectorAll('.btn-undo').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var card = this.closest('.card');
+      card.style.transition = 'opacity 0.3s, transform 0.3s';
+      card.style.opacity = '0';
+      card.style.transform = 'translateX(20px)';
+      setTimeout(function() {
+        var tag = card.querySelector('.tag');
+        if (tag) {
+          tag.textContent = '✓ undone';
+          tag.style.background = 'var(--text-dim)';
+        }
+        var title = card.querySelector('.task-title, p[style*="font-weight:500"]');
+        if (title) title.style.textDecoration = 'line-through';
+        card.style.opacity = '1';
+        card.style.transform = 'none';
+        card.style.color = 'var(--text-dim)';
+        card.querySelectorAll('.btn-undo, .btn').forEach(function(b) { b.style.display = 'none'; });
+      }, 300);
+    });
+  });
+
+  // ── Accept / Reject proposal ───────────────────────────
+  document.querySelectorAll('.btn-accept').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var card = this.closest('.card');
+      var label = card.querySelector('p[style*="color:var(--warning)"]');
+      if (label) { label.textContent = '✓ accepted'; label.style.color = 'var(--success)'; }
+      card.querySelectorAll('.btn-accept, .btn-ghost').forEach(function(b) {
+        if (b.textContent.trim() !== 'View plan item') b.style.display = 'none';
+      });
+    });
+  });
+  document.querySelectorAll('.btn-reject').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var card = this.closest('.card');
+      card.style.transition = 'opacity 0.3s, transform 0.3s';
+      card.style.opacity = '0';
+      card.style.transform = 'translateX(20px)';
+      setTimeout(function() {
+        card.style.display = 'none';
+      }, 300);
+    });
+  });
+
+  // ── Add Goal button ───────────────────────────────────
+  var addGoalBtn = document.querySelector('#tab-goals .btn-ghost');
+  if (addGoalBtn) {
+    addGoalBtn.addEventListener('click', function() {
+      var existing = document.getElementById('add-goal-form');
+      if (existing) { existing.remove(); return; }
+      var form = document.createElement('div');
+      form.id = 'add-goal-form';
+      form.style.cssText = 'background:var(--surface2); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:12px;';
+      form.innerHTML = '<p style="font-size:0.8rem; color:var(--accent); margin-bottom:12px;">New Goal</p>' +
+        '<input type="text" placeholder="Goal title (e.g. Learn Spanish)" style="width:100%; background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:10px 12px; color:var(--text); font-size:0.9rem; margin-bottom:8px; outline:none;">' +
+        '<input type="date" style="width:100%; background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:10px 12px; color:var(--text); font-size:0.9rem; margin-bottom:12px; outline:none;">' +
+        '<div style="display:flex; gap:8px;">' +
+          '<button id="save-goal" style="flex:1; background:#6366f1; color:white; border:none; border-radius:8px; padding:10px; font-size:0.85rem; cursor:pointer;">Save Goal</button>' +
+          '<button id="cancel-goal" style="flex:1; background:transparent; color:var(--text-dim); border:1px solid var(--border); border-radius:8px; padding:10px; font-size:0.85rem; cursor:pointer;">Cancel</button>' +
+        '</div>';
+      addGoalBtn.parentElement.insertBefore(form, addGoalBtn.parentElement.lastElementChild);
+      form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      form.querySelector('#cancel-goal').addEventListener('click', function() { form.remove(); });
+      form.querySelector('#save-goal').addEventListener('click', function() {
+        var title = form.querySelector('input[type="text"]').value.trim() || 'New Goal';
+        var date = form.querySelector('input[type="date"]').value;
+        var targetDate = date ? ' · Target: ' + date : '';
+        var newCard = document.createElement('div');
+        newCard.className = 'card';
+        newCard.style.cssText = 'border-left:3px solid #a855f7; opacity:0; transition:opacity 0.3s;';
+        newCard.innerHTML = '<div style="display:flex; justify-content:space-between; align-items:start; margin-bottom:8px;"><span class="task-title">' + title + '</span><span class="tag" style="background:#a855f7;">New</span></div><p style="font-size:0.8rem; color:var(--text-dim);">Added just now' + targetDate + '</p>';
+        addGoalBtn.parentElement.insertBefore(newCard, addGoalBtn.parentElement.lastElementChild);
+        form.remove();
+        setTimeout(function() { newCard.style.opacity = '1'; }, 50);
+      });
+    });
+  }
+
+  // ── Capture bar ───────────────────────────────────────
+  document.querySelectorAll('.capture-input').forEach(function(input) {
+    input.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' && this.value.trim()) {
+        var val = this.value.trim();
+        var bar = this.closest('.capture-bar');
+        var icon = bar.querySelector('.capture-icon');
+        icon.innerHTML = '<svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="animation:spin 1s linear infinite;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>';
+        this.value = '';
+        this.placeholder = 'Processing...';
+        var originalPlaceholder = 'A new task, thought, appointment...';
+        setTimeout(function() {
+          icon.innerHTML = '<svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>';
+          input.placeholder = '✓ Captured!';
+          input.style.color = 'var(--success)';
+          setTimeout(function() {
+            input.placeholder = originalPlaceholder;
+            input.style.color = 'var(--text)';
+          }, 2000);
+        }, 1200);
+      }
+    });
+  });
+
+  // ── Clarify buttons ───────────────────────────────────
+  document.querySelectorAll('.clarify-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var card = this.closest('.card');
+      var buttons = card.querySelectorAll('.clarify-btn');
+      buttons.forEach(function(b) { b.style.display = 'none'; });
+      var selected = document.createElement('p');
+      selected.style.cssText = 'font-size:0.85rem; color:var(--accent); margin-top:8px;';
+      selected.textContent = '→ Filed under: ' + this.textContent;
+      card.appendChild(selected);
+    });
+  });
+
+  // ── Why this change ────────────────────────────────────
+  document.querySelectorAll('.btn-why').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var card = this.closest('.card');
+      var existing = card.querySelector('.why-reason');
+      if (existing) { existing.remove(); return; }
+      var reason = document.createElement('div');
+      reason.className = 'why-reason';
+      reason.style.cssText = 'margin-top:10px; padding:10px; background:var(--bg); border-radius:6px; font-size:0.8rem; color:var(--text-dim);';
+      reason.innerHTML = '<strong style="color:var(--text);">Reason:</strong> "Q4 deck deadline (Fri) identified from capture. Available slot found on Oct 14 without moving existing commitments. CP-SAT solver confirmed 0 dated items moved."';
+      card.querySelector('.notice-text').appendChild(reason);
+    });
+  });
+
+  // ── Remove from plan ──────────────────────────────────
+  document.querySelectorAll('.btn-remove').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var card = this.closest('.card');
+      card.style.transition = 'opacity 0.3s, transform 0.3s';
+      card.style.opacity = '0';
+      card.style.transform = 'translateX(20px)';
+      setTimeout(function() {
+        var label = card.querySelector('p[style*="font-weight:500"]');
+        if (label) {
+          label.style.textDecoration = 'line-through';
+          label.style.color = 'var(--text-dim)';
+        }
+        card.querySelectorAll('.btn').forEach(function(b) { b.style.display = 'none'; });
+        var removed = document.createElement('p');
+        removed.style.cssText = 'font-size:0.75rem; color:var(--danger); margin-top:8px;';
+        removed.textContent = '✓ Removed from plan';
+        card.appendChild(removed);
+        card.style.opacity = '1';
+        card.style.transform = 'none';
+      }, 300);
+    });
+  });
+});
+</script>
+<style>
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+</style>
+
+<style>
+:root {
+  --bg: #0f0f0f;
+  --surface: #1a1a1a;
+  --surface2: #242424;
+  --border: #333;
+  --text: #e5e5e5;
+  --text-dim: #888;
+  --accent: #6366f1;
+  --accent-dim: #4f46e5;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+  --radius: 12px;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  padding: 40px 20px;
+}
+
+.container { max-width: 900px; margin: 0 auto; }
+
+/* Header */
+header {
+  text-align: center;
+  margin-bottom: 48px;
+}
+
+header h1 {
+  font-size: 2rem;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  margin-bottom: 8px;
+}
+
+header h1 span { color: var(--accent); }
+
+header p {
+  color: var(--text-dim);
+  font-size: 0.95rem;
+}
+
+.sources {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+
+.source-badge {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 4px 12px;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+
+.source-badge.prd1 { border-color: #22c55e40; color: #22c55e; }
+.source-badge.prd2 { border-color: #3b82f640; color: #3b82f6; }
+.source-badge.prd3 { border-color: #a855f740; color: #a855f7; }
+.source-badge.prd4 { border-color: #ef444440; color: #ef4444; }
+
+/* Phone Frame */
+.phone-frame {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 40px;
+  padding: 12px;
+  max-width: 390px;
+  margin: 0 auto 48px;
+  box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5);
+}
+
+.phone-screen {
+  background: var(--bg);
+  border-radius: 32px;
+  min-height: 680px;
+  overflow: hidden;
+  position: relative;
+}
+
+.status-bar {
+  display: flex;
+  justify-content: space-between;
+  padding: 12px 24px 4px;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+
+.notch {
+  width: 100px;
+  height: 28px;
+  background: var(--surface);
+  border-radius: 0 0 16px 16px;
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+/* App Content */
+.app-content {
+  padding: 40px 20px 100px;
+}
+
+.greeting {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+.date { font-size: 0.75rem; color: var(--text-dim); margin-bottom: 16px; }
+
+h2 {
+  font-size: 1.75rem;
+  font-weight: 600;
+  margin-bottom: 20px;
+  line-height: 1.2;
+}
+
+/* Section Headers */
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.section-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+}
+
+/* Cards */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 12px;
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+.task-title {
+  font-size: 0.95rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.task-meta {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tag {
+  background: var(--accent);
+  color: white;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 500;
+}
+
+.tag.work { background: #3b82f6; }
+.tag.health { background: #22c55e; }
+.tag.interview { background: #f59e0b; }
+
+/* Agent Notice */
+.notice {
+  background: linear-gradient(135deg, #1e1b4b 0%, #172554 100%);
+  border: 1px solid #4338ca40;
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+
+.notice-text {
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin-bottom: 10px;
+  color: #c7d2fe;
+}
+
+.notice-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn {
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
+
+.btn-ghost:hover { background: var(--surface2); }
+
+/* Capture Bar */
+.capture-section {
+  margin-top: 24px;
+}
+
+.capture-bar {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  padding: 14px 18px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  transition: all 0.15s;
+}
+
+.capture-bar:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px #6366f120;
+}
+
+.capture-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 0.95rem;
+  outline: none;
+}
+
+.capture-input::placeholder { color: var(--text-dim); }
+
+.capture-icon {
+  width: 36px;
+  height: 36px;
+  background: var(--accent);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.capture-icon svg { width: 18px; height: 18px; color: white; }
+
+/* Bottom Nav */
+.bottom-nav {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: space-around;
+  padding: 12px 0 24px;
+}
+
+.nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-dim);
+  font-size: 0.65rem;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.nav-item.active { color: var(--accent); }
+
+.nav-item svg {
+  width: 22px;
+  height: 22px;
+}
+
+/* Verdict Section */
+.verdict {
+  margin-top: 64px;
+  padding-top: 48px;
+  border-top: 1px solid var(--border);
+}
+
+.verdict h3 {
+  font-size: 1.5rem;
+  margin-bottom: 24px;
+  text-align: center;
+}
+
+.verdict-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 32px;
+}
+
+.verdict-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+
+.verdict-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+
+.verdict-value {
+  font-size: 2rem;
+  font-weight: 700;
+}
+
+.verdict-value.bad { color: var(--danger); }
+.verdict-value.warning { color: var(--warning); }
+.verdict-value.good { color: var(--success); }
+
+/* Final Verdict */
+.final-verdict {
+  background: var(--surface);
+  border: 2px solid var(--border);
+  border-radius: 16px;
+  padding: 32px;
+  text-align: center;
+}
+
+.verdict-summary {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-bottom: 16px;
+  line-height: 1.4;
+}
+
+.verdict-explanation {
+  color: var(--text-dim);
+  font-size: 0.9rem;
+  line-height: 1.7;
+  text-align: left;
+  margin-top: 20px;
+}
+
+.verdict-explanation p {
+  margin-bottom: 12px;
+}
+
+.verdict-explanation strong { color: var(--text); }
+
+.verdict-explanation .do {
+  color: var(--success);
+}
+
+.verdict-explanation .dont {
+  color: var(--danger);
+}
+
+/* Legend */
+.legend {
+  margin-top: 32px;
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.legend h4 {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  margin-bottom: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.legend-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 0.85rem;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.legend-dot.prd1 { background: #22c55e; }
+.legend-dot.prd2 { background: #3b82f6; }
+.legend-dot.prd3 { background: #a855f7; }
+.legend-dot.prd4 { background: #ef4444; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <h1>Sutra<span>/GoalCoach</span> MVP</h1>
+  <p>Synthesized from 4 PRD documents</p>
+  <div class="sources">
+    <span class="source-badge prd1">PRD1: Founder's Vision</span>
+    <span class="source-badge prd2">PRD2: Interaction Model</span>
+    <span class="source-badge prd3">PRD3: Sutra Product</span>
+    <span class="source-badge prd4">PRD4: Critical Review</span>
+  </div>
+</header>
+
+<!-- Phone Mockup -->
+<div class="phone-frame">
+  <div class="phone-screen">
+    <div class="notch"></div>
+    <div class="status-bar">
+      <span>9:41</span>
+      <span>●●●●● WiFi 5G</span>
+    </div>
+
+    <div class="app-content">
+      <!-- TODAY TAB -->
+      <div id="tab-today" class="tab-content active">
+      <p class="greeting">Tuesday, October 13</p>
+      <h2>Good evening. Here's what matters today.</h2>
+
+      <div class="section-header">
+        <span class="section-title">Today's Plan</span>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <span class="task-title">Finish system design practice</span>
+          <span class="tag interview">Interview prep · 45 min</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <span class="task-title">Complete the Q4 deck</span>
+          <span class="tag work">Work · 90 min</span>
+        </div>
+        <div class="task-meta">
+          <span>📍 from scratch · 09:14 · "boss gave me the Q4 deck"</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <span class="task-title">Take a walk</span>
+          <span class="tag health">Health · 20 min</span>
+        </div>
+      </div>
+
+      <div class="notice">
+        <p class="notice-text">"The Q4 deck is due Friday. Your schedule has room tomorrow, so I've added it without moving your existing commitments."</p>
+        <div class="notice-actions">
+          <button class="btn btn-ghost">Why this change?</button>
+          <button class="btn btn-ghost">Undo</button>
+        </div>
+      </div>
+
+      <div class="capture-section">
+        <div class="capture-bar">
+          <input type="text" class="capture-input" placeholder="A new task, thought, appointment...">
+          <div class="capture-icon">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>
+            </svg>
+          </div>
+        </div>
+      </div>
+      </div><!-- end tab-today -->
+
+      <!-- GOALS TAB -->
+      <div id="tab-goals" class="tab-content">
+        <p class="greeting">Your goals</p>
+        <h2>What you're working toward</h2>
+
+        <div class="section-header">
+          <span class="section-title">Active Goals</span>
+          <button class="btn btn-ghost" style="font-size:0.7rem; padding:4px 10px;">+ Add</button>
+        </div>
+
+        <div class="card" style="border-left: 3px solid #f59e0b;">
+          <div style="display:flex; justify-content:space-between; align-items:start; margin-bottom:8px;">
+            <span class="task-title">Switch to Google</span>
+            <span class="tag" style="background:#f59e0b;">On Track</span>
+          </div>
+          <p style="font-size:0.8rem; color:var(--text-dim); margin-bottom:12px;">Target: December 31, 2026</p>
+          <div style="margin-bottom:8px;">
+            <div style="display:flex; justify-content:space-between; font-size:0.75rem; color:var(--text-dim); margin-bottom:4px;">
+              <span>Progress</span><span>60%</span>
+            </div>
+            <div style="background:var(--bg); border-radius:4px; height:6px;">
+              <div style="background:#f59e0b; width:60%; height:100%; border-radius:4px;"></div>
+            </div>
+          </div>
+          <p style="font-size:0.75rem; color:var(--text-dim);">Next: System design practice · Due Oct 15</p>
+        </div>
+
+        <div class="card" style="border-left: 3px solid #22c55e;">
+          <div style="display:flex; justify-content:space-between; align-items:start; margin-bottom:8px;">
+            <span class="task-title">Stay healthy</span>
+            <span class="tag" style="background:#22c55e;">Good</span>
+          </div>
+          <p style="font-size:0.8rem; color:var(--text-dim); margin-bottom:12px;">Ongoing</p>
+          <p style="font-size:0.75rem; color:var(--text-dim);">Daily: Walk, sleep 7h, no junk food</p>
+        </div>
+
+        <div class="card" style="border-left: 3px solid #3b82f6;">
+          <div style="display:flex; justify-content:space-between; align-items:start; margin-bottom:8px;">
+            <span class="task-title">Complete Q4 project</span>
+            <span class="tag" style="background:#3b82f6;">Work</span>
+          </div>
+          <p style="font-size:0.8rem; color:var(--text-dim); margin-bottom:12px;">Target: November 15, 2026</p>
+          <p style="font-size:0.75rem; color:var(--text-dim);">Next: Q4 deck draft · Due Oct 17</p>
+        </div>
+
+        <div class="section-header" style="margin-top:24px;">
+          <span class="section-title">Upcoming Milestones</span>
+        </div>
+
+        <div class="card" style="padding:12px 16px;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div>
+              <p style="font-size:0.9rem; font-weight:500;">Mock interviews complete</p>
+              <p style="font-size:0.75rem; color:var(--text-dim);">Switch to Google</p>
+            </div>
+            <span style="font-size:0.75rem; color:var(--warning);">Oct 20</span>
+          </div>
+        </div>
+
+        <div class="card" style="padding:12px 16px;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div>
+              <p style="font-size:0.9rem; font-weight:500;">LeetCode 150 done</p>
+              <p style="font-size:0.75rem; color:var(--text-dim);">Switch to Google</p>
+            </div>
+            <span style="font-size:0.75rem; color:var(--text-dim);">Oct 28</span>
+          </div>
+        </div>
+      </div><!-- end tab-goals -->
+
+      <!-- SCRATCH TAB -->
+      <div id="tab-scratch" class="tab-content">
+        <p class="greeting">Scratch</p>
+        <h2>Two-pane capture feed</h2>
+
+        <div class="section-header">
+          <span class="section-title">Pending / In Progress</span>
+        </div>
+
+        <div class="card" style="border-left: 3px solid #f59e0b;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <span style="font-size:0.8rem; color:var(--text-dim);">↻ processing...</span>
+          </div>
+          <p class="task-title" style="margin-bottom:8px;">"I need to call mom about the trip and also ask her if she's coming to the wedding"</p>
+        </div>
+
+        <div class="card" style="border-left: 3px solid #3b82f6;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <span style="font-size:0.8rem; color:var(--accent);">💬 needs input</span>
+          </div>
+          <p class="task-title" style="margin-bottom:8px;">"Prepare for the all-hands next week"</p>
+          <p style="font-size:0.8rem; color:var(--text-dim);">Which goal does this belong to?</p>
+          <div style="display:flex; gap:6px; margin-top:8px; flex-wrap:wrap;">
+            <button class="btn btn-ghost" style="font-size:0.7rem; padding:4px 10px;">Q4 Project</button>
+            <button class="btn btn-ghost" style="font-size:0.7rem; padding:4px 10px;">Switch to Google</button>
+            <button class="btn btn-ghost" style="font-size:0.7rem; padding:4px 10px;">Skip</button>
+          </div>
+        </div>
+
+        <div class="section-header" style="margin-top:24px;">
+          <span class="section-title">Handled (with provenance)</span>
+        </div>
+
+        <div class="card" style="padding:14px 16px;">
+          <div style="display:flex; justify-content:space-between; align-items:start;">
+            <div style="flex:1;">
+              <p style="font-size:0.85rem; font-weight:500; margin-bottom:4px;">📋 Added to "Switch to Google" as undated task</p>
+              <p style="font-size:0.75rem; color:var(--success);">✓ correctly filed</p>
+            </div>
+            <button class="btn btn-ghost" style="font-size:0.7rem; padding:4px 8px;">Undo</button>
+          </div>
+          <p style="font-size:0.8rem; color:var(--text-dim); margin-top:8px; padding:8px; background:var(--bg); border-radius:6px; font-style:italic;">"I need to revise dynamic programming before my interview"</p>
+        </div>
+
+        <div class="card" style="padding:14px 16px;">
+          <div style="display:flex; justify-content:space-between; align-items:start;">
+            <div style="flex:1;">
+              <p style="font-size:0.85rem; font-weight:500; margin-bottom:4px;">📅 Added to calendar — Dentist appointment</p>
+              <p style="font-size:0.75rem; color:var(--success);">✓ correctly filed</p>
+            </div>
+            <button class="btn btn-ghost" style="font-size:0.7rem; padding:4px 8px;">Undo</button>
+          </div>
+          <p style="font-size:0.8rem; color:var(--text-dim); margin-top:8px; padding:8px; background:var(--bg); border-radius:6px; font-style:italic;">"I have a dentist appointment Thursday at 4"</p>
+        </div>
+
+        <div class="card" style="padding:14px 16px;">
+          <div style="display:flex; justify-content:space-between; align-items:start;">
+            <div style="flex:1;">
+              <p style="font-size:0.85rem; font-weight:500; margin-bottom:4px;">💡 Captured as context note</p>
+              <p style="font-size:0.75rem; color:var(--warning);">⚠ low confidence</p>
+            </div>
+            <button class="btn btn-ghost" style="font-size:0.7rem; padding:4px 8px;">Undo</button>
+          </div>
+          <p style="font-size:0.8rem; color:var(--text-dim); margin-top:8px; padding:8px; background:var(--bg); border-radius:6px; font-style:italic;">"I'm exhausted today"</p>
+        </div>
+
+        <div class="capture-section" style="margin-top:24px;">
+          <div class="capture-bar">
+            <input type="text" class="capture-input" placeholder="Type, paste, or attach...">
+            <div class="capture-icon">
+              <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>
+              </svg>
+            </div>
+          </div>
+        </div>
+      </div><!-- end tab-scratch -->
+
+      <!-- CHANGES TAB -->
+      <div id="tab-changes" class="tab-content">
+        <p class="greeting">Change history</p>
+        <h2>Everything the agent did</h2>
+
+        <div class="section-header">
+          <span class="section-title">Today</span>
+        </div>
+
+        <div class="card" style="padding:14px 16px;">
+          <div style="display:flex; gap:12px; align-items:flex-start;">
+            <div style="width:32px; height:32px; background:#22c55e20; border-radius:50%; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+              <span style="font-size:0.9rem;">📋</span>
+            </div>
+            <div style="flex:1;">
+              <p style="font-size:0.85rem; font-weight:500; margin-bottom:2px;">Added task "Complete the Q4 deck"</p>
+              <p style="font-size:0.75rem; color:var(--text-dim);">Auto-filed to Work · placed on Oct 14</p>
+              <p style="font-size:0.75rem; color:var(--text-dim); margin-top:4px;">From: scratch · 09:14 · "boss gave me the Q4 deck"</p>
+              <div style="margin-top:8px;">
+                <button class="btn btn-ghost" style="font-size:0.7rem; padding:4px 10px;">View plan item</button>
+                <button class="btn btn-ghost" style="font-size:0.7rem; padding:4px 10px; color:var(--danger);">Remove from plan</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="padding:14px 16px;">
+          <div style="display:flex; gap:12px; align-items:flex-start;">
+            <div style="width:32px; height:32px; background:#3b82f620; border-radius:50%; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+              <span style="font-size:0.9rem;">💡</span>
+            </div>
+            <div style="flex:1;">
+              <p style="font-size:0.85rem; font-weight:500; margin-bottom:2px;">Proposed moving "System design practice"</p>
+              <p style="font-size:0.75rem; color:var(--warning);">⚠ Would move from Oct 13 to Oct 15</p>
+              <p style="font-size:0.75rem; color:var(--text-dim); margin-top:4px;">Reason: Overloaded day — 135 min scheduled, 90 min available</p>
+              <div style="margin-top:8px; display:flex; gap:6px;">
+                <button class="btn" style="background:#6366f1; color:white; font-size:0.7rem; padding:6px 12px; border:none; border-radius:6px; cursor:pointer;">Accept</button>
+                <button class="btn btn-ghost" style="font-size:0.7rem; padding:4px 10px;">Keep as is</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-header" style="margin-top:24px;">
+          <span class="section-title">Yesterday</span>
+        </div>
+
+        <div class="card" style="padding:14px 16px;">
+          <div style="display:flex; gap:12px; align-items:flex-start;">
+            <div style="width:32px; height:32px; background:#22c55e20; border-radius:50%; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+              <span style="font-size:0.9rem;">📅</span>
+            </div>
+            <div style="flex:1;">
+              <p style="font-size:0.85rem; font-weight:500; margin-bottom:2px;">Added fixed block "Dentist"</p>
+              <p style="font-size:0.75rem; color:var(--text-dim);">Thursday, Oct 16 · 4:00 PM</p>
+              <p style="font-size:0.75rem; color:var(--text-dim); margin-top:4px;">From: scratch · 14:32 · "dentist Thursday 4pm"</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-header" style="margin-top:24px;">
+          <span class="section-title">Last 7 days — 12 captures, 10 handled automatically</span>
+        </div>
+
+        <div style="display:flex; gap:4px; align-items:center; padding: 12px 0;">
+          <div style="flex:10; background:#22c55e; height:8px; border-radius:4px;"></div>
+          <div style="flex:2; background:#f59e0b; height:8px; border-radius:4px;"></div>
+        </div>
+        <p style="font-size:0.75rem; color:var(--text-dim);">83% auto-handled · 17% needed input</p>
+      </div><!-- end tab-changes -->
+
+    </div><!-- end app-content -->
+
+        <!-- Tab navigation — click to switch -->
+    <nav class="bottom-nav" style="display:none;">
+      <div class="nav-item" data-tab="today">
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
+        </svg>
+        <span>Today</span>
+      </div>
+      <div class="nav-item" data-tab="goals">
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+        </svg>
+        <span>Goals</span>
+      </div>
+      <div class="nav-item" data-tab="scratch">
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+        </svg>
+        <span>Scratch</span>
+      </div>
+      <div class="nav-item" data-tab="changes">
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+        </svg>
+        <span>Changes</span>
+      </div>
+    </nav>
+
+    <!-- Tab bar for prototype (no bottom nav) -->
+    <nav class="tab-bar" style="display:flex; justify-content:center; gap:4px; padding: 16px 20px 0;">
+      <button class="tab-btn active" data-tab="today" style="background:#6366f1; color:white; border:none; padding:8px 20px; border-radius:20px; font-size:0.8rem; cursor:pointer;">Today</button>
+      <button class="tab-btn" data-tab="goals" style="background:var(--surface2); color:var(--text-dim); border:1px solid var(--border); padding:8px 20px; border-radius:20px; font-size:0.8rem; cursor:pointer;">Goals</button>
+      <button class="tab-btn" data-tab="scratch" style="background:var(--surface2); color:var(--text-dim); border:1px solid var(--border); padding:8px 20px; border-radius:20px; font-size:0.8rem; cursor:pointer;">Scratch</button>
+      <button class="tab-btn" data-tab="changes" style="background:var(--surface2); color:var(--text-dim); border:1px solid var(--border); padding:8px 20px; border-radius:20px; font-size:0.8rem; cursor:pointer;">Changes</button>
+    </nav>
+  </div>
+</div>
+
+<!-- Verdict -->
+<div class="verdict">
+  <h3>The Final Verdict</h3>
+
+  <div class="verdict-grid">
+    <div class="verdict-card">
+      <div class="verdict-label">Product Viability</div>
+      <div class="verdict-value warning">5/10</div>
+    </div>
+    <div class="verdict-card">
+      <div class="verdict-label">Build Readiness</div>
+      <div class="verdict-value bad">3/10</div>
+    </div>
+    <div class="verdict-card">
+      <div class="verdict-label">Core Insight</div>
+      <div class="verdict-value" style="font-size: 1.2rem; padding-top: 8px;">Zero-friction capture works. Silent rescheduling kills trust.</div>
+    </div>
+  </div>
+
+  <div class="final-verdict">
+    <div class="verdict-summary">
+      Will it work? <span style="color: var(--warning)">Too early to know.</span><br>
+      Should you build it? <span class="do">Yes — but only after the dogfood gate.</span>
+    </div>
+
+    <div class="verdict-explanation">
+      <p><strong>The evidence says this category dies from:</strong></p>
+      <p>1. <span class="dont">Daily upkeep effort</span> — solved by Scratch's zero-friction capture</p>
+      <p>2. <span class="dont">Noisy auto-rescheduling</span> — solved by structural downgrade (diff check before commit)</p>
+      <p>3. <span class="dont">Forgotten context</span> — solved by memory and provenance tracing</p>
+
+      <p><strong>The risk:</strong> All three solutions exist on paper. None are proven in production.</p>
+
+      <p><strong>The gate before building:</strong></p>
+      <p class="do">✓ Run 14 days of plain note-taking with no tool. If you capture ≥12/14 days, the loop is wanted.</p>
+      <p class="do">✓ Show ≥8/10 correct filing from a plain LLM triage. If not, the interpreter needs work before you code it.</p>
+      <p class="dont">✗ Do NOT build the full MVP first. The sunk cost will bias your judgment.</p>
+
+      <p><strong>The verdict:</strong> Build the core (text capture + interpreter + diff check + provenance + undo). Ship it to yourself first. The architecture is sound. The execution risk is behavioral, not technical.</p>
+    </div>
+  </div>
+</div>
+
+<!-- Legend -->
+<div class="legend">
+  <h4>PRD Source Legend</h4>
+  <div class="legend-items">
+    <div class="legend-item">
+      <span class="legend-dot prd1"></span>
+      <span>PRD1: Founder's original 3-screen vision (Scratch, Today, Plan)</span>
+    </div>
+    <div class="legend-item">
+      <span class="legend-dot prd2"></span>
+      <span>PRD2: Detailed interaction model (two-pane feed, undo, provenance)</span>
+    </div>
+    <div class="legend-item">
+      <span class="legend-dot prd3"></span>
+      <span>PRD3: Sutra branding, agent notices, adaptive scheduling</span>
+    </div>
+    <div class="legend-item">
+      <span class="legend-dot prd4"></span>
+      <span>PRD4: Critical review, dogfood gate, narrow MVP recommendation</span>
+    </div>
+  </div>
+</div>
+
+</div>
+</body>
+</html>
