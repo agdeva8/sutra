@@ -2,6 +2,7 @@ import "./App.css";
 import { useState, useEffect, ViewTransition } from "react";
 import { BrowserRouter, Routes, Route, useLocation, Navigate } from "react-router-dom";
 import { Toaster } from "sonner";
+import CoachActivityToast from "./components/CoachActivityToast";
 import { Analytics } from "@vercel/analytics/react";
 import { AuthProvider } from "./context/AuthContext";
 import AuthCallback from "./components/AuthCallback";
@@ -22,7 +23,12 @@ function ToasterBridge() {
     mo.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
     return () => mo.disconnect();
   }, []);
-  return <Toaster theme={theme} position="bottom-right" toastOptions={{ style: { fontFamily: "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace", fontSize: "12px" } }} />;
+  return (
+    <>
+      <CoachActivityToast />
+      <Toaster theme={theme} position="bottom-right" toastOptions={{ style: { fontFamily: "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace", fontSize: "12px" } }} />
+    </>
+  );
 }
 
 function AppRouter() {

@@ -34,6 +34,8 @@
    * Stays dark in BOTH themes. */
   --on-warning:   #0B0B0C;
   --danger:       #FF453A;
+  /* Reminders: their own hue, so they never read as a task, a blocker or a milestone. */
+  --reminder:     #BF5AF2;
   --success:      #30D158;
   --tool-bg:      #1C1C1E;
   --popover: 0 0% 7%;
@@ -59,6 +61,7 @@
   --warning:      #FF9500;
   --on-warning:   #3A2400;
   --danger:       #FF3B30;
+  --reminder:     #AF52DE;
   --success:      #34C759;
   --tool-bg:      #F5F5F7;
   --popover: 0 0% 100%;

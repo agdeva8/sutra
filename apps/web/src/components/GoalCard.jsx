@@ -7,6 +7,7 @@ import {
   Trash2,
   Pause,
   Milestone,
+  Loader2,
   Paperclip,
   FileText,
   Link2,
@@ -18,6 +19,8 @@ import {
 import { api, sourceDownloadUrl } from "../lib/api";
 import SourceActionDialog from "./SourceActionDialog";
 import LinkPreviewDialog from "./LinkPreviewDialog";
+import GoalProgress from "./GoalProgress";
+import useGoalActivity from "../lib/goalActivity";
 
 /**
  * GoalCard — one editable goal: status, why, target, next action, its
@@ -47,7 +50,7 @@ function IconBtn({ testid, title, onClick, children, "aria-label": ariaLabel }) 
       title={title}
       aria-label={ariaLabel || title}
       onClick={onClick}
-      className="h-11 w-11 shrink-0 sm:h-8 sm:w-9 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+      className="h-11 w-11 shrink-0 sm:h-11 sm:w-11 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
     >
       {children}
     </button>
@@ -204,9 +207,10 @@ function SourcesChip({ goal, sources, onUpload, onAddLink, onDelete }) {
   );
 }
 
-export default function GoalCard({ goal, milestones, onAction, onUploadSource, onAddLink, onDeleteSource, onAddMemory, onOpenPlan }) {
+export default function GoalCard({ goal, milestones, progress, onAction, onUploadSource, onAddLink, onDeleteSource, onAddMemory, onOpenPlan }) {
   const goalMiles = milestones.filter((m) => m.goal_id === goal.id || m.goal_title === goal.title);
   const sources = goal.sources || [];
+  const activity = useGoalActivity(goal.id);
   return (
     <div data-testid={`goal-card-${goal.id}`} className="group p-4">
       <div className="flex items-start gap-3">
@@ -215,6 +219,14 @@ export default function GoalCard({ goal, milestones, onAction, onUploadSource, o
           <div className="text-[15px] font-semibold text-[var(--text-primary)] leading-snug">{goal.title}</div>
           {goal.why && <div className="text-[13px] text-[var(--text-secondary)] mt-0.5 leading-relaxed">{goal.why}</div>}
           {goal.target_date && <div className="mt-1 text-[11px] font-medium text-[var(--accent)]">Target · {goal.target_date}</div>}
+          {activity && (
+            // The goal is being worked on: say so, so nobody mistakes a plan mid-rewrite for a finished one.
+            <div role="status" aria-live="polite" data-testid={`goal-activity-${goal.id}`} className="mt-2 flex items-center gap-2 rounded-lg bg-[color-mix(in_srgb,var(--accent)_10%,transparent)] px-3 py-2 text-[12px] text-[var(--accent)]">
+              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden="true" />
+              <span className="min-w-0">{activity}</span>
+            </div>
+          )}
+          <GoalProgress progress={progress} />
           {goal.next_action && (
             <div className="mt-2 text-[13px] text-[var(--text-secondary)]">
               <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Next</span> {goal.next_action}

@@ -47,9 +47,12 @@ export const SCREENS = [
   // Scratch is the phone's front door (reflex capture) and a desktop tab too.
   // `mobileOnly` is still honoured by DESKTOP_SCREENS for any screen that needs it.
   { key: "scratch", label: "Scratch", to: "/?panel=scratch", Icon: PenLine },
-  { key: "home", label: "Overview", to: "/", Icon: LayoutDashboard },
+  // Goal is the landing. It used to be Overview, which answered "where am I right now" while Goal
+  // answered "what am I working on" — but the first answer is four lines of greeting and a glance, and
+  // a whole tab for it meant the two screens opened with the same block and read as duplicates. The
+  // greeting and the glance now sit at the top of Goal, and Overview has no tab.
+  { key: "state", label: "Goal", to: "/", Icon: Flag },
   { key: "today", label: "Today", to: "/?panel=today", Icon: CalendarDays },
-  { key: "state", label: "Goal", to: "/?panel=state", Icon: Flag },
   { key: "timeline", label: "Timeline", to: "/?panel=timeline", Icon: CalendarClock },
   { key: "memories", label: "Memories", to: "/?panel=memories", Icon: ImageIcon },
   { key: "sources", label: "Sources", to: "/?panel=sources", Icon: FileText },
@@ -63,7 +66,7 @@ export const SCREENS = [
  * `SCREENS` collapses behind the bar's trailing "More" button, so the bar
  * stays at five targets however many screens exist.
  */
-export const MOBILE_TAB_KEYS = ["scratch", "home", "today", "state"];
+export const MOBILE_TAB_KEYS = ["scratch", "state", "today", "timeline"];
 
 /** Screens drawn in the desktop tab strip: everything not flagged `mobileOnly`. */
 export const DESKTOP_SCREENS = SCREENS.filter((s) => !s.mobileOnly);
@@ -93,26 +96,32 @@ export function mobileLandingKey(goalCount) {
 export const ROUTABLE_SCREENS = [
   ...SCREENS,
   { key: "plan", label: "Plan", to: "/?panel=plan", Icon: Target },
+  // Overview has no tab any more; the key stays routable so a bookmark or a chat "take me there"
+  // still lands somewhere real instead of bouncing to the landing.
+  { key: "home", label: "Overview", to: "/?panel=home", Icon: LayoutDashboard },
 ];
 
 /** Every routable screen by key — the tabs plus the tabless keys. */
 export const SCREEN_BY_KEY = Object.fromEntries(ROUTABLE_SCREENS.map((s) => [s.key, s]));
 
+/** Where an unknown or absent `?panel=` lands. Goal is the landing screen now. */
+export const LANDING_SCREEN = "state";
+
 /**
- * Active screen key for a location search string. Unknown/absent → "home".
+ * Active screen key for a location search string. Unknown/absent → the landing.
  * A key carrying `supersededBy` resolves to its successor instead.
  */
 export function screenKeyFromSearch(search) {
   const key = new URLSearchParams(search).get("panel");
   const screen = SCREEN_BY_KEY[key];
-  if (!screen) return "home";
+  if (!screen) return LANDING_SCREEN;
   return screen.supersededBy || key;
 }
 
 /**
  * Search-params object for setSearchParams/Link that lands on a screen.
- * Home gets `{}` so the canonical URL stays clean `/`, never `/?panel=home`.
+ * The landing screen gets `{}` so the canonical URL stays clean `/`, never `/?panel=state`.
  */
 export function searchForScreen(key) {
-  return key === "home" ? {} : { panel: key };
+  return key === LANDING_SCREEN ? {} : { panel: key };
 }

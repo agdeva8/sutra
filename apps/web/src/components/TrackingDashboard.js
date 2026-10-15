@@ -4,24 +4,22 @@ import AddGoalDialog from "./AddGoalDialog";
 import GoalIntakeDialog from "./GoalIntakeDialog";
 import { USE_AGENT_INTAKE } from "../constants/features";
 import GoalBoard from "./GoalBoard";
-// The indicator is its own module — TrackingDashboard is one of two surfaces
-// that render it (Overview carries the other), so a single definition keeps
-// the two readings of the week's load identical.
+import TrackerCard from "./TrackerCard";
+import { useAuth } from "../context/AuthContext";
+// The indicator is its own module — one definition keeps every reading of the week's load identical.
 import OverCommitmentIndicator from "./OverCommitmentIndicator";
 
 /**
- * TrackingDashboard — the Goal tab (`?panel=state`).
+ * TrackingDashboard — the Goal tab, and the landing screen.
  *
- * The "see and edit your goals" surface: the week's over-commitment read and
- * the horizon-grouped list of goals. Each goal is a `GoalCard` carrying its
- * own actions (add step · refine · pause · memories · attach a source · drop),
- * plus the Add goal flow that creates the first one.
+ * It opens with the greeting and "today at a glance", then the horizon-grouped list of goals. Each
+ * goal is a `GoalCard` carrying its own actions (add step · refine · pause · memories · attach a
+ * source · drop), plus the Add goal flow that creates the first one.
  *
- * The accountability tracker card deliberately does NOT live here. Overview
- * opens with it ("today at a glance"); rendering it on both surfaces made the
- * two tabs open with the same block and read as duplicates of each other.
- * Overview shows the tracker plus a READ-ONLY goals preview that links here;
- * this tab is the editable list.
+ * The greeting and the tracker used to be a separate Overview tab. That tab answered "where am I right
+ * now" while this one answered "what am I working on" — but the first answer is a greeting and a
+ * glance, so a whole destination for it meant two tabs opening with the same block. They are now the
+ * top of this screen, and Overview has no tab (its key stays routable for old links).
  *
  * The list itself is `GoalBoard`, extracted so the goal cards have exactly one
  * definition.
@@ -36,6 +34,7 @@ export default function TrackingDashboard({
   onDeleteSource = () => {},
   onCreated = () => {},
   onOpenChat = () => {},
+  onOpenToday = () => {},
   autoAnswer = false,
   grillMe = false,
   isGuest = false,
@@ -43,6 +42,7 @@ export default function TrackingDashboard({
   autoOpenAddGoal = false,
   onAutoOpenAddGoalHandled = () => {},
 }) {
+  const { user } = useAuth();
   const [addGoalOpen, setAddGoalOpen] = useState(false);
   // Latest step-back function from the AddGoalDialog. The dialog's
   // `onStepBack` prop overwrites this on every step change; the
@@ -54,8 +54,9 @@ export default function TrackingDashboard({
   const visibleGoals = (state?.goals || []).filter((g) => g.status !== "dropped");
   const milestones = state?.milestones || [];
 
-  // The first goal is the first step of the guide and cannot be skipped: with no goals the dialog
-  // opens by itself and stays until a plan is confirmed.
+  // The first goal is the first step of the guide: with no goals the dialog opens by itself. It is
+  // closable like any other — a guest has to be able to reach sign-in — and the empty state's "Add
+  // your first goal" opens it again, so closing it never strands anyone.
   const firstGoalRequired = !!state && visibleGoals.length === 0;
   useEffect(() => {
     if (!firstGoalRequired) return;
@@ -115,8 +116,38 @@ export default function TrackingDashboard({
     try { localStorage.setItem("gc_first_visit_v1", "done"); } catch { /* ignore */ }
   };
 
+  // The time-aware hello, moved here with the rest of the old Overview header.
+  const firstName = user?.name ? user.name.split(" ")[0] : null;
+  const hour = new Date().getHours();
+  const part = hour < 12 ? "morning" : hour < 18 ? "afternoon" : "evening";
+  const greeting = firstName ? `Good ${part}, ${firstName}` : `Good ${part}, guest`;
+
   return (
     <div data-testid="tracking-dashboard" className="px-4 sm:px-6 py-5 sm:py-6 space-y-7 max-w-[820px] mx-auto w-full">
+      {/* The greeting and the glance, moved here from the old Overview tab. */}
+      <header>
+        <h2 className="text-[21px] sm:text-[24px] font-semibold tracking-tight text-[var(--text-primary)] leading-snug">
+          {greeting}
+        </h2>
+        <p className="text-[14px] text-[var(--text-muted)] mt-1">Let's sort your life — together.</p>
+      </header>
+
+      <section className="space-y-3">
+        <div className="flex items-center justify-between gap-2 px-1">
+          <h3 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Today at a glance</h3>
+          <button
+            type="button"
+            data-testid="overview-open-today"
+            onClick={() => onOpenToday?.()}
+            className="min-h-11 -my-2 px-1 text-[13px] font-medium text-[var(--accent)] hover:underline inline-flex items-center gap-1"
+          >
+            Open today <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
+          </button>
+        </div>
+        <OverCommitmentIndicator oc={state.over_commitment} />
+        <TrackerCard state={state} onOpenChat={onOpenChat} onOpenToday={onOpenToday} />
+      </section>
+
       <div className="flex items-end justify-between gap-3">
         <p className="text-[14px] text-[var(--text-secondary)] max-w-md leading-relaxed">
           Everything the coach is keeping track of for you.
@@ -127,12 +158,6 @@ export default function TrackingDashboard({
           </button>
         )}
       </div>
-
-      {/* The TrackerCard ("today at a glance") deliberately lives on Overview
-          only. Rendering it here as well made this tab and Overview open with
-          the same block, so the two read as duplicates of each other. This tab
-          is the goal list; Overview is the landing. */}
-      <OverCommitmentIndicator oc={state.over_commitment} />
 
       {visibleGoals.length === 0 ? (
         <div data-testid="empty-state" className="rounded-2xl bg-[var(--bg-secondary)] p-8 sm:p-12 text-center">
@@ -189,7 +214,6 @@ export default function TrackingDashboard({
         <AddGoalDialog
           open={addGoalOpen}
           onClose={closeAddGoalDialog}
-          required={firstGoalRequired}
           onStepBack={(fn) => { addGoalStepBackRef.current = fn; }}
           registerCloser={registerCloser}
           autoAnswer={autoAnswer}

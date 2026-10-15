@@ -64,6 +64,7 @@ export default function SourcesAskCard({ sources, onUploadFile, onAddLink, onDel
           ref={fileRef}
           type="file"
           hidden
+          aria-label="Choose a file to ask about"
           accept={ACCEPT}
           onChange={(e) => {
             const file = e.target.files?.[0];
@@ -82,6 +83,7 @@ export default function SourcesAskCard({ sources, onUploadFile, onAddLink, onDel
             onChange={(e) => setUrl(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && addLink()}
             placeholder="Paste a link"
+            aria-label="Link to ask about"
             inputMode="url"
             className="min-h-11 w-full bg-transparent text-sm outline-none text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
           />

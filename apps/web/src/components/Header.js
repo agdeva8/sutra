@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { LogOut, Info, LogIn, Settings, Sun, Moon, UserCircle2 } from "lucide-react";
 import Logo from "./Logo";
+import { saveDisplayPrefs } from "../lib/displayPrefs";
 import PersonaMenu from "./PersonaMenu";
 import {
   DropdownMenu,
@@ -62,6 +63,7 @@ export default function Header({ user, authLoading, onOpenChat, onOpenAbout, onS
     const next = !document.documentElement.classList.contains("light");
     document.documentElement.classList.toggle("light", next);
     try { localStorage.setItem("sutra_theme", next ? "light" : "dark"); } catch { /* ignore */ }
+    saveDisplayPrefs({ theme: next ? "light" : "dark" });
     setIsLight(next);
   };
 
@@ -93,7 +95,7 @@ export default function Header({ user, authLoading, onOpenChat, onOpenAbout, onS
       >
         <Logo className="w-8 h-8 text-[var(--accent)] shrink-0" />
         <div className="min-w-0 flex flex-col justify-center">
-          <h1 className="font-bold tracking-tight text-base sm:text-lg leading-none">Sutra</h1>
+          <span className="font-bold tracking-tight text-base sm:text-lg leading-none">Sutra</span>
           <span className="mt-0.5 text-[10px] sm:text-[11px] text-[var(--text-muted)] truncate leading-none">
             Let&apos;s sort your life — together.
           </span>
@@ -240,7 +242,7 @@ export default function Header({ user, authLoading, onOpenChat, onOpenAbout, onS
                   <DropdownMenuItem
                     data-testid="user-menu-settings"
                     onSelect={() => { navigate("/settings"); setMenuOpen(false); }}
-                    className={itemRow}
+                    className={`${itemRow} sm:hidden`}
                   >
                     <Settings className="w-4 h-4" aria-hidden="true" />
                     Settings
@@ -248,7 +250,7 @@ export default function Header({ user, authLoading, onOpenChat, onOpenAbout, onS
                   <DropdownMenuItem
                     data-testid="user-menu-theme"
                     onSelect={(e) => { e.preventDefault(); toggleTheme(); }}
-                    className={itemRow}
+                    className={`${itemRow} sm:hidden`}
                   >
                     {isLight ? <Moon className="w-4 h-4" aria-hidden="true" /> : <Sun className="w-4 h-4" aria-hidden="true" />}
                     {isLight ? "Dark theme" : "Light theme"}
@@ -256,7 +258,7 @@ export default function Header({ user, authLoading, onOpenChat, onOpenAbout, onS
                   <DropdownMenuItem
                     data-testid="user-menu-about"
                     onSelect={() => { onOpenAbout?.(); setMenuOpen(false); }}
-                    className={itemRow}
+                    className={`${itemRow} sm:hidden`}
                   >
                     <Info className="w-4 h-4" aria-hidden="true" />
                     About Sutra

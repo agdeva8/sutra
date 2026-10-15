@@ -14,6 +14,8 @@ import { api } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import HonestyAuditView from "../components/HonestyAuditView";
 import DevDiagnostics from "../components/DevDiagnostics";
+import { saveDisplayPrefs } from "../lib/displayPrefs";
+import { ENABLE_DEV_TOOLS } from "../constants/features";
 import DevUserSwitcher from "../components/DevUserSwitcher";
 import { isDebugMode, setDebugMode } from "../lib/debug";
 import pkg from "../../package.json";
@@ -125,7 +127,7 @@ export default function Settings() {
   const [debugOn, setDebugOn] = useState(isDebugMode);
   // Developer tab visibility: always on for a developer account, otherwise
   // only when debug mode is on.
-  const showDeveloper = debugOn || isDeveloper;
+  const showDeveloper = ENABLE_DEV_TOOLS && (debugOn || isDeveloper);
   const tapCount = useRef(0);
   const tapTimer = useRef(null);
 
@@ -171,6 +173,7 @@ export default function Settings() {
   useEffect(() => {
     document.documentElement.style.setProperty("--sutra-font-scale", `${fontSizePx}px`);
     try { window.localStorage.setItem(FONT_SIZE_STORAGE_KEY, String(fontSizePx)); } catch { /* ignore */ }
+    saveDisplayPrefs({ font_size: fontSizePx });
   }, [fontSizePx]);
 
   const providers = useProviders();
@@ -421,7 +424,12 @@ export default function Settings() {
             </TabsContent>
 
             {/* Audit tab */}
-            <TabsContent value="audit">
+            <TabsContent value="audit" className="space-y-3" data-testid="settings-audit-tab">
+              <h2 className={GROUP_LABEL}>Honesty audit</h2>
+              <p className="px-1 text-sm text-[var(--text-secondary)] leading-relaxed">
+                Every change the coach makes to your plan, and every proposal you confirm or reject, is logged
+                with a timestamp. Open the log to check what happened, or export it.
+              </p>
               <button
                 onClick={() => setAuditOpen(true)}
                 className={INSET_ROW + " rounded-2xl bg-[var(--bg-secondary)]"}

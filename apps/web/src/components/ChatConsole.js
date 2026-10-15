@@ -342,6 +342,17 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
   const activeQuestion = Math.min(questionIndex, Math.max(questionCount - 1, 0));
   const goToQuestion = (n) =>
     setQuestionIndex(Math.min(Math.max(n, 0), Math.max(questionCount - 1, 0)));
+  // Skipping an unanswered question is allowed, but the first press only warns: it used to move on in
+  // silence, so a mis-tap on question 1 quietly lost the answer.
+  const [skipWarnIndex, setSkipWarnIndex] = useState(null);
+  const nextQuestion = (i) => {
+    if (!answerFor(i) && skipWarnIndex !== i) {
+      setSkipWarnIndex(i);
+      return;
+    }
+    setSkipWarnIndex(null);
+    goToQuestion(i + 1);
+  };
 
   const submitClarifications = () => {
     const questions = pendingClarifications?.questions || [];
@@ -863,6 +874,12 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
                 </div>
               </div>
 
+              {skipWarnIndex === i && !answerFor(i) && (
+                <p role="status" data-testid="clarification-skip-warning" className="mt-3 text-xs text-[var(--warning)]">
+                  You haven&rsquo;t answered this one. If you skip it, the coach will assume a sensible default.
+                </p>
+              )}
+
               {/* Linear flow: Back · Next … Submit on the last question. Next
                   never blocks (a question can be skipped); Submit needs at
                   least one answer. Earlier answers stay editable via Back. */}
@@ -892,10 +909,10 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
                   <button
                     type="button"
                     data-testid="clarification-next"
-                    onClick={() => goToQuestion(i + 1)}
+                    onClick={() => nextQuestion(i)}
                     className="min-h-11 px-6 inline-flex items-center justify-center rounded-[12px] bg-[var(--accent)] text-sm font-semibold text-[var(--bg-primary)] hover:opacity-90 active:scale-[0.99] transition-opacity"
                   >
-                    Next
+                    {skipWarnIndex === i && !answerFor(i) ? "Skip anyway" : "Next"}
                   </button>
                 )}
               </div>

@@ -35,7 +35,13 @@ export default function TodayTimetable({ state, onChange, onOpenChat, compact = 
   const refresh = useCallback(() => {
     setLoading(true);
     setError(null);
-    Promise.all([api.blockers(), api.timetable()])
+    // /api/state already carries blockers and timetable blocks; only fetch them separately when the
+    // board has not loaded (or an older server omits them), instead of two extra requests per render.
+    const fromState = Array.isArray(state?.blockers) && Array.isArray(state?.timetableBlocks);
+    (fromState
+      ? Promise.resolve([state.blockers, { blocks: state.timetableBlocks }])
+      : Promise.all([api.blockers(), api.timetable()])
+    )
       .then(([blockersRes, timetableRes]) => {
         const rawBlockers = Array.isArray(blockersRes)
           ? blockersRes
@@ -51,7 +57,9 @@ export default function TodayTimetable({ state, onChange, onOpenChat, compact = 
           (p) =>
             p.horizon === "daily" &&
             (p.due_date === todayKey ||
-              (p.due_date && p.due_date < todayKey && (p.status || "open") !== "done")),
+              (p.due_date && p.due_date < todayKey && (p.status || "open") === "open") ||
+              // A to-do with no goal and no day ("reply to Mohit") stays on Today until it is done.
+              (!p.goal_id && !p.due_date && (p.status || "open") !== "done")),
         );
         const todayBlocks = (timetableRes?.blocks || []).filter(
           (block) => block.block_date === todayKey,
@@ -67,8 +75,8 @@ export default function TodayTimetable({ state, onChange, onOpenChat, compact = 
           const rank = { block: 0, blocker: 1, plan: 2 };
           if (rank[a._kind] !== rank[b._kind]) return rank[a._kind] - rank[b._kind];
           if (a._kind === "block") return String(a.start_time).localeCompare(String(b.start_time));
-          const aOver = a._kind === "plan" && a.due_date < todayKey;
-          const bOver = b._kind === "plan" && b.due_date < todayKey;
+          const aOver = a._kind === "plan" && !!a.due_date && a.due_date < todayKey;
+          const bOver = b._kind === "plan" && !!b.due_date && b.due_date < todayKey;
           return aOver === bOver ? 0 : aOver ? -1 : 1;
         });
         setItems(merged);
@@ -82,20 +90,35 @@ export default function TodayTimetable({ state, onChange, onOpenChat, compact = 
 
   useEffect(() => { refresh(); }, [refresh, state]);
 
-  const toggleDone = async (c) => {
-    if (c._kind !== "plan") return;
-    setSaving(c.id);
+  // The plan task a row stands for. A task is itself; a scheduled session is a timetable block whose
+  // `source_id` points at the task it was made for, so ticking it ticks that task. Fixed commitments and
+  // blockers have no task behind them and cannot be ticked.
+  const taskFor = (item) => {
+    if (item._kind === "plan") return item;
+    if (item._kind === "block" && item.source_id) {
+      return (state?.plan_items || []).find((p) => p.id === item.source_id) || null;
+    }
+    return null;
+  };
+
+  const toggleDone = async (row) => {
+    const c = taskFor(row);
+    if (!c) return;
+    setSaving(row.id);
+    const next = c.status === "done" ? "open" : "done";
     // Optimistic flip
     setItems((prev) =>
       prev.map((b) => (b.id === c.id && b._kind === "plan"
-        ? { ...b, status: c.status === "done" ? "open" : "done" }
+        ? { ...b, status: next }
         : b))
     );
     try {
-      await api.updatePlanItem(c.id, {
-        status: c.status === "done" ? "open" : "done",
-      });
-      onChange?.();
+      await api.updatePlanItem(c.id, { status: next });
+      // Patch the board in place; a full GET /state after every tick cost ~3.5s and 50KB.
+      onChange?.((prev) => ({
+        ...prev,
+        plan_items: (prev.plan_items || []).map((p) => (p.id === c.id ? { ...p, status: next } : p)),
+      }));
     } catch {
       refresh();
     } finally {
@@ -202,7 +225,9 @@ export default function TodayTimetable({ state, onChange, onOpenChat, compact = 
         {items.map((item) => {
           const isTask = item._kind === "plan";
           const isTimedBlock = item._kind === "block";
-          const done = isTask && item.status === "done";
+          const linkedTask = taskFor(item);
+          const tickable = !!linkedTask;
+          const done = tickable && linkedTask.status === "done";
           const overdue = isTask && item.due_date && item.due_date < todayKey;
           return (
             <li
@@ -215,15 +240,16 @@ export default function TodayTimetable({ state, onChange, onOpenChat, compact = 
                 <button
                   type="button"
                   onClick={() => toggleDone(item)}
-                  disabled={!isTask || saving === item.id}
-                  aria-label={done ? `Mark "${item.text || item.title}" as not done` : `Mark "${item.text || item.title}" as done`}
+                  disabled={!tickable || saving === item.id}
+                  title={tickable ? undefined : "This is a fixed commitment, so there's nothing to tick off. Tasks you plan show a tick box."}
+                  aria-label={!tickable ? `"${item.text || item.title}" is a fixed commitment and can't be ticked` : done ? `Mark "${item.text || item.title}" as not done` : `Mark "${item.text || item.title}" as done`}
                   aria-pressed={done}
                   data-testid={`timetable-checkbox-${item.id}`}
                   className={`mt-0.5 h-11 w-11 shrink-0 flex items-center justify-center border transition-colors rounded ${
                     done
                       ? "border-[var(--success)] bg-[color-mix(in_srgb,var(--success)_10%,transparent)] text-[var(--success)]"
                       : "border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]"
-                  } ${!isTask ? "opacity-30 cursor-not-allowed" : ""}`}
+                  } ${!tickable ? "opacity-30 cursor-not-allowed" : ""}`}
                 >
                   {saving === item.id
                     ? <Loader2 className="w-4 h-4 animate-spin" />

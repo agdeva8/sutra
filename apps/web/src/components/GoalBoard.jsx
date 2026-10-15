@@ -2,6 +2,7 @@ import { useState } from "react";
 import GoalCard from "./GoalCard";
 import GoalMemoryDialog from "./GoalMemoryDialog";
 import GoalPlanPanel from "./GoalPlanPanel";
+import useGoalProgress from "../lib/useGoalProgress";
 import { goalNodes, goalMilestones } from "../lib/planNodes";
 
 /**
@@ -30,8 +31,13 @@ import { goalNodes, goalMilestones } from "../lib/planNodes";
  * in the grouping below is the guard against that happening again: a horizon
  * this list doesn't know still gets listed rather than silently dropped.
  */
-export const HORIZON_ORDER = ["daily", "weekly", "monthly", "quarterly", "yearly"];
+// The server's goal horizons are weekly / short / medium / long (`GOAL_HORIZONS`), and the agent
+// creates goals as "medium". Those were missing here, so every real goal fell into "Other".
+export const HORIZON_ORDER = ["daily", "weekly", "short", "monthly", "medium", "quarterly", "long", "yearly"];
 export const HORIZON_LABELS = {
+  short: "Short term",
+  medium: "Medium term",
+  long: "Long term",
   daily: "Today",
   weekly: "This week",
   monthly: "This month",
@@ -55,6 +61,8 @@ export default function GoalBoard({
   onOpenChat,
 }) {
   const [memoryGoal, setMemoryGoal] = useState(null);
+  // Where each goal stands: numbers first, then the model's verdict. Reloads when the board's state does.
+  const progress = useGoalProgress(state?.generated_at);
   // The goal whose plan is open, if any. Held here rather than per-card so
   // only one plan is ever open, and so opening a second goal's plan replaces
   // the first instead of stacking panels.
@@ -86,6 +94,7 @@ export default function GoalBoard({
                 key={g.id}
                 goal={g}
                 milestones={milestones}
+                progress={progress[g.id]}
                 onAction={onAction}
                 onUploadSource={onUploadSource}
                 onAddLink={onAddLink}

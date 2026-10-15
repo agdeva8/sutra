@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { Loader2 } from "lucide-react";
+import TimeWheelInput from "./TimeWheelInput";
+import { weekProblem } from "../lib/profileCheck";
 import { WEEKDAYS, DEFAULT_WORK_DAYS, WEEKLY_HOURS_CHOICES, MAX_WEEKLY_GOAL_HOURS } from "../constants/profile";
 
 /**
@@ -12,10 +14,10 @@ import { WEEKDAYS, DEFAULT_WORK_DAYS, WEEKLY_HOURS_CHOICES, MAX_WEEKLY_GOAL_HOUR
  */
 export default function AboutYouCard({ onSave, onSkip }) {
   const [workDays, setWorkDays] = useState(DEFAULT_WORK_DAYS);
-  const [workStart, setWorkStart] = useState("");
-  const [workEnd, setWorkEnd] = useState("");
   const [wake, setWake] = useState("");
   const [sleep, setSleep] = useState("");
+  const [workStart, setWorkStart] = useState("");
+  const [workEnd, setWorkEnd] = useState("");
   const [hours, setHours] = useState(null);
   const [otherHours, setOtherHours] = useState("");
   const [restDays, setRestDays] = useState([]);
@@ -82,15 +84,17 @@ export default function AboutYouCard({ onSave, onSkip }) {
   const timeField = (label, value, setValue, testId) => (
     <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs text-[var(--text-secondary)]">
       {label}
-      <input
-        type="time"
+      <TimeWheelInput
         data-testid={testId}
         value={value}
-        onChange={(e) => setValue(e.target.value)}
+        onChange={setValue}
         className="min-h-11 w-full rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] px-3 text-sm text-[var(--text-primary)]"
       />
     </label>
   );
+
+  // Told at once, in plain words, if the times contradict each other; Continue waits until they agree.
+  const problem = weekProblem({ wake, sleep, workStart, workEnd });
 
   const section = "flex flex-col gap-2";
   const heading = "text-sm font-medium text-[var(--text-primary)]";
@@ -105,6 +109,14 @@ export default function AboutYouCard({ onSave, onSkip }) {
       </div>
 
       <div className={section}>
+        <p className={heading}>Your day</p>
+        <div className="flex gap-3">
+          {timeField("I wake up at", wake, setWake, "about-you-wake")}
+          {timeField("I go to sleep at", sleep, setSleep, "about-you-sleep")}
+        </div>
+      </div>
+
+      <div className={section}>
         <p className={heading}>Work or study hours</p>
         {dayChips(workDays, (k) => toggle(workDays, setWorkDays, k), "about-you-work-days")}
         <div className="flex gap-3">
@@ -113,13 +125,11 @@ export default function AboutYouCard({ onSave, onSkip }) {
         </div>
       </div>
 
-      <div className={section}>
-        <p className={heading}>Wake and sleep</p>
-        <div className="flex gap-3">
-          {timeField("Usually up at", wake, setWake, "about-you-wake")}
-          {timeField("Asleep by", sleep, setSleep, "about-you-sleep")}
-        </div>
-      </div>
+      {problem && (
+        <p role="alert" data-testid="about-you-problem" className="rounded-lg bg-[color-mix(in_srgb,var(--warning)_14%,transparent)] px-3 py-2 text-xs leading-relaxed text-[var(--text-primary)]">
+          {problem}
+        </p>
+      )}
 
       <div className={section}>
         <p className={heading}>Hours a week you can really give your goals</p>
@@ -177,7 +187,7 @@ export default function AboutYouCard({ onSave, onSkip }) {
         <button
           type="button"
           data-testid="about-you-save"
-          disabled={busy}
+          disabled={busy || Boolean(problem)}
           onClick={() => submit(false)}
           className="min-h-11 inline-flex items-center gap-2 rounded-full bg-[var(--accent)] px-5 text-sm font-semibold text-[var(--bg-primary)] hover:opacity-90 disabled:opacity-40"
         >

@@ -57,7 +57,7 @@ export default function Overview({ state, onOpenChat, onOpenToday, onOpenGoals }
             type="button"
             data-testid="overview-open-today"
             onClick={() => onOpenToday?.()}
-            className="text-[13px] font-medium text-[var(--accent)] hover:underline inline-flex items-center gap-1"
+            className="min-h-11 -my-2 px-1 text-[13px] font-medium text-[var(--accent)] hover:underline inline-flex items-center gap-1"
           >
             Open today <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
           </button>
@@ -75,7 +75,7 @@ export default function Overview({ state, onOpenChat, onOpenToday, onOpenGoals }
               type="button"
               data-testid="overview-open-goals"
               onClick={() => onOpenGoals?.()}
-              className="text-[13px] font-medium text-[var(--accent)] hover:underline inline-flex items-center gap-1"
+              className="min-h-11 -my-2 px-1 text-[13px] font-medium text-[var(--accent)] hover:underline inline-flex items-center gap-1"
             >
               See all ({goals.length}) <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
             </button>

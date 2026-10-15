@@ -1,6 +1,9 @@
 import { withTimeout, TimeoutError } from "./fetch-with-timeout";
 import { withProgress } from "./progress";
+import { trackGoalActivity } from "./goalActivity";
+import { ACTIVITY_ALL_GOALS, ACTIVITY_FALLBACK_TITLE, ACTIVITY_PLANNING, ACTIVITY_REPLAN } from "../constants/goalActivity";
 import { readSse } from "./sse";
+import { postFile, putToUrl } from "./upload";
 
 export { TimeoutError };
 
@@ -60,29 +63,38 @@ async function send(path, opts = {}) {
   return res.json();
 }
 
-async function uploadFile(file, goalId = "", { temporary = false, purpose = "source" } = {}) {
-  const fd = new FormData();
-  fd.append("file", file);
-  fd.append("goal_id", goalId);
-  if (temporary) fd.append("temporary", "true");
-  fd.append("purpose", purpose);
-  const controller = new AbortController();
-  const res = await withTimeout(
-    fetch(`${API}/sources/upload`, {
+/**
+ * Upload one file, reporting how far the bytes have got through `onProgress(percent)`.
+ *
+ * The server decides the route. Where an object store is configured the bytes go straight to it: a
+ * serverless host caps a request body well below the `MAX_UPLOAD_BYTES` limit, so proxying would fail
+ * on exactly the files worth attaching. With no store configured the bytes post here as before. Either
+ * way the limits are checked server-side before a single byte moves, and the API writes the row.
+ */
+async function uploadFile(file, goalId = "", { temporary = false, purpose = "source", onProgress } = {}) {
+  const details = {
+    filename: file.name,
+    content_type: file.type || "",
+    size: file.size,
+    goal_id: goalId || "",
+    temporary: Boolean(temporary),
+    purpose,
+  };
+  const ticket = await req("/sources/upload-url", {
+    method: "POST",
+    timeout: LONG_JOB_TIMEOUT_MS,
+    body: JSON.stringify(details),
+  });
+  if (ticket?.direct && ticket.upload_url) {
+    await putToUrl(ticket.upload_url, file, onProgress, file.type);
+    return req("/sources/upload/complete", {
       method: "POST",
-      credentials: "include",
-      body: fd,
-      signal: controller.signal,
-    }),
-    DEFAULT_TIMEOUT_MS,
-    "API /sources/upload",
-    { controller },
-  );
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail || "Upload failed");
+      timeout: LONG_JOB_TIMEOUT_MS,
+      body: JSON.stringify({ ...details, key: ticket.key }),
+    });
   }
-  return res.json();
+  const fields = { goal_id: goalId, purpose, ...(temporary ? { temporary: "true" } : {}) };
+  return postFile(`${API}/sources/upload`, file, fields, onProgress);
 }
 
 /**
@@ -120,6 +132,19 @@ async function reqStream(path, body, onStatus, { timeout = LONG_JOB_TIMEOUT_MS }
   return result;
 }
 
+/**
+ * Calendar writes return at once; this follow-up asks the server to plan goals again around the change,
+ * then tells the app its board may have moved. Failure is silent: the write itself already succeeded.
+ */
+export const STATE_STALE_EVENT = "sutra:state-stale";
+function replanAfter(result) {
+  // Any goal may be re-planned around the change, so every goal card says so until it is done.
+  trackGoalActivity(ACTIVITY_ALL_GOALS, ACTIVITY_REPLAN, () => req("/timetable/replan-conflicts", { method: "POST", timeout: LONG_JOB_TIMEOUT_MS }), ACTIVITY_FALLBACK_TITLE)
+    .then(() => window.dispatchEvent(new Event(STATE_STALE_EVENT)))
+    .catch(() => {});
+  return result;
+}
+
 export const api = {
   me: () => req("/auth/me", { quiet: true }),
   guest: () => req("/auth/guest", { method: "POST" }),
@@ -127,6 +152,8 @@ export const api = {
   logout: () => req("/auth/logout", { method: "POST" }),
   setProvider: (model_provider) => req("/preferences", { method: "PUT", body: JSON.stringify({ model_provider }) }),
   models: () => req("/preferences/models"),
+  displayPrefs: () => req("/preferences/display", { quiet: true }),
+  putDisplayPrefs: (patch) => req("/preferences/display", { method: "PUT", body: JSON.stringify(patch) }),
   // The "about you" profile, asked once at the start of Add Goal.
   getProfile: () => req("/profile", { quiet: true }),
   putProfile: (profile) => req("/profile", { method: "PUT", body: JSON.stringify({ profile }) }),
@@ -146,6 +173,9 @@ export const api = {
   audit: () => req("/audit"),
   confirm: (message_id, proposal_id) =>
     req("/tools/confirm", { method: "POST", body: JSON.stringify({ message_id, proposal_id }) }),
+  // Several proposals in one transactional request: all apply or none do. Replies with the fresh `state`.
+  confirmBatch: (message_id, proposal_ids) =>
+    req("/tools/confirm", { method: "POST", body: JSON.stringify({ message_id, proposal_ids }), timeout: 180000 }),
   reject: (message_id, proposal_id, reason) =>
     req("/tools/reject", {
       method: "POST",
@@ -166,13 +196,28 @@ export const api = {
   // `defer` writes the row and returns; the client then files it with `processScratch`, which streams progress.
   createScratch: (body) => req("/scratch", { method: "POST", body: JSON.stringify({ defer: true, ...body }) }),
   processScratch: (id, onStatus) => reqStream(`/scratch/${id}/process`, {}, onStatus),
+  dismissScratch: (id) => req(`/scratch/${id}/dismiss`, { method: "POST" }),
   retryScratch: (id) => req(`/scratch/${id}/retry`, { method: "POST" }),
   discardScratch: (id) => req(`/scratch/${id}`, { method: "DELETE" }),
   chatScratch: (id, message) => req(`/scratch/${id}/chat`, { method: "POST", body: JSON.stringify({ message }) }),
   undoScratch: (id) => req(`/scratch/${id}/undo`, { method: "POST" }),
+  // Goal progress: the numbers (always fresh) with the model's verdict when one is current.
+  goalProgress: () => req("/agent/progress"),
+  judgeProgress: () => req("/agent/progress/judge", { method: "POST" }),
   // Goal intake — one dialogue turn, then confirm to create and plan the goal.
   // Plan a goal the chat dialog just created: agentv2 places its weeks around the calendar.
-  planGoal: (goalId, onStatus) => reqStream("/plan/change", { goal_id: goalId, action: { intent: "create_goal" }, confirmed: true }, onStatus),
+  // The goal's card shows each progress line while its timeline is worked out; the caller's own onStatus still gets them.
+  planGoal: (goalId, onStatus, title) =>
+    trackGoalActivity(
+      goalId,
+      ACTIVITY_PLANNING,
+      (update) =>
+        reqStream("/plan/change", { goal_id: goalId, action: { intent: "create_goal" }, confirmed: true }, (line) => {
+          update(line);
+          onStatus?.(line);
+        }),
+      title,
+    ),
   goalIntake: (message, state) => req("/goals/intake", { method: "POST", body: JSON.stringify({ message, state }), timeout: 90000 }),
   goalIntakeConfirm: (draft) => req("/goals/intake/confirm", { method: "POST", body: JSON.stringify({ draft }), timeout: 180000 }),
   // Calendar subscriptions — each linked calendar app has its own .ics URL and is unlinked on its own.
@@ -182,13 +227,14 @@ export const api = {
   unlinkCalendar: (id, deleteEvents) => req(`/calendar/feeds/${id}?delete_events=${deleteEvents ? "true" : "false"}`, { method: "DELETE" }),
   dismissCalendarPrompt: () => req("/calendar/feed/dismiss", { method: "POST" }),
   // Blockers (direct edit)
-  blockers: () => req("/blockers"),  createBlocker: (b) => req("/blockers", { method: "POST", body: JSON.stringify(b) }),
-  updateBlocker: (id, b) => req(`/blockers/${id}`, { method: "PUT", body: JSON.stringify(b) }),
+  blockers: () => req("/blockers"),  createBlocker: (b) => req("/blockers", { method: "POST", body: JSON.stringify(b) }).then(replanAfter),
+  updateBlocker: (id, b) => req(`/blockers/${id}`, { method: "PUT", body: JSON.stringify(b) }).then(replanAfter),
+  deleteReminder: (id) => req(`/reminders/${id}`, { method: "DELETE" }),
   deleteBlocker: (id) => req(`/blockers/${id}`, { method: "DELETE" }),
   // Timetable blocks (direct edit — Hard constraint #2)
   timetable: () => req("/timetable"),
-  createBlock: (b) => req("/timetable", { method: "POST", body: JSON.stringify(b) }),
-  updateBlock: (id, b) => req(`/timetable/${id}`, { method: "PUT", body: JSON.stringify(b) }),
+  createBlock: (b) => req("/timetable", { method: "POST", body: JSON.stringify(b) }).then(replanAfter),
+  updateBlock: (id, b) => req(`/timetable/${id}`, { method: "PUT", body: JSON.stringify(b) }).then(replanAfter),
   deleteBlock: (id) => req(`/timetable/${id}`, { method: "DELETE" }),
   // Plan items (multi-horizon execution lattice) — tick a task done/open, or
   // add a user-owned daily task directly.

@@ -1,10 +1,10 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Camera, Link2, Loader2, Image as ImageIcon } from "lucide-react";
 import AutoTextarea from "./AutoTextarea";
 import { toast } from "sonner";
 import CenteredDialog from "./CenteredDialog";
 import { useWebcamCapture } from "./WebcamCaptureDialog";
-import { api } from "../lib/api";
+import { api, sourceDownloadUrl } from "../lib/api";
 import { usePersistentState } from "../hooks/useDraftPersistence";
 
 /**
@@ -26,6 +26,22 @@ export default function GoalMemoryDialog({ open, onClose, goalId, goalTitle, onS
   const [submitError, setSubmitError] = useState("");
   const fileRef = useRef(null);
   const { openCamera, cameraUi } = useWebcamCapture((f) => { setFile(f); setSubmitError(""); });
+
+  // What is already on this goal. The dialog answers "what's here?" as well as "add one" — opening it
+  // used to show a blank form, which read as "nothing is attached" even when things were.
+  //
+  // `/memories` returns the user's whole set and the goal filter happens here: a goal holds a handful,
+  // and a per-goal endpoint would be a second shape to keep in step with this one for no gain.
+  const [existing, setExisting] = useState([]);
+  useEffect(() => {
+    if (!open) return undefined;
+    let live = true;
+    api
+      .memories()
+      .then((all) => { if (live) setExisting((all || []).filter((m) => (m.goal_id || "") === (goalId || ""))); })
+      .catch(() => { if (live) setExisting([]); });
+    return () => { live = false; };
+  }, [open, goalId]);
 
   const reset = () => {
     setKind("photo");
@@ -52,8 +68,9 @@ export default function GoalMemoryDialog({ open, onClose, goalId, goalTitle, onS
     setSubmitError("");
     try {
       // Re-use the sources pipeline so the bytes land in the same
-      // storage bucket as everything else.
-      const source = await api.uploadSource(file, goalId || "");
+      // storage bucket as everything else — but as a `memory`, not a `source`. The purpose is what
+      // keeps a keepsake photo out of the Sources list; without it the same file shows up in both.
+      const source = await api.uploadSource(file, goalId || "", { purpose: "memory" });
       await api.createMemory({
         kind: "photo",
         source_id: source.id,
@@ -115,6 +132,38 @@ export default function GoalMemoryDialog({ open, onClose, goalId, goalTitle, onS
       maxWidth="max-w-md"
     >
       <div className="space-y-4">
+        {/* What is already attached, above the form that adds more. */}
+        {existing.length > 0 && (
+          <div data-testid="goal-memory-existing" className="space-y-2">
+            <p className="text-[11px] font-mono uppercase tracking-widest text-[var(--text-muted)]">
+              Already on this goal ({existing.length})
+            </p>
+            <ul className="grid grid-cols-3 gap-2">
+              {existing.map((m) => (
+                <li
+                  key={m.id}
+                  className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)]"
+                >
+                  {m.source_id ? (
+                    <img
+                      src={sourceDownloadUrl(m.source_id)}
+                      alt={m.caption || "Memory"}
+                      className="h-20 w-full object-cover"
+                    />
+                  ) : (
+                    <span className="flex h-20 w-full items-center justify-center text-[var(--text-muted)]">
+                      <Link2 className="h-4 w-4" aria-hidden="true" />
+                    </span>
+                  )}
+                  {m.caption && (
+                    <p className="truncate px-1.5 py-1 text-[11px] text-[var(--text-muted)]">{m.caption}</p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         {/* Kind tabs */}
         <div className="inline-flex rounded-md border border-[var(--border)] bg-[color-mix(in_srgb,var(--bg-secondary)_40%,transparent)] p-0.5">
           <button

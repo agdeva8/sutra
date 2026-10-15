@@ -3,6 +3,7 @@ import { LogIn, Terminal } from "lucide-react";
 import CenteredDialog from "./CenteredDialog";
 import { API } from "../lib/api";
 import Logo from "./Logo";
+import { ENABLE_DEV_TOOLS } from "../constants/features";
 
 export default function SignInModal({ open, onClose, reason }) {
   const [devLoginAvailable, setDevLoginAvailable] = useState(false);
@@ -14,7 +15,7 @@ export default function SignInModal({ open, onClose, reason }) {
   // 404, the button stays hidden — invisible to anyone who isn't
   // actively developing.
   useEffect(() => {
-    if (!open) {
+    if (!open || !ENABLE_DEV_TOOLS) {
       setDevLoginAvailable(false);
       return;
     }

@@ -50,12 +50,14 @@ import AddToDayDialog from "./AddToDayDialog";
 import CenteredDialog from "./CenteredDialog";
 import { showReplanNudge } from "./ReplanToast";
 import { CardsGrid, WeekGrid, MonthGrid } from "./CalendarCards";
-import CalendarMonthGrid from "./CalendarMonthGrid";
 import CalendarNestedView, { GoalFilter } from "./CalendarNestedView";
-import { HourGrid } from "./CalendarHourGrid";
+import CalendarGrid from "./CalendarGrid";
 import { api } from "../lib/api";
 import { toast } from "sonner";
 import useMediaQuery from "../hooks/useMediaQuery";
+import useGoalProgress from "../lib/useGoalProgress";
+import { progressStatus } from "../constants/goalProgress";
+import { KIND_STYLE, REMINDER_SLOT_MINUTES } from "../constants/calendarKinds";
 
 /* ---------------------------------------------------------------------------
  * Sutra Timeline — 3-view dropdown: Day by day (Drill), At a glance (Strip),
@@ -85,6 +87,10 @@ const MONTHS_FULL = [
 const DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const DOW_SHORT = ["M", "T", "W", "T", "F", "S", "S"];
 const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const WEEKDAYS_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/** "10 AM" — the gutter label for an hour row. */
+const fmtHourLabel = (h) => `${h % 12 === 0 ? 12 : h % 12} ${h < 12 ? "AM" : "PM"}`;
 
 /* Horizon → color token. weekly + medium share `--accent`. */
 const HORIZON_COLOR = {
@@ -232,12 +238,6 @@ function scopeForItem(item) {
 /* View-type dropdown options — plain-language labels for the general public. */
 const VIEW_TYPES = [
   {
-    key: "drill",
-    label: "Day by day",
-    sub: "see what's due each day",
-    Icon: ListTree,
-  },
-  {
     key: "strip",
     label: "At a glance",
     sub: "snapshots for today, this week, this month…",
@@ -259,6 +259,13 @@ const CAL_SPANS = [
   { key: "quarter", label: "3 Months", days: 90 },
   { key: "year", label: "Year", days: 365 },
 ];
+
+/* The zoomed-out spans are grids of cells: a week each for 3 Months, a month each for Year. Sixteen
+ * weeks is 4×4 and covers the ~13 a quarter actually holds, so the grid keeps its shape month to
+ * month instead of reflowing. */
+const QUARTER_WEEK_CELLS = 16;
+const QUARTER_COLUMNS = 4;
+const YEAR_COLUMNS = 3;
 
 /* Strip-view horizons. */
 const HORIZONS = [
@@ -299,6 +306,8 @@ const fmtDay = (d) => `${MONTHS[d.getMonth()]} ${d.getDate()}`;
 const fmtIso = (d) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 const fmtMonth = (d) => `${MONTHS_FULL[d.getMonth()]} ${d.getFullYear()}`;
+/** The Day span's header: the day itself, not just its month ("Thu 15 October 2026"). */
+const fmtFullDay = (d) => `${DOW[(d.getDay() + 6) % 7]} ${d.getDate()} ${MONTHS_FULL[d.getMonth()]} ${d.getFullYear()}`;
 const addDays = (d, n) => {
   const x = new Date(d);
   x.setDate(x.getDate() + n);
@@ -413,6 +422,10 @@ function makeBuckets(level, anchor) {
  * Timeline — root component.
  * ========================================================================= */
 
+// A verdict recolours a card only when it says something: "not started" is the absence of news, so the
+// card keeps its goal's colour instead of going grey.
+const hasVerdict = (v) => Boolean(v) && v.status !== "not_started";
+
 export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat, onChange = () => {} }) {
   const [viewType, setViewType] = useState("calendar");
   const [view, setView] = useState({
@@ -432,15 +445,30 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
   // Option B — a gentle re-plan offer surfaced after a milestone's tasks all
   // complete. Never auto-fires; the user chooses.
   const [replanOffer, setReplanOffer] = useState(null);
-  // Timetable blocks — fetched separately (they aren't part of /api/state).
-  // Drives the Google-Calendar hour grid on the Day/Week spans.
-  const [timetableBlocks, setTimetableBlocks] = useState([]);
+  // Timetable blocks come with /api/state (`timetableBlocks`), so there is no separate request per visit.
+  // The old per-visit GET /timetable is kept only as a fallback for a board that omits them.
+  const stateBlocks = Array.isArray(state?.timetableBlocks) ? state.timetableBlocks : null;
+  const [fetchedBlocks, setFetchedBlocks] = useState([]);
   useEffect(() => {
+    if (stateBlocks) return;
     api
       .timetable()
-      .then((r) => setTimetableBlocks(r?.blocks || []))
+      .then((r) => setFetchedBlocks(r?.blocks || []))
       .catch(() => {});
-  }, [state]);
+  }, [state, stateBlocks]);
+  const timetableBlocks = stateBlocks || fetchedBlocks;
+  // The model's verdict on each month, week and milestone, by the id of the row it is about, so a card or
+  // a details dialog can say how that level is going. Empty until the first judgement arrives.
+  const goalProgress = useGoalProgress(state?.generated_at);
+  const verdicts = useMemo(() => {
+    const out = {};
+    Object.values(goalProgress).forEach((g) => {
+      [...(g.verdict?.levels || []), ...(g.verdict?.milestones || [])].forEach((v) => {
+        out[v.id] = v;
+      });
+    });
+    return out;
+  }, [goalProgress]);
   const dayPlannerRef = useRef(null);
   // The planner renders below the (tall) month grid, so scroll it into
   // view on open — otherwise clicking a day near the bottom looks like a
@@ -604,10 +632,7 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
       const goal =
         goals.find((g) => g.id === goalId) ||
         goals.find((g) => g.title === (it.goalTitle || it.goal_title));
-      const color =
-        it.kind === "blocker"
-          ? "var(--danger)"
-          : colorByGoal.get(goal?.id) || GOAL_PALETTE[0];
+      const color = it.kind === "blocker" ? KIND_STYLE.blocker.color : colorByGoal.get(goal?.id) || GOAL_PALETTE[0];
       let fulfils = "";
       let hours = "";
       if (it.kind === "task") {
@@ -620,7 +645,8 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
         id: it.id,
         item: it,
         date: it.date,
-        glyph: it.kind === "milestone" ? "◆" : it.kind === "blocker" ? "▲" : "○",
+        glyph: (KIND_STYLE[it.kind] || KIND_STYLE.task).glyph,
+        look: (KIND_STYLE[it.kind] || KIND_STYLE.task).look,
         title: it.title,
         goalTitle: goal?.title || it.goalTitle || it.goal_title || "",
         color,
@@ -771,6 +797,8 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
           cards={calendarCards}
           monthCards={calendarCards}
           planItems={state?.plan_items || []}
+          reminders={state?.reminders || []}
+          verdicts={verdicts}
           goals={goals}
           milestones={milestones}
           blockers={blockers}
@@ -818,6 +846,7 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
       <TimelineItemDetailsDialog
         item={selectedTimelineItem}
         state={state}
+        verdicts={verdicts}
         removing={removing}
         onClose={() => setSelectedTimelineItem(null)}
         onEdit={() => {
@@ -827,6 +856,14 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
         onRemove={async (it) => {
           setRemoving(true);
           try {
+            // A reminder or a goal-less appointment is simply deleted; only an away range frees capacity worth re-planning.
+            if (it.kind === "reminder" || it.kind === "block") {
+              await (it.kind === "reminder" ? api.deleteReminder(it.id) : api.deleteBlock(it.id));
+              setSelectedTimelineItem(null);
+              await onChange();
+              toast.success(it.kind === "reminder" ? "Reminder removed" : "Removed from your calendar");
+              return;
+            }
             await api.deleteBlocker(it.id);
             setSelectedTimelineItem(null);
             await onChange();
@@ -1073,8 +1110,8 @@ function HeaderStrip({
           <span className="flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full" style={{ background: "var(--accent)" }} />
             <span className="text-[var(--text-secondary)] tabular-nums">{stats.goals}</span>
-            <span className="hidden sm:inline" aria-hidden="true">goals</span>
-            <span className="sr-only">goals</span>
+            <span className="hidden sm:inline" aria-hidden="true">{stats.goals === 1 ? "goal" : "goals"}</span>
+            <span className="sr-only">{stats.goals === 1 ? "goal" : "goals"}</span>
           </span>
           <span className="flex items-center gap-1.5">
             <MilestoneIcon className="w-2.5 h-2.5 text-[var(--warning)]" aria-hidden="true" />
@@ -1225,7 +1262,7 @@ function CalendarNav({ span, setSpan, anchor, setAnchor, today, children, onAddT
 
   const label = useMemo(() => {
     const a = anchor;
-    if (span === "day") return fmtMonth(a);
+    if (span === "day") return fmtFullDay(a);
     if (span === "week") {
       const ws = startOfWeek(a);
       const we = addDays(ws, 6);
@@ -1352,7 +1389,7 @@ function CalendarNav({ span, setSpan, anchor, setAnchor, today, children, onAddT
                   <button
                     type="button"
                     onClick={() => setPickMonth((m) => new Date(m.getFullYear() - 1, m.getMonth(), 1))}
-                    className="h-8 w-8 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-tertiary)] transition-colors"
+                    className="h-11 w-11 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-tertiary)] transition-colors"
                     title="Previous year"
                     aria-label="Previous year"
                   >
@@ -1362,7 +1399,7 @@ function CalendarNav({ span, setSpan, anchor, setAnchor, today, children, onAddT
                   <button
                     type="button"
                     onClick={() => setPickMonth((m) => new Date(m.getFullYear() + 1, m.getMonth(), 1))}
-                    className="h-8 w-8 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-tertiary)] transition-colors"
+                    className="h-11 w-11 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-tertiary)] transition-colors"
                     title="Next year"
                     aria-label="Next year"
                   >
@@ -1428,7 +1465,7 @@ function CalendarNav({ span, setSpan, anchor, setAnchor, today, children, onAddT
                   <button
                     type="button"
                     onClick={() => setPickMonth((m) => new Date(m.getFullYear(), m.getMonth() - 1, 1))}
-                    className="h-8 w-8 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-tertiary)] transition-colors"
+                    className="h-11 w-11 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-tertiary)] transition-colors"
                     title="Previous month"
                     aria-label="Previous month"
                   >
@@ -1438,7 +1475,7 @@ function CalendarNav({ span, setSpan, anchor, setAnchor, today, children, onAddT
                   <button
                     type="button"
                     onClick={() => setPickMonth((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1))}
-                    className="h-8 w-8 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-tertiary)] transition-colors"
+                    className="h-11 w-11 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-tertiary)] transition-colors"
                     title="Next month"
                     aria-label="Next month"
                   >
@@ -1478,7 +1515,7 @@ function CalendarNav({ span, setSpan, anchor, setAnchor, today, children, onAddT
                     onClick={() =>
                       setPickMonth((m) => new Date(m.getFullYear(), m.getMonth() - 1, 1))
                     }
-                    className="h-8 w-8 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-tertiary)] transition-colors"
+                    className="h-11 w-11 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-tertiary)] transition-colors"
                     title="Previous month"
                     aria-label="Previous month"
                   >
@@ -1492,7 +1529,7 @@ function CalendarNav({ span, setSpan, anchor, setAnchor, today, children, onAddT
                     onClick={() =>
                       setPickMonth((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1))
                     }
-                    className="h-8 w-8 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-tertiary)] transition-colors"
+                    className="h-11 w-11 flex items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-tertiary)] transition-colors"
                     title="Next month"
                     aria-label="Next month"
                   >
@@ -1849,17 +1886,17 @@ function StripView({ state, today, openChat, onSelectItem, onPrefill }) {
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-1 tabular-nums text-xs text-[var(--text-muted)]">
         <span>
           <strong className="text-[var(--text-primary)] font-semibold">{totals.goals}</strong>{" "}
-          goals
+          {totals.goals === 1 ? "goal" : "goals"}
         </span>
         <span aria-hidden="true">·</span>
         <span>
           <strong className="text-[var(--text-primary)] font-semibold">{totals.milestones}</strong>{" "}
-          milestones
+          {totals.milestones === 1 ? "milestone" : "milestones"}
         </span>
         <span aria-hidden="true">·</span>
         <span>
           <strong className="text-[var(--text-primary)] font-semibold">{totals.blockers}</strong>{" "}
-          blockers
+          {totals.blockers === 1 ? "blocker" : "blockers"}
         </span>
         <span aria-hidden="true" className="hidden sm:inline">·</span>
         <button
@@ -2323,6 +2360,8 @@ function CalendarView({
   cards,
   monthCards = [],
   planItems = [],
+  reminders = [],
+  verdicts = {},
   blocks = [],
   goals,
   milestones,
@@ -2340,6 +2379,29 @@ function CalendarView({
 }) {
   const preset = CAL_SPANS.find((s) => s.key === span) || CAL_SPANS[2];
   const days = preset.days;
+
+  // Each planned session as a card for the month grid: its time and title on its day, in its goal's colour.
+  const sessionCards = useMemo(
+    () =>
+      (blocks || []).map((b) => {
+        const goalIndex = (goals || []).findIndex((g) => g.id === b.goal_id);
+        const hhmm = (t) => String(t || "").slice(0, 5);
+        return {
+          id: `session-${b.id}`,
+          item: { id: b.id, kind: "block", title: b.label, date: b.block_date, start_date: b.block_date, end_date: b.block_date, goalTitle: b.goal_title, goal_id: b.goal_id, source_id: b.source_id, why: b.why, start_time: b.start_time, end_time: b.end_time },
+          date: new Date(`${String(b.block_date).slice(0, 10)}T00:00:00`),
+          glyph: b.kind === "committed" ? KIND_STYLE.fixed.glyph : KIND_STYLE.session.glyph,
+          look: "wash",
+          title: `${hhmm(b.start_time)} ${b.label}`.trim(),
+          goalTitle: b.goal_title || "",
+          color: b.kind === "committed" ? KIND_STYLE.fixed.color : GOAL_PALETTE[(goalIndex < 0 ? 0 : goalIndex) % GOAL_PALETTE.length],
+          fulfils: "",
+          hours: "",
+          status: b.kind === "committed" ? "committed" : "",
+        };
+      }),
+    [blocks, goals],
+  );
 
   // Month view goal filter — `null` means "all goals visible".
   const [activeGoalIds, setActiveGoalIds] = useState(null);
@@ -2419,9 +2481,11 @@ function CalendarView({
         title: p.title,
         glyph,
         goalTitle: goal?.title || "",
-        color: colorByGoal.get(p.goal_id) || GOAL_PALETTE[0],
+        color: hasVerdict(verdicts[p.id]) ? progressStatus(verdicts[p.id].status).color : colorByGoal.get(p.goal_id) || GOAL_PALETTE[0],
         hours: p.horizon === "weekly" && p.weekly_hours ? `${p.weekly_hours}h/wk` : "",
         when,
+        // Carried so a finished item strikes through in the grid, the same as everywhere else.
+        status: p.status || "",
         date: p.due_date
           ? new Date(`${String(p.due_date).slice(0, 10)}T00:00:00`)
           : p.start_date
@@ -2433,7 +2497,177 @@ function CalendarView({
       weekly: planItems.filter((p) => p.horizon === "weekly").map((p) => mk(p, "▤")),
       monthly: planItems.filter((p) => p.horizon === "monthly").map((p) => mk(p, "◆")),
     };
-  }, [planItems, goals]);
+  }, [planItems, goals, verdicts]);
+
+  // Milestones as cards, for the Year grid. The year has no monthly plan rows to show — the planner
+  // writes weekly and daily ones — so without these twelve month cells would all sit empty. A milestone
+  // is dated and belongs to a goal, which is exactly what a month cell wants.
+  const milestoneCards = useMemo(
+    () =>
+      (milestones || [])
+        .filter((m) => m && (m.target_date || m.date))
+        .map((m) => {
+          const gi = (goals || []).findIndex((g) => g.id === (m.goal_id || m.goalId));
+          const raw = m.target_date || m.date;
+          return {
+            id: m.id,
+            item: { ...m, kind: "milestone", title: m.title, date: raw },
+            title: m.title || "",
+            glyph: "◆",
+            goalTitle: m.goal_title || (gi >= 0 ? goals[gi].title : ""),
+            color: hasVerdict(verdicts[m.id]) ? progressStatus(verdicts[m.id].status).color : GOAL_PALETTE[(gi < 0 ? 0 : gi) % GOAL_PALETTE.length],
+            status: m.status || "",
+            date: new Date(`${String(raw).slice(0, 10)}T00:00:00`),
+          };
+        }),
+    [milestones, goals, verdicts],
+  );
+
+  // A goal's day-level tasks, as cards for the hour grid's all-day row. These are the sessions the
+  // planner wrote for a specific day; a card needs a date to sit on, which is why the row is only
+  // populated once the planner stamps one (see `AddTask.day`).
+  const dayTaskCards = useMemo(
+    () =>
+      (planItems || [])
+        .filter((p) => p && p.horizon === "daily" && (p.start_date || p.due_date))
+        .map((p) => {
+          const gi = (goals || []).findIndex((g) => g.id === p.goal_id);
+          const raw = p.start_date || p.due_date;
+          const hours = (p.note || "").match(/^([\d.]+)h$/);
+          return {
+            id: p.id,
+            item: { ...p, kind: "plan", title: p.title, date: raw },
+            title: p.title || "",
+            glyph: "○",
+            goalTitle: (gi >= 0 ? goals[gi].title : "") || p.goal_title || "",
+            color: GOAL_PALETTE[(gi < 0 ? 0 : gi) % GOAL_PALETTE.length],
+            hours: hours ? `${hours[1]}h` : "",
+            status: p.status || "",
+            date: new Date(`${String(raw).slice(0, 10)}T00:00:00`),
+          };
+        }),
+    [planItems, goals],
+  );
+
+  // Reminders: each day and time a reminder falls on is a short slot at that time, in the reminder colour.
+  const reminderCards = useMemo(() => {
+    const out = [];
+    (reminders || []).forEach((r) => {
+      (r.days || []).forEach((dayIso) => {
+        (r.times || []).forEach((t) => {
+          const day = new Date(`${String(dayIso).slice(0, 10)}T00:00:00`);
+          const [h, m] = String(t).split(":").map(Number);
+          const startAt = new Date(day);
+          startAt.setHours(h || 0, m || 0, 0, 0);
+          const endAt = new Date(startAt.getTime() + REMINDER_SLOT_MINUTES * 60000);
+          out.push({
+            id: `rem-${r.id}-${dayIso}-${t}`,
+            item: { id: r.id, kind: "reminder", title: r.title, date: day, start_date: dayIso, end_date: dayIso, startAt, endAt, goal_id: r.goal_id, time: t },
+            title: `${t} ${r.title}`,
+            glyph: KIND_STYLE.reminder.glyph,
+            look: KIND_STYLE.reminder.look,
+            goalTitle: "",
+            color: KIND_STYLE.reminder.color,
+            status: "",
+            date: day,
+          });
+        });
+      });
+    });
+    return out;
+  }, [reminders]);
+
+  // A session already drawn as a timed block must not be drawn again as an all-day task. Only work that
+  // has a day but no time yet (and plain to-dos) is drawn as a task card.
+  const unscheduledTaskCards = useMemo(() => {
+    const placed = new Set((blocks || []).map((b) => b.source_id).filter(Boolean));
+    return dayTaskCards.filter((c) => !placed.has(c.id));
+  }, [dayTaskCards, blocks]);
+
+  // Moving a block by dragging it. The caller owns every block, so it is the only place that can see
+  // whether the slot is free — the grid just reports where the bar was dropped.
+  //
+  // A clash is refused rather than resolved: the user asked for "don't allow the rearrange", and
+  // silently stacking two sessions would make the day unreadable. The message names what is in the way
+  // so they can move that one first.
+  const handleBlockDrop = async (card, targetStart) => {
+    const block = (blocks || []).find((b) => b.id === card?.id);
+    if (!block || !targetStart) return;
+    const toMin = (t) => {
+      const [h, m] = String(t || "0:0").split(":").map(Number);
+      return (h || 0) * 60 + (m || 0);
+    };
+    const start0 = toMin(block.start_time);
+    const end0 = toMin(block.end_time);
+    // Keep the block's own length; only where it sits changes.
+    const duration = end0 > start0 ? end0 - start0 : 60;
+    const day = fmtIso(targetStart);
+    const startMin = targetStart.getHours() * 60 + targetStart.getMinutes();
+    const endMin = startMin + duration;
+
+    const clash = (blocks || []).find((b) => {
+      if (b.id === block.id) return false;
+      if (String(b.block_date).slice(0, 10) !== day) return false;
+      const bs = toMin(b.start_time);
+      const be = toMin(b.end_time);
+      return startMin < be && bs < endMin;
+    });
+    if (clash) {
+      toast.error(`That slot is taken by “${clash.label}”. Move or remove it first.`);
+      return;
+    }
+    const hhmm = (m) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+    try {
+      await api.updateBlock(block.id, { block_date: day, start_time: hhmm(startMin), end_time: hhmm(endMin) });
+      onChange?.();
+    } catch (e) {
+      toast.error(typeof e?.message === "string" ? e.message : "Couldn't move that block.");
+    }
+  };
+
+  // Timed blocks as cards carrying their own `startAt`/`endAt`. The grid places every item by the one
+  // overlap rule, so a session has to say when it starts and ends — not which row it belongs to.
+  const blockCards = useMemo(
+    () =>
+      (blocks || []).map((b) => {
+        const day = new Date(`${String(b.block_date).slice(0, 10)}T00:00:00`);
+        const [sh, sm] = String(b.start_time || "0:0").split(":").map(Number);
+        const [eh, em] = String(b.end_time || "0:0").split(":").map(Number);
+        const startAt = new Date(day);
+        startAt.setHours(sh || 0, sm || 0, 0, 0);
+        const endAt = new Date(day);
+        endAt.setHours(eh || 0, em || 0, 0, 0);
+        if (endAt <= startAt) endAt.setDate(endAt.getDate() + 1); // a session running past midnight
+        const gi = (goals || []).findIndex((g) => g.id === b.goal_id);
+        return {
+          id: b.id,
+          item: {
+            id: b.id,
+            kind: "block",
+            title: b.label,
+            date: day,
+            start_date: b.block_date,
+            end_date: b.block_date,
+            startAt,
+            endAt,
+            goal_id: b.goal_id,
+            goalTitle: b.goal_title,
+            goal_title: b.goal_title,
+            // The task this time was set aside for, and the planner's reason for choosing this time.
+            source_id: b.source_id,
+            why: b.why,
+          },
+          title: b.label,
+          glyph: b.kind === "committed" ? KIND_STYLE.fixed.glyph : KIND_STYLE.session.glyph,
+          look: "wash",
+          goalTitle: b.goal_title || "",
+          color: b.kind === "committed" ? KIND_STYLE.fixed.color : GOAL_PALETTE[(gi < 0 ? 0 : gi) % GOAL_PALETTE.length],
+          status: b.kind === "committed" ? "" : "",
+          date: day,
+        };
+      }),
+    [blocks, goals],
+  );
 
   const tracksByWeek = useMemo(() => {
     return weeks.map((week) => {
@@ -2524,6 +2758,25 @@ function CalendarView({
     }
     setActiveGoalIds(next);
   };
+
+  // The goal filter is the legend as much as the filter: it names each goal and shows its colour, which
+  // is the only thing that explains the tiles below it. It belongs on every span. It used to live only
+  // inside the nested view, which the spans that have a timetable never reach — so Week and Month drew
+  // coloured tiles with nothing on screen saying which goal each colour was.
+  const filterBar = (
+    <GoalFilter
+      goals={goalItems}
+      selected={selectedGoals}
+      onToggle={toggleGoal}
+      onAll={() => setActiveGoalIds(new Set(allGoalIds))}
+    />
+  );
+
+  // A block with no goal (a commitment, or an agent block whose goal is gone) is not attributable to any
+  // one goal, so the filter leaves it alone rather than hiding it under a goal the user did not pick.
+  const visibleBlocks = (blocks || []).filter((b) => !b.goal_id || selectedGoals.has(b.goal_id));
+  const visibleCards = (cards || []).filter((c) => !c.goalId || selectedGoals.has(c.goalId));
+  const visibleSessionCards = sessionCards.filter((c) => !c.item.goal_id || selectedGoals.has(c.item.goal_id));
   const renderNested = (rangeStart, rangeEnd, u) => (
     <div className="space-y-2">
       <GoalFilter
@@ -2549,560 +2802,193 @@ function CalendarView({
 
   // Day span → the Google-Calendar hour grid when a timetable is planned, else
   // one nested row per goal for that single day.
+  // Day span → the grid, one column wide. Row 0 is the all-day row (range = the whole day); rows 1..24
+  // are hours. Nothing here knows what an "hour grid" is — it is just m × n.
   if (span === "day") {
-    if (blocks.length > 0) {
-      return (
-        <HourGrid
-          days={[startOfDay(anchor)]}
-          blocks={blocks}
-          cards={cards || []}
+    const d = startOfDay(anchor);
+    return (
+      <div className="space-y-2">
+        {filterBar}
+        <CalendarGrid
+          columns={1}
+          rows={25}
+          rowPx={36}
+          cellRange={(r, c) => {
+            const base = addDays(d, c);
+            if (r === 0) return [base, addDays(base, 1)];
+            const s = new Date(base);
+            s.setHours(r - 1, 0, 0, 0);
+            const e = new Date(base);
+            e.setHours(r, 0, 0, 0);
+            return [s, e];
+          }}
+          cellLabel={(r) => (r === 0 ? "" : fmtHourLabel(r - 1))}
+          rowLabel={(r) => (r === 0 ? "all-day" : fmtHourLabel(r - 1))}
+          cards={[...blockCards, ...visibleCards, ...unscheduledTaskCards, ...reminderCards]}
+          today={today}
           onSelectItem={onSelectItem}
           onSelectSlot={onSelectSlot}
+          onBlockDrop={handleBlockDrop}
+          allDayRow
+          testId="calendar-day-grid"
         />
-      );
-    }
-    return renderNested(startOfDay(anchor), startOfDay(anchor), "day");
+      </div>
+    );
   }
 
-  // Week span → 7 day columns; a task sits on the days it spans.
+  // Day cells for a run of dates — the shape every day-grain span shares (Week, Month). `inSpan`
+  // marks the padding days a month grid shows greyed so its rows stay whole weeks.
+  const dayCellsFor = (start, count, { padToWeeks = false, inMonth = null } = {}) => {
+    const out = [];
+    if (padToWeeks) {
+      const padStart = start.getDay() === 0 ? 6 : start.getDay() - 1;
+      for (let i = padStart; i > 0; i--) {
+        const d = addDays(start, -i);
+        out.push({ key: fmtIso(d), date: d, start: d, end: d, dayNumber: d.getDate(), inSpan: false });
+      }
+    }
+    for (let i = 0; i < count; i++) {
+      const d = addDays(start, i);
+      out.push({
+        key: fmtIso(d),
+        date: d,
+        start: d,
+        end: d,
+        dayNumber: d.getDate(),
+        inSpan: inMonth == null ? true : d.getMonth() === inMonth,
+      });
+    }
+    if (padToWeeks) {
+      while (out.length % 7 !== 0) {
+        const d = addDays(out[out.length - 1].date, 1);
+        out.push({ key: fmtIso(d), date: d, start: d, end: d, dayNumber: d.getDate(), inSpan: false });
+      }
+    }
+    return out;
+  };
+
+  // Week span → the same grid, seven day columns. Identical structure to Day; only `columns` differs.
   if (span === "week") {
     const ws = startOfWeek(anchor);
-    return renderNested(ws, addDays(ws, 6), "day");
+    return (
+      <div className="space-y-2">
+        {filterBar}
+        <CalendarGrid
+          columns={7}
+          rows={25}
+          rowPx={36}
+          cellRange={(r, c) => {
+            const base = addDays(ws, c);
+            if (r === 0) return [base, addDays(base, 1)];
+            const s = new Date(base);
+            s.setHours(r - 1, 0, 0, 0);
+            const e = new Date(base);
+            e.setHours(r, 0, 0, 0);
+            return [s, e];
+          }}
+          columnHeader={(c) => {
+            const d = addDays(ws, c);
+            return `${WEEKDAYS_SHORT[d.getDay()]} ${d.getDate()}`;
+          }}
+          cellLabel={(r) => (r === 0 ? "" : "")}
+          rowLabel={(r) => (r === 0 ? "all-day" : fmtHourLabel(r - 1))}
+          cards={[...blockCards, ...visibleCards, ...unscheduledTaskCards, ...reminderCards]}
+          today={today}
+          onSelectItem={onSelectItem}
+          onSelectSlot={onSelectSlot}
+          onBlockDrop={handleBlockDrop}
+          allDayRow
+          testId="calendar-week-grid"
+        />
+      </div>
+    );
   }
 
-  // Month span → one column per day. Falls back to the flat month grid when
-  // there are no goals yet (milestones/blockers still need somewhere to show).
+  // Month span → 7 columns of days, one row per week, padded to whole weeks so the grid keeps its shape.
   if (span === "month") {
-    if (goalItems.length === 0) {
-      return (
-        <CalendarMonthGrid
-          anchor={anchor}
-          cards={monthCards}
+    const first = startOfMonth(anchor);
+    const gridStart = startOfWeek(first);
+    const last = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0);
+    const weekCount = Math.ceil((Math.round((startOfWeek(last) - gridStart) / 86400000) + 7) / 7);
+    return (
+      <div className="space-y-2">
+        {filterBar}
+        <CalendarGrid
+          columns={7}
+          rows={weekCount}
+          minCellPx={104}
+          cellRange={(r, c) => {
+            const d = addDays(gridStart, r * 7 + c);
+            return [d, addDays(d, 1)];
+          }}
+          cellLabel={(r, c) => String(addDays(gridStart, r * 7 + c).getDate())}
+          columnHeader={(c) => WEEKDAYS_SHORT[(c + 1) % 7]}
+          cards={[...monthCards, ...visibleSessionCards, ...unscheduledTaskCards, ...reminderCards]}
           today={today}
           onSelectItem={onSelectItem}
           onSelectDay={onSelectDay}
+          testId="calendar-month-grid"
         />
-      );
-    }
-    return renderNested(startOfMonth(anchor), new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0), "day");
-  }
-
-  // 3-month span → one column per week.
-  if (span === "quarter") {
-    const qStart = startOfDay(anchor);
-    return renderNested(qStart, addDays(qStart, 89), "week");
-  }
-
-  // Year span → one column per month.
-  if (span === "year") {
-    return renderNested(
-      new Date(anchor.getFullYear(), 0, 1),
-      new Date(anchor.getFullYear(), 11, 31),
-      "month",
-    );
-  }
-
-  /* === Year view (Iteration 7 — Ask 3) ===
-   * Same lane-per-week pattern as Quarter, laid out as 4 quarter-columns
-   * side by side for ~52 weeks. The previous bar-chart (one column per
-   * month, stacked blocks in a 220px plot) read nothing like the
-   * Month/Week/3-month views — different shape, different density, the
-   * items-as-cells metaphor broke. Here every item renders the same way
-   * regardless of span: a status-coloured bar with a left/right position
-   * derived from its actual day-of-week span within the row.
-   *
-   * Layout:
-   *   - 4 quarter-columns × 13 week-rows ≈ 52 rows
-   *   - Each row is its own 7-day cell grid; bar's offset/width = its
-   *     Mon..Sun position
-   *   - Today row is accent-highlighted (matches Quarter's accent ring)
-   */
-  if (span === "year") {
-    const yearStart = new Date(anchor.getFullYear(), 0, 1);
-    const yearEnd = new Date(anchor.getFullYear() + 1, 0, 1);
-    const quarters = [
-      { label: "Q1 (Jan – Mar)", start: new Date(anchor.getFullYear(), 0, 1) },
-      { label: "Q2 (Apr – Jun)", start: new Date(anchor.getFullYear(), 3, 1) },
-      { label: "Q3 (Jul – Sep)", start: new Date(anchor.getFullYear(), 6, 1) },
-      { label: "Q4 (Oct – Dec)", start: new Date(anchor.getFullYear(), 9, 1) },
-    ];
-
-    const buildQuarterRows = (qStart) => {
-      const rows = [];
-      let cursor = startOfWeek(qStart);
-      let i = 0;
-      // 14 weeks covers the 13 it could land in for the latest quarter
-      while (cursor < yearEnd && i < 14) {
-        const rowEnd = addDays(cursor, 7);
-        if (cursor >= qStart && cursor < addDays(qStart, 92)) {
-          const overlaps = allItems.filter((it) => {
-            if (!it) return false;
-            const s = startOfDay(it.start || it.date);
-            const e = startOfDay(it.end || it.date);
-            if (!s || !e || isNaN(s.getTime()) || isNaN(e.getTime())) return false;
-            return e >= cursor && s < rowEnd;
-          });
-          rows.push({ start: cursor, end: addDays(cursor, 6), items: overlaps });
-        }
-        cursor = rowEnd;
-        i++;
-      }
-      return rows;
-    };
-
-    const rowHeight = 26;
-    return (
-      <div className="space-y-3">
-        <div
-          className="rounded-lg border border-[var(--border-accent)] overflow-hidden"
-          style={{ background: "var(--bg-primary)" }}
-        >
-          {/* B4#7 — below md each quarter column is ~86px wide, leaving
-              ~6px/day in the week rows. Scroll horizontally on phones
-              (620px floor) instead of crushing; md+ keeps the 4-up grid. */}
-          <div className="overflow-x-auto md:overflow-visible">
-          <div className="min-w-[620px] md:min-w-0">
-          <div
-            className="font-medium grid grid-cols-4 text-xs text-[var(--text-muted)] border-b border-[var(--border-accent)] bg-[color-mix(in_srgb,var(--bg-secondary)_40%,transparent)]"
-          >
-            {quarters.map((q, qi) => (
-              <div key={qi} className="px-2 py-2 text-center select-none border-r last:border-r-0 border-[var(--border-accent)]">
-                {q.label}
-              </div>
-            ))}
-          </div>
-          <div
-            className="grid grid-cols-4 divide-x divide-[var(--border-accent)]"
-            role="rowgroup"
-          >
-            {quarters.map((q, qi) => {
-              const rows = buildQuarterRows(q.start);
-              return (
-                <div key={qi} role="rowgroup" data-testid={`timeline-cal-year-col-${qi}`}>
-                  {rows.map((r, ri) => {
-                    const isToday = today >= r.start && today < addDays(r.start, 7);
-                    const wkLabel = `${MONTHS_SHORT[r.start.getMonth()]} ${r.start.getDate()}`;
-                    return (
-                      <div
-                        key={ri}
-                        data-testid={`timeline-cal-year-row-${qi}-${ri}`}
-                        className="grid grid-cols-[44px_1fr] border-b last:border-b-0 border-[var(--border)]"
-                        style={{ minHeight: `${rowHeight}px`, background: isToday ? "color-mix(in srgb, var(--accent) 8%, var(--bg-primary))" : undefined }}
-                      >
-                        <div className={`px-1.5 py-1 text-xs font-medium text-[var(--text-muted)] flex items-center ${isToday ? "text-[var(--accent)] font-semibold" : ""}`}>
-                          {wkLabel}
-                        </div>
-                        <div className="relative px-1 py-0.5" style={{ minHeight: `${rowHeight}px` }}>
-                          <div className="grid grid-cols-7 h-full pointer-events-none absolute inset-0">
-                            {Array.from({ length: 7 }).map((_, idx) => (
-                              <div
-                                key={idx}
-                                className={`${idx === 0 ? "" : "border-l border-[var(--border)]"}`}
-                                aria-hidden="true"
-                              />
-                            ))}
-                          </div>
-                          <div className="relative space-y-0.5">
-                            {r.items.length === 0 ? null : (
-                              r.items.slice(0, 2).map((it) => {
-                                const s = startOfDay(it.start || it.date);
-                                const e = startOfDay(it.end || it.date);
-                                const segStart = s < r.start ? r.start : s;
-                                const segEnd = e > r.end ? r.end : e;
-                                const offset = (segStart.getTime() - r.start.getTime()) / (7 * DAY_MS);
-                                const width = Math.max(
-                                  0.05,
-                                  (segEnd.getTime() - segStart.getTime() + DAY_MS) / (7 * DAY_MS),
-                                );
-                                const paint = barPaint(it, "var(--bg-primary)");
-                                return (
-                                  <button
-                                    key={`${it.kind}-${it.id}`}
-                                    type="button"
-                                    data-testid={`timeline-cal-year-bar-${it.kind}-${it.id}`}
-                                     onClick={() => onSelectItem?.(it)}
-                                    title={it.title}
-                                    aria-label={`${it.kind}: ${it.title}`}
-                                    className="group block min-h-11 rounded-[2px] text-left text-xs px-1 truncate hover:brightness-110 transition-[filter] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
-                                    style={{
-                                      marginLeft: `${offset * 100}%`,
-                                      width: `${width * 100}%`,
-                                      background: paint.background,
-                                      boxShadow: paint.boxShadow,
-                                      color: paint.color,
-                                      paddingLeft: paint.stripe ? 8 : undefined,
-                                    }}
-                                  >
-                                    {it.title}
-                                  </button>
-                                );
-                              })
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })}
-          </div>
-          </div>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--text-muted)]">
-          <span>
-            <span className="text-[var(--text-secondary)]">← →</span> year, {" "}
-            <span className="text-[var(--text-secondary)]">T</span> today, {" "}
-            <span className="text-[var(--text-secondary)]">1–5</span> change span
-          </span>
-          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="inline-flex items-center gap-1.5">
-              <span
-                aria-hidden="true"
-                className="inline-block w-2 h-2 rounded-full"
-                style={{ background: "var(--accent)" }}
-              />
-              <span>goals</span>
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              <span aria-hidden="true" className="text-[var(--warning)]">◆</span>
-              <span>milestones</span>
-            </span>
-            <BarLegendSwatch hue="var(--success)" label="on track" />
-            <BarLegendSwatch hue="var(--warning)" label="in progress" />
-            <BarLegendSwatch hue="var(--danger)" label="overdue" />
-            <span className="inline-flex items-center gap-1.5">
-              <span
-                aria-hidden="true"
-                className="inline-block h-3 w-4 rounded-[2px] bg-[var(--warning)]"
-              />
-              <span>single day</span>
-            </span>
-          </span>
-        </div>
       </div>
     );
   }
 
-  /* === Quarter view (Issue 4) — week-grain quantization ===
-   * 90 days / 7 = ~13 weeks. The previous code dropped the user into the
-   * same 7-day grid used by the week/month view, which made "3 months"
-   * indistinguishable from "month" except for being scrolled further.
-   * The point of picking 3 months is to see rhythm across weeks, not to
-   * read individual days. So: one row per ISO week (Mon-anchored… matches
-   * the existing week start), a single lane, each item rendered as a bar
-   * that spans the whole 7-column row and is colored by status. The
-   * bar's left/right within the row is its actual day-of-week span.
-   * Hover shows the title; click opens a scoped chat. */
+  // 3-month span → 4 × 4, a week per cell. Same grid; a cell's range is a week instead of a day.
   if (span === "quarter") {
-    const quarterStart = startOfDay(anchor);
-    const quarterEnd = addDays(quarterStart, 90);
-    const rows = [];
-    let cursor = startOfWeek(quarterStart);
-    let i = 0;
-    while (cursor < quarterEnd && i < 16) {
-      const rowEnd = addDays(cursor, 7);
-      const overlaps = allItems.filter((it) => {
-        if (!it) return false;
-        const s = startOfDay(it.start || it.date);
-        const e = startOfDay(it.end || it.date);
-        if (!s || !e || isNaN(s.getTime()) || isNaN(e.getTime())) return false;
-        return e >= cursor && s < rowEnd;
-      });
-      rows.push({ start: cursor, end: addDays(cursor, 6), items: overlaps });
-      cursor = rowEnd;
-      i++;
-    }
-    const rowHeight = 30;
+    const qStart = startOfWeek(startOfDay(anchor));
+    const weekAt = (r, c) => addDays(qStart, (r * QUARTER_COLUMNS + c) * 7);
     return (
-      <div className="space-y-3">
-        <div
-          className="rounded-lg border border-[var(--border-accent)] overflow-hidden"
-          style={{ background: "var(--bg-primary)" }}
-        >
-          <div
-            className="font-medium grid grid-cols-[88px_1fr] text-[12px] text-[var(--text-muted)] border-b border-[var(--border-accent)] bg-[color-mix(in_srgb,var(--bg-secondary)_40%,transparent)]"
-          >
-            <div className="px-2 py-2">Week</div>
-            <div className="px-2 py-2">Items (status-colored bars)</div>
-          </div>
-          <div className="divide-y divide-[var(--border)]">
-            {rows.map((r, ri) => {
-              const wkLabel = `${MONTHS_SHORT[r.start.getMonth()]} ${r.start.getDate()}`;
-              // The week that contains today is tinted + labelled "now", same
-              // signal the month (today) and year (current week) views use.
-              const isTodayRow = today >= r.start && today <= r.end;
-              return (
-                <div
-                  key={ri}
-                  data-testid={`timeline-cal-quarter-row-${ri}`}
-                  data-today={isTodayRow ? "true" : undefined}
-                  className="grid grid-cols-[88px_1fr]"
-                  style={{
-                    minHeight: `${rowHeight}px`,
-                    background: isTodayRow
-                      ? "color-mix(in srgb, var(--accent) 8%, var(--bg-primary))"
-                      : undefined,
-                  }}
-                >
-                  <div
-                    className={`font-medium px-2 py-2 text-[12px] border-r border-[var(--border-accent)] bg-[color-mix(in_srgb,var(--bg-secondary)_30%,transparent)] flex items-center ${
-                      isTodayRow ? "text-[var(--accent)] font-semibold" : "text-[var(--text-muted)]"
-                    }`}
-                  >
-                    {wkLabel}
-                    {isTodayRow && <span className="ml-1.5 text-[10px] font-normal opacity-70">now</span>}
-                  </div>
-                  <div
-                    className="relative px-2 py-1.5"
-                    style={{ minHeight: `${rowHeight}px` }}
-                  >
-                    {/* 7 day-grid guides so the user can read "Mon–Sun". */}
-                    <div className="grid grid-cols-7 h-full pointer-events-none absolute inset-0 px-2">
-                      {Array.from({ length: 7 }).map((_, idx) => (
-                        <div
-                          key={idx}
-                          className={`border-l ${idx === 0 ? "border-transparent" : "border-[var(--border)]"}`}
-                          aria-hidden="true"
-                        />
-                      ))}
-                    </div>
-                    <div className="relative space-y-1">
-                      {r.items.length === 0 ? (
-                        <span className="text-[12px] text-[var(--text-muted)] italic">nothing scheduled</span>
-                      ) : (
-                        r.items.slice(0, 4).map((it) => {
-                          const s = startOfDay(it.start || it.date);
-                          const e = startOfDay(it.end || it.date);
-                          const segStart = s < r.start ? r.start : s;
-                          const segEnd = e > r.end ? r.end : e;
-                          const offset = (segStart.getTime() - r.start.getTime()) / (7 * 86400000);
-                          const width = Math.max(
-                            0.05,
-                            (segEnd.getTime() - segStart.getTime() + 86400000) / (7 * 86400000),
-                          );
-                          const paint = barPaint(it, "var(--bg-primary)");
-                          return (
-                            <button
-                              key={`${it.kind}-${it.id}`}
-                              type="button"
-                              data-testid={`timeline-cal-quarter-bar-${it.kind}-${it.id}`}
-                              onClick={() => onSelectItem?.(it)}
-                              title={it.title}
-                              aria-label={`${it.kind}: ${it.title}`}
-                              className="group block min-h-11 rounded-[3px] text-left text-[12px] px-2 truncate hover:brightness-110 transition-[filter] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
-                              style={{
-                                marginLeft: `${offset * 100}%`,
-                                width: `${width * 100}%`,
-                                background: paint.background,
-                                boxShadow: paint.boxShadow,
-                                color: paint.color,
-                                // Keep the label off the accent stripe.
-                                paddingLeft: paint.stripe ? 10 : undefined,
-                              }}
-                            >
-                              {itemKindGlyph(it.kind)}
-                              {it.title}
-                            </button>
-                          );
-                        })
-                      )}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="text-[12px] text-[var(--text-muted)]">
-            ← → 3 months, T today, 1–5 change span
-          </div>
-          <div className="text-[12px] text-[var(--text-muted)] flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="inline-flex items-center gap-1.5">
-              <span
-                aria-hidden="true"
-                className="inline-block w-2 h-2 rounded-full"
-                style={{ background: "var(--accent)" }}
-              />
-              <span>goals</span>
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              <span aria-hidden="true" className="text-[var(--warning)]">◆</span>
-              <span>milestones</span>
-            </span>
-            <BarLegendSwatch hue="var(--success)" label="on track" />
-            <BarLegendSwatch hue="var(--warning)" label="in progress" />
-            <BarLegendSwatch hue="var(--danger)" label="overdue" />
-            <span className="inline-flex items-center gap-1.5">
-              <span
-                aria-hidden="true"
-                className="inline-block h-3 w-4 rounded-[2px] bg-[var(--warning)]"
-              />
-              <span>single day</span>
-            </span>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  /* === Day view === */
-  if (span === "day") {
-    return (
-      <div className="mx-auto max-w-md">
-        <CardsGrid
-          days={[anchor]}
-          cards={cards || []}
-          onSelectDay={onSelectDay}
+      <div className="space-y-2">
+        {filterBar}
+        <CalendarGrid
+          columns={QUARTER_COLUMNS}
+          rows={QUARTER_WEEK_CELLS / QUARTER_COLUMNS}
+          minCellPx={130}
+          cellRange={(r, c) => {
+            const s = weekAt(r, c);
+            return [s, addDays(s, 7)];
+          }}
+          cellLabel={(r, c) => {
+            const s = weekAt(r, c);
+            return `${s.getDate()} ${MONTHS_SHORT[s.getMonth()]}`;
+          }}
+          cards={[...planTargets.weekly, ...milestoneCards].filter((c) => !c.item.goal_id || selectedGoals.has(c.item.goal_id))}
+          today={today}
           onSelectItem={onSelectItem}
-          minHeight={180}
-          columns={1}
+          onSelectDay={onSelectDay}
+          testId="calendar-quarter-grid"
         />
       </div>
     );
   }
 
-  // Lane height for the week/month grids. Must fit a full tap target:
-  // CalendarTile is min-h-11 (44px) and its grid item carries 2px
-  // vertical padding on each side, so 44 + 4 = 48. At the old 26px the
-  // 44px tiles overflowed the lane and painted over the next week's
-  // day-number row.
-  const baseBarHeight = 48;
-
-  return (
-    <div className="space-y-3">
-      <div
-        className="rounded-lg border border-[var(--border-accent)] overflow-hidden shadow-[0_1px_0_color-mix(in_srgb,var(--accent)_15%,transparent)]"
-        style={{ background: "var(--bg-primary)" }}
-      >
-        <div
-          className="font-medium grid grid-cols-7 text-xs text-[var(--text-muted)] border-b border-[var(--border-accent)] bg-[color-mix(in_srgb,var(--bg-secondary)_40%,transparent)]"
-        >
-          {DOW.map((d, i) => (
-            <div key={d} className="px-2 py-2 text-center select-none">
-              <span className="hidden sm:inline">{DOW[i]}</span>
-              <span className="sm:hidden">{DOW_SHORT[i]}</span>
-            </div>
-          ))}
-        </div>
-
-        <div className="divide-y divide-[var(--border)]">
-          {weeks.map((week, wi) => {
-            const weekTrackInfo = tracksByWeek[wi] || { tracks: [], maxLanes: 1 };
-            const { tracks, maxLanes } = weekTrackInfo;
-            const gridStyle = {
-              gridTemplateColumns: "repeat(7, minmax(0, 1fr))",
-              gridTemplateRows: `auto repeat(${maxLanes}, ${baseBarHeight}px)`,
-            };
-            return (
-              <div key={wi} className="grid relative" style={gridStyle}>
-                {/* Column guides span the FULL row height, including the
-                    tile lanes. Previously only the day-number row (gridRow
-                    1) drew a right border, so the day columns visually
-                    dissolved underneath any spanning tile. */}
-                <div
-                  aria-hidden="true"
-                  className="absolute inset-0 grid grid-cols-7 pointer-events-none"
-                >
-                  {Array.from({ length: 7 }).map((_, ci) => (
-                    <div
-                      key={ci}
-                      className={ci === 6 ? "" : "border-r border-[var(--border-accent)]"}
-                    />
-                  ))}
-                </div>
-                {week.map((cell, ci) => {
-                  if (!cell || !cell.date) {
-                    return (
-                      <div
-                        key={ci}
-
-                        className="relative px-1.5 pt-1 pb-1 min-h-[36px] opacity-70"
-                        style={{ gridColumn: ci + 1, gridRow: 1 }}
-                      />
-                    );
-                  }
-                  const isToday = sameDay(cell.date, today);
-                  const key = fmtIso(cell.date);
-                  const count = (itemsByDay[key] || []).length;
-                  return (
-                    <div
-                      key={ci}
-                      role={onSelectDay ? "button" : undefined}
-                      tabIndex={onSelectDay ? 0 : undefined}
-                      onClick={onSelectDay ? () => onSelectDay(cell.date) : undefined}
-                      onKeyDown={onSelectDay ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelectDay(cell.date); } } : undefined}
-                      aria-label={`${MONTHS_FULL[cell.date.getMonth()]} ${cell.date.getDate()}${isToday ? ", today" : ""}${count ? `, ${count} item${count === 1 ? "" : "s"}` : ""}${onSelectDay ? " — open day planner" : ""}`}
-                      className={[
-                        "relative px-1.5 pt-1 pb-1 min-h-[36px]",
-                        cell.inSpan ? "" : "opacity-70",
-                        onSelectDay ? "cursor-pointer hover:bg-[color-mix(in_srgb,var(--accent)_6%,transparent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--accent)]" : "",
-                        isToday
-                          ? "ring-1 ring-inset ring-[var(--accent)] bg-[color-mix(in_srgb,var(--accent)_8%,var(--bg-primary))]"
-                          : "",
-                      ].join(" ")}
-                      style={{ gridColumn: ci + 1, gridRow: 1 }}
-                    >
-                      <div className="flex items-start justify-between">
-                        <span
-                          className={[
-                            "text-xs tabular-nums leading-none",
-                            isToday ? "font-bold text-[var(--accent)]" : "text-[var(--text-secondary)]",
-                          ].join(" ")}
-                        >
-                          {cell.date.getDate()}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
-
-                {tracks.map((t) => (
-                  <div
-                    key={`${t.item?.kind || "item"}-${t.item?.id || Math.random()}-${wi}`}
-                    style={{
-                      gridColumn: `${t.startCol} / ${t.endCol + 1}`,
-                      gridRow: t.lane + 2,
-                      padding: "2px 4px",
-                      zIndex: 1,
-                    }}
-                  >
-                    {t.item && <CalendarTile item={t.item} today={today} onSelectItem={onSelectItem} />}
-                  </div>
-                ))}
-              </div>
-            );
-          })}
-        </div>
+  // Year span → 3 × 4, a month per cell. Same grid again; only the cell's range changed.
+  if (span === "year") {
+    const y = anchor.getFullYear();
+    return (
+      <div className="space-y-2">
+        {filterBar}
+        <CalendarGrid
+          columns={YEAR_COLUMNS}
+          rows={12 / YEAR_COLUMNS}
+          minCellPx={140}
+          cellRange={(r, c) => {
+            const m = r * YEAR_COLUMNS + c;
+            return [new Date(y, m, 1), new Date(y, m + 1, 1)];
+          }}
+          cellLabel={(r, c) => MONTHS_FULL[r * YEAR_COLUMNS + c]}
+          cards={[...planTargets.monthly, ...milestoneCards].filter(
+            (c) => !c.item.goal_id || selectedGoals.has(c.item.goal_id),
+          )}
+          today={today}
+          onSelectItem={onSelectItem}
+          onSelectDay={onSelectDay}
+          testId="calendar-year-grid"
+        />
       </div>
+    );
+  }
 
-      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--text-muted)]">
-        <span>
-          <span className="text-[var(--text-secondary)]">← →</span> {span === "week" ? "week" : span === "month" ? "month" : "3 months"}, {" "}
-          <span className="text-[var(--text-secondary)]">T</span> today, {" "}
-          <span className="text-[var(--text-secondary)]">1–5</span> change span
-        </span>
-        <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <span className="inline-flex items-center gap-1.5">
-            <span
-              aria-hidden="true"
-              className="inline-block w-2 h-2 rounded-full"
-              style={{ background: "var(--accent)" }}
-            />
-            <span>goals</span>
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span aria-hidden="true" className="text-[var(--warning)]">◆</span>
-            <span>milestones</span>
-          </span>
-          <span>— click a tile for details, then edit with the coach</span>
-        </span>
-      </div>
-    </div>
-  );
 }
 
 function CalendarTile({ item, today, onSelectItem }) {
@@ -3261,8 +3147,11 @@ function CalendarDayItem({ item, today, onSelectItem }) {
   );
 }
 
-export function TimelineItemDetailsDialog({ item, state, onClose, onEdit, onRemove, onToggle, removing = false }) {
+export function TimelineItemDetailsDialog({ item, state, verdicts = {}, onClose, onEdit, onRemove, onToggle, removing = false }) {
   if (!item) return null;
+  // A reminder, an away range or a goal-less appointment is its own small thing, not part of a goal's plan: it is
+  // removed (or its day opened) directly, never "edited with the coach" as if it were a goal.
+  const isStandalone = item.kind === "reminder" || item.kind === "blocker" || (item.kind === "block" && !item.goal_id);
   const goalId = item.kind === "goal" ? item.id : item.goal_id || item.goalId;
   const goal = (state?.goals || []).find((candidate) => candidate.id === goalId)
     || (state?.goals || []).find((candidate) => candidate.title === (item.goal_title || item.goalTitle));
@@ -3277,9 +3166,20 @@ export function TimelineItemDetailsDialog({ item, state, onClose, onEdit, onRemo
     ? [dateLabel(item.start), dateLabel(item.end)].filter(Boolean).join(" – ")
     : item.kind === "blocker"
     ? [dateLabel(item.start), dateLabel(item.end)].filter(Boolean).join(" – ")
-    : dateLabel(item.date || item.target_date || item.due);
+    : [dateLabel(item.date || item.target_date || item.due), item.kind === "reminder" ? item.time : ""].filter(Boolean).join(" · ");
 
   const isTask = item.kind === "task" || item.kind === "plan";
+  // A timed block is the time set aside for a session; the session (task) it was made for carries the
+  // description and its own reason for being on this day.
+  const parentTask = item.kind === "block" && item.source_id
+    ? (state?.plan_items || []).find((p) => p.id === item.source_id) || null
+    : null;
+  const level = item.horizon === "monthly" ? "month" : item.horizon === "weekly" ? "week" : item.kind === "block" ? "slot" : isTask ? "day" : "";
+  const whyRows = [
+    { key: "slot", label: "Why this time", text: item.kind === "block" ? item.why : "" },
+    { key: "session", label: item.kind === "block" ? "Why this session, this day" : level === "day" ? "Why this session" : level === "week" ? "Why this week" : level === "month" ? "Why this month" : "", text: item.kind === "block" ? parentTask?.why : item.why },
+  ].filter((r) => (r.text || "").trim() && r.label);
+  const description = (item.kind === "block" ? parentTask?.description : item.description) || "";
   const done = (item.status || "").toLowerCase() === "done";
   const doneLabel = isTask ? "task" : "item";
   const kindLabel =
@@ -3289,11 +3189,20 @@ export function TimelineItemDetailsDialog({ item, state, onClose, onEdit, onRemo
       ? "Milestone"
       : item.kind === "blocker"
       ? "Blocker"
+      : item.kind === "reminder"
+      ? "Reminder"
+      : item.kind === "block" && !item.goal_id
+      ? "Fixed time"
+      : level === "month"
+      ? "Month"
+      : level === "week"
+      ? "Week"
+      : item.kind === "block"
+      ? "Time slot"
       : isTask
       ? "Task"
       : "Item";
-  const kindGlyph =
-    item.kind === "milestone" ? "◆" : item.kind === "blocker" ? "▲" : "○";
+  const kindGlyph = (KIND_STYLE[item.kind] || KIND_STYLE.task).glyph;
   // The chain is Task → Milestone → Goal. A task fulfils a milestone (the
   // planner's "Fulfils <milestone>" note); the milestone belongs to the goal.
   const fulfilsTitle = isTask
@@ -3318,6 +3227,8 @@ export function TimelineItemDetailsDialog({ item, state, onClose, onEdit, onRemo
       ? "var(--danger)"
       : item.kind === "milestone"
       ? "var(--warning)"
+      : item.kind === "reminder"
+      ? "var(--reminder)"
       : "var(--accent)";
   // The chain rendered top-to-bottom: the item itself, the milestone it
   // fulfils, then the goal it serves.
@@ -3361,7 +3272,7 @@ export function TimelineItemDetailsDialog({ item, state, onClose, onEdit, onRemo
       testId="timeline-item-details"
       footer={
         <>
-          {item.kind === "blocker" && onRemove && (
+          {isStandalone && onRemove && (
             <button
               type="button"
               data-testid="timeline-item-remove"
@@ -3380,6 +3291,7 @@ export function TimelineItemDetailsDialog({ item, state, onClose, onEdit, onRemo
               )}
             </button>
           )}
+          {!isStandalone && (
           <button
             type="button"
             data-testid="timeline-item-edit-with-coach"
@@ -3388,6 +3300,7 @@ export function TimelineItemDetailsDialog({ item, state, onClose, onEdit, onRemo
           >
             <Pencil className="h-4 w-4" aria-hidden="true" /> Edit with coach
           </button>
+          )}
         </>
       }
     >
@@ -3430,7 +3343,7 @@ export function TimelineItemDetailsDialog({ item, state, onClose, onEdit, onRemo
         </ol>
 
         {/* done toggle — logs the item done */}
-        {onToggle && (isTask || item.kind === "milestone") && (
+        {onToggle && ((isTask && level !== "month" && level !== "week") || item.kind === "milestone") && (
           <button
             type="button"
             data-testid="timeline-item-toggle-done"
@@ -3457,17 +3370,34 @@ export function TimelineItemDetailsDialog({ item, state, onClose, onEdit, onRemo
           <p className="text-sm leading-relaxed text-[var(--text-secondary)]">{item.note}</p>
         )}
 
-        {/* goal context — labelled so the raw paragraph isn't a mystery */}
-        {goal?.why && (
-          <section className="space-y-3">
-            <div>
-              <h3 className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]">
-                Why this matters
-              </h3>
-              <p className="mt-1 text-sm leading-relaxed text-[var(--text-secondary)]">{goal.why}</p>
-            </div>
+        {/* The session's own sentence on what it involves. Written by the planner per task, so it is
+            about this sitting — not the goal's paragraph, which said nothing about the task. */}
+        {description.trim() && (
+          <section className="space-y-2">
+            <h3 className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]">
+              What this session involves
+            </h3>
+            <p className="text-sm leading-relaxed text-[var(--text-secondary)]">{description}</p>
           </section>
         )}
+
+        {/* How this month, week or milestone is going: the model's read of code's numbers. */}
+        {verdicts[item.id]?.note && (
+          <section className="space-y-2" data-testid="timeline-item-progress">
+            <h3 className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]">
+              How it's going · <span style={{ color: progressStatus(verdicts[item.id].status).color }}>{progressStatus(verdicts[item.id].status).label}</span>
+            </h3>
+            <p className="text-sm leading-relaxed text-[var(--text-secondary)]">{verdicts[item.id].note}</p>
+          </section>
+        )}
+
+        {/* The planner's reason, one per level it reasoned at, so any block opened in any span says why. */}
+        {whyRows.map((r) => (
+          <section key={r.key} className="space-y-2" data-testid={`timeline-item-why-${r.key}`}>
+            <h3 className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]">{r.label}</h3>
+            <p className="text-sm leading-relaxed text-[var(--text-secondary)]">{r.text}</p>
+          </section>
+        ))}
 
         {item.kind === "goal" && milestones.length > 0 && (
           <section className="space-y-2">

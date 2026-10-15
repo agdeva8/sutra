@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import CenteredDialog from "./CenteredDialog";
+import TimeWheelInput from "./TimeWheelInput";
 import { api } from "../lib/api";
 import { localDateKey } from "../lib/utils";
 
@@ -52,12 +53,27 @@ export default function AddToDayDialog({
   const goals = (state?.goals || []).filter((g) => g.status !== "dropped");
   const timed = kind === "task" && !allDay;
 
-  const valid =
-    what.trim() &&
-    startDate &&
-    (kind === "unavailable" || allDay
-      ? true
-      : start && end && start < end);
+  // Why Add is off, in words: a disabled button with no explanation reads as broken.
+  const invalidReason = !what.trim()
+    ? "Say what it is to add it."
+    : !startDate
+    ? "Pick a date."
+    : kind === "unavailable" && endDate && endDate < startDate
+    ? "The end date can't be before the start date."
+    : timed && !(start && end)
+    ? "Pick a start and an end time."
+    : timed && end <= start
+    ? "The end time must be after the start time."
+    : "";
+  const valid = !invalidReason;
+
+  // Existing blocks that overlap the new one (timed items only). Warns, never blocks: sometimes the
+  // overlap is intended, and the user can still add it.
+  const overlaps = timed && valid
+    ? (state?.timetableBlocks || []).filter(
+        (b) => b.block_date === startDate && String(b.start_time).slice(0, 5) < end && String(b.end_time).slice(0, 5) > start,
+      )
+    : [];
 
   const onStartChange = (value) => {
     setStart(value);
@@ -71,6 +87,7 @@ export default function AddToDayDialog({
   const submit = async () => {
     if (!valid || saving) return;
     setSaving(true);
+    let created = null;
     try {
       if (kind === "unavailable") {
         await api.createBlocker({
@@ -86,7 +103,7 @@ export default function AddToDayDialog({
           goal_id: goalId || null,
         });
       } else {
-        await api.createBlock({
+        created = await api.createBlock({
           block_date: startDate,
           start_time: start,
           end_time: end,
@@ -103,7 +120,13 @@ export default function AddToDayDialog({
           ? "Added a task"
           : "Added a time block",
       );
-      onCreated?.();
+      // The server already returned the new block: add it to the board in place instead of re-reading
+      // the whole state (~50KB) after every write. Anything else still refreshes.
+      if (created && created.id && Array.isArray(state?.timetableBlocks)) {
+        onCreated?.((prev) => ({ ...prev, timetableBlocks: [...(prev?.timetableBlocks || []), created] }));
+      } else {
+        onCreated?.();
+      }
       onClose?.();
     } catch (e) {
       console.error("Failed to add to day", e);
@@ -147,7 +170,7 @@ export default function AddToDayDialog({
             disabled={!valid || saving}
             className="min-h-11 rounded-xl bg-[var(--accent)] px-4 text-xs font-semibold text-[var(--bg-primary)] hover:opacity-90 transition-opacity disabled:opacity-50"
           >
-            {saving ? "Adding…" : "Add"}
+            {saving ? "Adding…" : overlaps.length > 0 ? "Add anyway" : "Add"}
           </button>
         </>
       }
@@ -262,25 +285,25 @@ export default function AddToDayDialog({
               />
               {timed && (
                 <div className="grid grid-cols-2 gap-2">
-                  <input
-                    type="time"
-                    aria-label="Start time"
-                    value={start}
-                    onChange={(e) => onStartChange(e.target.value)}
-                    className={field}
-                  />
-                  <input
-                    type="time"
-                    aria-label="End time"
-                    value={end}
-                    onChange={(e) => setEnd(e.target.value)}
-                    className={field}
-                  />
+                  <TimeWheelInput aria-label="Start time" value={start} onChange={onStartChange} className={field} />
+                  <TimeWheelInput aria-label="End time" value={end} onChange={setEnd} className={field} />
                 </div>
               )}
             </div>
           )}
         </div>
+
+        {(invalidReason && (what.trim() || timed)) && (
+          <p role="status" data-testid="add-to-day-reason" className="text-xs text-[var(--text-muted)]">
+            {invalidReason}
+          </p>
+        )}
+        {overlaps.length > 0 && (
+          <p role="alert" data-testid="add-to-day-conflict" className="text-xs text-[var(--warning)]">
+            Overlaps {overlaps.slice(0, 2).map((b) => `"${b.label}" (${String(b.start_time).slice(0, 5)}-${String(b.end_time).slice(0, 5)})`).join(" and ")}
+            {overlaps.length > 2 ? ` and ${overlaps.length - 2} more` : ""}. You can still add it.
+          </p>
+        )}
 
         {kind === "task" && (
           <div>

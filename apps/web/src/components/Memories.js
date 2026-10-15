@@ -424,6 +424,8 @@ export default function Memories({ state, onChange }) {
 }
 
 function MemoryCard({ memory, isPhoto, onOpen, onDelete }) {
+  // A photo whose file can't be fetched (404/503 from storage) used to leave a blank square.
+  const [imgFailed, setImgFailed] = useState(false)
   const downloadUrl = isPhoto ? `${API}/sources/${memory.source_id}/download` : null;
   return (
     <div
@@ -431,7 +433,12 @@ function MemoryCard({ memory, isPhoto, onOpen, onDelete }) {
       className="border border-[var(--border)] bg-[color-mix(in_srgb,var(--bg-secondary)_60%,transparent)] rounded-lg overflow-hidden group"
     >
       <div className="aspect-square bg-[var(--bg-tertiary)] relative overflow-hidden">
-        {memory.kind === "photo" && memory.source_id ? (
+        {memory.kind === "photo" && memory.source_id && imgFailed ? (
+          <div role="img" aria-label="Photo unavailable" className="w-full h-full flex flex-col items-center justify-center gap-1 p-2 text-center text-[var(--text-muted)]">
+            <ImageIcon className="w-8 h-8" aria-hidden="true" />
+            <span className="text-[11px]">Photo unavailable</span>
+          </div>
+        ) : memory.kind === "photo" && memory.source_id ? (
           <button
             type="button"
             data-testid={`memory-photo-${memory.id}`}
@@ -442,6 +449,7 @@ function MemoryCard({ memory, isPhoto, onOpen, onDelete }) {
             <img
               src={`${API}/sources/${memory.source_id}/download`}
               alt={memory.caption || "Memory"}
+              onError={() => setImgFailed(true)}
               className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]"
               loading="lazy"
             />

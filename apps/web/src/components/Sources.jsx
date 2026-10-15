@@ -477,6 +477,42 @@ function SourceActions({ source, isFile, isLink, downloadUrl, onView, onDelete, 
  * (matching the rest of the app's dialog conventions).
  */
 function SourceViewerDialog({ source, onClose }) {
+  // "loading" | "ok" | "error": probe the download first so a missing file shows a message
+  // instead of a blank iframe (the server answers 404 for a gone file, 503 when storage is down).
+  const [loadState, setLoadState] = useState("loading");
+  const [loadError, setLoadError] = useState("");
+  const probeUrl = source && source.kind === "file" ? `${API}/sources/${source.id}/download` : null;
+  useEffect(() => {
+    if (!probeUrl) {
+      setLoadState("ok");
+      return undefined;
+    }
+    let cancelled = false;
+    setLoadState("loading");
+    fetch(probeUrl, { credentials: "include", method: "GET" })
+      .then((res) => {
+        if (cancelled) return;
+        if (res.ok) {
+          setLoadState("ok");
+          return;
+        }
+        setLoadError(
+          res.status === 404
+            ? "This file is no longer available. Try uploading it again."
+            : "Couldn't load the file right now. Please try again in a moment."
+        );
+        setLoadState("error");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLoadError("Couldn't reach the server. Check your connection and try again.");
+        setLoadState("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [probeUrl]);
+
   useEffect(() => {
     if (!source) return undefined;
     const onKey = (e) => {
@@ -556,12 +592,31 @@ function SourceViewerDialog({ source, onClose }) {
 
       {/* Body — iframe works for images, PDFs, and text-based files.
           max-h keeps it inside the viewport so the chrome stays visible. */}
-      <iframe
-        title={`Preview: ${name}`}
-        src={url}
-        className="flex-1 w-full bg-white rounded shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      />
+      {loadState === "error" ? (
+        <div
+          role="alert"
+          data-testid="source-viewer-error"
+          onClick={(e) => e.stopPropagation()}
+          className="flex-1 w-full flex items-center justify-center rounded bg-black/60 p-6 text-center text-sm text-white/90"
+        >
+          {loadError}
+        </div>
+      ) : loadState === "loading" ? (
+        <div
+          role="status"
+          data-testid="source-viewer-loading"
+          className="flex-1 w-full flex items-center justify-center text-sm text-white/70"
+        >
+          Loading…
+        </div>
+      ) : (
+        <iframe
+          title={`Preview: ${name}`}
+          src={url}
+          className="flex-1 w-full bg-white rounded shadow-2xl"
+          onClick={(e) => e.stopPropagation()}
+        />
+      )}
     </div>
   );
 }

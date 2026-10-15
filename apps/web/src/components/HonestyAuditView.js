@@ -21,11 +21,13 @@ function fmt(iso) {
 export default function HonestyAuditView({ open, onClose }) {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setLoading(true);
-    api.audit().then(setEvents).catch(() => setEvents([])).finally(() => setLoading(false));
+    setFailed(false);
+    api.audit().then(setEvents).catch(() => { setEvents([]); setFailed(true); }).finally(() => setLoading(false));
   }, [open]);
 
   return (
@@ -67,7 +69,12 @@ export default function HonestyAuditView({ open, onClose }) {
             ))}
           </div>
         )}
-        {!loading && events.length === 0 && (
+        {!loading && failed && (
+          <p role="alert" className="text-xs text-[var(--danger)] leading-relaxed">
+            Couldn't load the audit log. Close this and try again.
+          </p>
+        )}
+        {!loading && !failed && events.length === 0 && (
           <p className="text-xs text-[var(--text-muted)] leading-relaxed">
             Nothing recorded yet. Every time you confirm or reject a proposed change, it's logged here —
             so you can verify the coach has been honest with you, not just trust that it was.

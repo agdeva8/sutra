@@ -19,3 +19,16 @@ export const formatMegabytes = (bytes) => `${Math.round(bytes / (1024 * 1024))} 
 export function uploadSizeProblem(file) {
   return file && file.size > MAX_UPLOAD_BYTES ? `Too big — the limit is ${formatMegabytes(MAX_UPLOAD_BYTES)}.` : "";
 }
+
+/**
+ * An error sentence if `file` cannot be attached at all, else "".
+ *
+ * `attached` is how many the surface is already holding, so the count is judged here rather than by
+ * each caller — the limit is the same one the server enforces, and it is stated in one place.
+ */
+export function uploadProblem(file, attached = 0) {
+  if (attached >= MAX_ATTACHMENTS_PER_NOTE) {
+    return `That's the most one note can hold (${MAX_ATTACHMENTS_PER_NOTE}). Send it, then add more in another note.`;
+  }
+  return uploadSizeProblem(file);
+}

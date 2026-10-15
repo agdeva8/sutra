@@ -50,7 +50,7 @@ export default function Today({ state, onChange, onOpenChat }) {
           What's on the docket?
         </h2>
         <p className="text-sm text-[var(--text-secondary)] leading-relaxed">
-          Tick items as you finish them, or ask the coach to renegotiate / break one down. When you want to talk about the day as a whole, use the box at the bottom — that goes straight to the chat.
+          Tick off tasks as you finish them (fixed commitments, like classes or meetings, don't have a tick), or ask the coach to renegotiate / break one down. When you want to talk about the day as a whole, use the box at the bottom — that goes straight to the chat.
         </p>
       </header>
 

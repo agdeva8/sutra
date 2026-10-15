@@ -44,7 +44,7 @@ export default function CopyButton({ text, className = "" }) {
       onClick={copy}
       title={copied ? "Copied" : "Copy message"}
       aria-label={copied ? "Copied" : "Copy message"}
-      className={`h-7 w-7 inline-flex items-center justify-center rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[color-mix(in_srgb,var(--text-primary)_8%,transparent)] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] ${className}`}
+      className={`h-11 w-11 -m-2 inline-flex items-center justify-center rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[color-mix(in_srgb,var(--text-primary)_8%,transparent)] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] ${className}`}
     >
       {copied ? (
         <Check className="w-3.5 h-3.5 text-[var(--success)]" aria-hidden="true" />

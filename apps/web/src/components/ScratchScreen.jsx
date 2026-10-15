@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { api } from "../lib/api";
 import Scratch from "./Scratch";
+import { takePrefetchedScratch } from "../lib/prefetch";
 
 /**
  * ScratchScreen — the Scratch page as a Coach panel, wired to `/api/scratch`.
@@ -24,16 +25,29 @@ const READING = "Reading…";
 const KIND_BODY = { image: "Photo", audio: "Voice note", file: "File" };
 
 const hhmm = (iso) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+const sameDay = (a, b) => a.toDateString() === b.toDateString();
+/** "14:05" for today, "12 Oct 14:05" otherwise, so a list spanning days stays readable. */
+const stamp = (iso) => {
+  const d = new Date(iso);
+  return sameDay(d, new Date())
+    ? hhmm(iso)
+    : `${d.toLocaleDateString([], { day: "numeric", month: "short" })} ${hhmm(iso)}`;
+};
+const OPTIMISTIC_PREFIX = "pending_";
 
 export default function ScratchScreen() {
   const [data, setData] = useState({ waiting: [], handled: [] });
   // What the agent is saying about each entry being filed right now, by entry id.
   const [live, setLive] = useState({});
   const filing = useRef(new Set());
+  // Notes shown the instant Send is pressed, before the server has answered; replaced by the real row.
+  const [optimistic, setOptimistic] = useState([]);
+  // Entries whose answer is on its way to the agent (blocks a second send, shows a status line).
+  const [answering, setAnswering] = useState({});
 
   const load = useCallback(async () => {
     try {
-      setData(await api.scratch());
+      setData(await (takePrefetchedScratch() || api.scratch()));
     } catch {
       // A failed refresh keeps what is on screen; the next poll tries again.
     }
@@ -81,18 +95,16 @@ export default function ScratchScreen() {
 
   // Write the entry, show it at once as "reading…", then file it in the background of the screen.
   const write = async (body) => {
-    const row = await api.createScratch(body);
-    setData((d) => ({ ...d, waiting: [row, ...d.waiting.filter((e) => e.id !== row.id)] }));
-    file(row.id);
-    return row;
-  };
-
-  const capture = async (body) => {
-    if (body.kind === "audio" && !body.body) {
-      toast.message("Couldn't hear anything. Try again.");
-      return;
+    const tempId = `${OPTIMISTIC_PREFIX}${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    setOptimistic((o) => [{ id: tempId, kind: body.kind, body: body.body || "", status: "pending", created_at: new Date().toISOString() }, ...o]);
+    try {
+      const row = await api.createScratch(body);
+      setData((d) => ({ ...d, waiting: [row, ...d.waiting.filter((e) => e.id !== row.id)] }));
+      file(row.id);
+      return row;
+    } finally {
+      setOptimistic((o) => o.filter((e) => e.id !== tempId));
     }
-    await write(body);
   };
 
   // A note with attachments: the text rides on the first one, the rest are filed as their own entries.
@@ -111,18 +123,26 @@ export default function ScratchScreen() {
     }
   };
 
-  const upload = async (file) => api.uploadSource(file, "", { temporary: true });
+  const upload = async (file, onProgress) => api.uploadSource(file, "", { temporary: true, onProgress });
   const addLink = async (url, excerpt) => api.addLink({ url, temporary: true, ...(excerpt ? { text: excerpt } : {}) });
 
   // The answer goes into a chat scoped to this entry: the agent either asks its next question (shown on
   // the row) or settles what the note means and files it.
   const answer = async (id, reply) => {
+    const text = (reply || "").trim();
+    if (!text || answering[id]) return; // empty or whitespace is never sent, and neither is a second send
+    setAnswering((a) => ({ ...a, [id]: true }));
     try {
-      await api.chatScratch(id, reply);
+      const res = await api.chatScratch(id, text);
+      await load();
+      // The agent settled what the note means: file it now, streaming progress onto the row.
+      if (res?.resolved) file(id);
     } catch (e) {
       toast.error(typeof e?.message === "string" ? e.message : "Couldn't send that. Try again.");
+      await load();
+    } finally {
+      setAnswering(({ [id]: _done, ...rest }) => rest);
     }
-    await load();
   };
 
   const undo = async (id) => {
@@ -135,11 +155,22 @@ export default function ScratchScreen() {
     await load();
   };
 
+  // "Dismiss" on a proposal: nothing was changed, so there is nothing to undo; the entry just goes away.
+  const dismiss = async (id) => {
+    try {
+      await api.dismissScratch(id);
+    } catch (e) {
+      toast.error(typeof e?.message === "string" ? e.message : "Couldn't dismiss that.");
+    }
+    await load();
+  };
+
   const toWaiting = (e) => {
     const working = IN_FLIGHT.includes(e.status);
     return {
       id: e.id,
-      time: hhmm(e.created_at),
+      answering: Boolean(answering[e.id]),
+      time: stamp(e.created_at),
       body: e.body || KIND_BODY[e.kind] || "Entry",
       state: e.status === "pending" ? "processing" : e.status,
       stateLabel: working ? live[e.id] || READING : e.status === "needs_input" ? e.question : e.error,
@@ -149,7 +180,8 @@ export default function ScratchScreen() {
 
   const toHandled = (e) => ({
     id: e.id,
-    time: hhmm(e.handled_at || e.created_at),
+    time: stamp(e.handled_at || e.created_at),
+    undoable: e.undoable !== false,
     origin: e.body ? `“${e.body}”` : KIND_BODY[e.kind] || "Entry",
     kind: (e.result?.bucket || "filed").replace(/\+/g, " + "),
     lines: e.result?.lines || [],
@@ -159,18 +191,23 @@ export default function ScratchScreen() {
   return (
     <Scratch
       className={HOST_HEIGHT}
-      inbox={data.waiting.map(toWaiting)}
+      inbox={[...optimistic, ...data.waiting].map(toWaiting)}
       handled={data.handled.map(toHandled)}
-      onCapture={capture}
       onSend={send}
       onUpload={upload}
       onAddLink={addLink}
       onAnswer={answer}
       onRetry={async (id) => {
-        await api.retryScratch(id);
-        await load();
+        try {
+          await api.retryScratch(id);
+          await load();
+          file(id);
+        } catch (e) {
+          toast.error(typeof e?.message === "string" ? e.message : "Couldn't retry that.");
+        }
       }}
       onUndo={undo}
+      onDismiss={dismiss}
       onAccept={() => toast.message("Reviewing proposals isn't wired up yet.")}
     />
   );

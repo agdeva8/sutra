@@ -104,7 +104,25 @@ export function HourGrid({ days, blocks, cards, onSelectItem, onSelectSlot, toda
                       <button
                         key={b.id}
                         type="button"
-                        onClick={(e) => e.stopPropagation()}
+                        data-testid={`hour-block-${b.id}`}
+                        // Opens the block's own detail, the same as any other item. It used to swallow the
+                        // click and do nothing, so a block was the one thing on the calendar you could not
+                        // inspect. `stopPropagation` still keeps the empty-slot handler from firing too.
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSelectItem?.({
+                            id: b.id,
+                            kind: "block",
+                            title: b.label,
+                            date: b.block_date,
+                            start_date: b.block_date,
+                            end_date: b.block_date,
+                            goal_id: b.goal_id,
+                            goalTitle: b.goal_title,
+                            goal_title: b.goal_title,
+                            status: b.kind,
+                          });
+                        }}
                         style={{ top, height, ...(b.color ? { backgroundColor: b.color, color: '#111827', borderLeft: '3px solid ' + (b.borderColor || b.color) } : {}) }}
                         className="absolute inset-x-0.5 overflow-hidden rounded bg-[color-mix(in_srgb,var(--accent)_22%,var(--bg-primary))] px-1 text-left text-[10px] text-[var(--text-primary)]"
                       >

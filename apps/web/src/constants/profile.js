@@ -18,3 +18,6 @@ export const DEFAULT_WORK_DAYS = ["mon", "tue", "wed", "thu", "fri"];
 /** Weekly hours for goals, as tap targets. "Other" opens a number field. */
 export const WEEKLY_HOURS_CHOICES = [3, 5, 8, 12, 20];
 export const MAX_WEEKLY_GOAL_HOURS = 112;
+
+/** The shortest waking day accepted. Mirrors the server's MIN_AWAKE_HOURS (agentv2/config.py). */
+export const MIN_AWAKE_HOURS = 10;

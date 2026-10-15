@@ -32,9 +32,12 @@ export function CalendarCard({ card, onClick }) {
       className="w-full text-left rounded px-1.5 py-1 transition-[filter] hover:brightness-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--accent)]"
       style={{
         borderLeft: `3px solid ${card.color}`,
-        // Very light wash of the goal colour (theme-aware: mixes toward the
-        // page background so it stays subtle in both light and dark).
-        background: `color-mix(in srgb, ${card.color} 13%, var(--bg-primary))`,
+        // Very light wash of the card's colour (theme-aware: mixes toward the page background so it stays
+        // subtle in both light and dark). Time that is taken away is hatched instead, so it never reads as work.
+        background:
+          card.look === "stripes"
+            ? `repeating-linear-gradient(135deg, color-mix(in srgb, ${card.color} 24%, var(--bg-primary)) 0 6px, color-mix(in srgb, ${card.color} 10%, var(--bg-primary)) 6px 12px)`
+            : `color-mix(in srgb, ${card.color} 13%, var(--bg-primary))`,
       }}
     >
       <div className={`truncate text-[11px] leading-tight ${card.status === "done" ? "line-through text-[var(--text-muted)]" : "text-[var(--text-primary)]"}`}>

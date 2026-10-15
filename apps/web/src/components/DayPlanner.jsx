@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect } from "react";
 import { X, Plus, AlertOctagon, CheckCircle2, Circle, Milestone, Clock } from "lucide-react";
 import CenteredDialog from "./CenteredDialog";
 import AutoTextarea from "./AutoTextarea";
+import TimeWheelInput from "./TimeWheelInput";
 import AddToDayDialog from "./AddToDayDialog";
 import { api } from "../lib/api";
 
@@ -193,11 +194,14 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, e
               type="button"
               data-testid={`detail-block-${b.id}`}
               onClick={() => openEditBlock(b)}
-              className="w-full flex items-center gap-2.5 text-[13px] rounded-xl bg-[var(--bg-tertiary)] px-3 py-2.5 text-left hover:bg-[color-mix(in_srgb,var(--accent)_10%,var(--bg-tertiary))] transition-colors"
+              className="w-full flex items-start gap-2.5 text-[13px] rounded-xl bg-[var(--bg-tertiary)] px-3 py-2.5 text-left hover:bg-[color-mix(in_srgb,var(--accent)_10%,var(--bg-tertiary))] transition-colors"
             >
               <Clock className="w-4 h-4 shrink-0 text-[var(--accent)]" />
               <span className="tabular-nums text-[12px] text-[var(--text-muted)] shrink-0">{b.start_time}–{b.end_time}</span>
-              <span className="truncate flex-1 text-[var(--text-primary)]">{b.label}</span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[var(--text-primary)]">{b.label}</span>
+                {b.why && <span className="mt-0.5 block text-[11px] leading-snug text-[var(--text-muted)]" data-testid={`detail-block-why-${b.id}`}>{b.why}</span>}
+              </span>
               <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] shrink-0">{b.kind}</span>
             </button>
           ))}
@@ -299,11 +303,11 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, e
           <div className="grid grid-cols-2 gap-2">
             <div>
               <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)] mb-1">Start *</label>
-              <input data-testid="block-start-input" type="time" value={blockStart} onChange={(e) => setBlockStart(e.target.value)} className="w-full px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--bg-primary)] text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] transition-colors" />
+              <TimeWheelInput data-testid="block-start-input" value={blockStart} onChange={setBlockStart} className="w-full px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--bg-primary)] text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] transition-colors" />
             </div>
             <div>
               <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)] mb-1">End *</label>
-              <input data-testid="block-end-input" type="time" value={blockEnd} onChange={(e) => setBlockEnd(e.target.value)} className="w-full px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--bg-primary)] text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] transition-colors" />
+              <TimeWheelInput data-testid="block-end-input" value={blockEnd} onChange={setBlockEnd} className="w-full px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--bg-primary)] text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] transition-colors" />
             </div>
           </div>
           <div>

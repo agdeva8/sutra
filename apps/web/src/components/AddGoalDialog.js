@@ -134,8 +134,6 @@ export default function AddGoalDialog({
   onDeleteSource,
   onGoalConfirmed,
   registerCloser = null,
-  // The first goal is not optional: while required, the dialog cannot be closed until a plan is confirmed.
-  required = false,
 }) {
   // Dialog-internal chat state — completely isolated from the parent.
   const [messages, setMessages] = useState([]);
@@ -544,7 +542,6 @@ export default function AddGoalDialog({
   // handler always calls this — it doesn't need to know the current
   // step.
   const handleStepBack = () => {
-    if (required && !planConfirmed) return;
     if (step === "chat" && activeCategory) {
       goBackToTiles();
     } else {
@@ -634,45 +631,46 @@ export default function AddGoalDialog({
     setSending(true);
     setFinalStatus(CONFIRM_STATUS.saving(0, pending.length));
     try {
-      // Create the goal first, then confirm its dependent milestones so the
-      // resolver can attach them to the new goal.
+      // One batched, transactional call: the server applies the goal first, then its milestones, and
+      // either all of them land or none do (it used to be one request per item, ~7 x 6s).
       const ordered = [...pending].sort((a, b) =>
         Number(b.action === "create_goal") - Number(a.action === "create_goal"),
       );
-      for (const proposal of ordered) {
-        setBusyProposal(proposal.id);
-        setFinalStatus(CONFIRM_STATUS.saving(confirmedIds.length, ordered.length));
-        const resp = await api.confirm(messageId, proposal.id);
-        freshState = resp?.state || freshState;
-        confirmedIds.push(proposal.id);
-        // Finalized: the goal exists now, so drop the resumable draft.
-        // Without this, reopening Add Goal replays the old transcript and
-        // wrongly offers "You have an unfinished plan from earlier."
-        if (proposal.action === "create_goal") clearDraftBucket("add_goal");
-        setMessages((prev) =>
-          prev.map((message) =>
-            message.id !== messageId
-              ? message
-              : {
-                  ...message,
-                  proposals: message.proposals.map((item) =>
-                    item.id === proposal.id ? { ...item, status: "confirmed" } : item,
-                  ),
-                },
-          ),
-        );
-      }
+      setBusyProposal(ordered[0].id);
+      const resp = await api.confirmBatch(messageId, ordered.map((p) => p.id));
+      freshState = resp?.state || freshState;
+      confirmedIds.push(...ordered.map((p) => p.id));
+      // Finalized: the goal exists now, so drop the resumable draft.
+      // Without this, reopening Add Goal replays the old transcript and
+      // wrongly offers "You have an unfinished plan from earlier."
+      if (ordered.some((p) => p.action === "create_goal")) clearDraftBucket("add_goal");
+      const confirmedSet = new Set(confirmedIds);
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.id !== messageId
+            ? message
+            : {
+                ...message,
+                proposals: message.proposals.map((item) =>
+                  confirmedSet.has(item.id) ? { ...item, status: "confirmed" } : item,
+                ),
+              },
+        ),
+      );
 
       const createdProposal = plan.find((proposal) => proposal.action === "create_goal");
       const createdGoalTitle = createdProposal?.args?.title || "your new goal";
       const createdGoalId = freshState?.goals?.find(
         (goal) => goal.title === createdGoalTitle && goal.status === "active",
       )?.id;
+      // The goal exists now: show it on the board at once. Its card then says what the coach is doing (below)
+      // instead of the goal appearing only when everything is finished.
+      onGoalConfirmed?.(freshState);
       // Place the goal's weeks on the calendar. The goal already exists, so a failure here is a retry, not a loss.
       if (createdGoalId) {
         setFinalStatus(CONFIRM_STATUS.placing);
         try {
-          const planned = await api.planGoal(createdGoalId, setFinalStatus);
+          const planned = await api.planGoal(createdGoalId, setFinalStatus, createdGoalTitle);
           freshState = planned?.state || freshState;
         } catch {
           toast.error("The goal is created, but its schedule couldn't be built yet. Try replanning from the goal.");
@@ -691,11 +689,11 @@ export default function AddGoalDialog({
       ]);
       setPlanConfirmed(true);
       setFinalStatus(CONFIRM_STATUS.done(createdGoalTitle));
-      onGoalConfirmed?.(proposalId);
+      onGoalConfirmed?.(freshState);
       setTimeout(() => onClose?.(), CLOSE_AFTER_CONFIRM_MS);
     } catch (e) {
       setFinalStatus("");
-      if (confirmedIds.length > 0) onGoalConfirmed?.(proposalId);
+      if (confirmedIds.length > 0) onGoalConfirmed?.(freshState);
       toast.error(typeof e?.message === "string" ? e.message : "Couldn't confirm the full plan. Retry to finish it.");
     } finally {
       setSending(false);
@@ -784,10 +782,12 @@ export default function AddGoalDialog({
       lines.push(...refinements);
     }
     if (rejections.length) {
-      lines.push("Drop or rework these:");
+      lines.push("Remove these entirely and do NOT replace or re-plan them:");
       lines.push(...rejections);
     }
-    return `Re-propose the plan applying ALL of these changes at once. Return the full goal + milestones again with the changes applied.\n\n${lines.join("\n")}`;
+    const goalTitle = ps.find((p) => p.action === "create_goal")?.args?.title;
+    const keepTitle = goalTitle ? ` Keep the goal title exactly "${goalTitle}" and do not add milestones that were not already proposed.` : "";
+    return `Re-propose the plan applying ALL of these changes at once. Return the full goal + milestones again with the changes applied.${keepTitle}\n\n${lines.join("\n")}`;
   };
 
   const onOpenRefine = (proposal) => {
@@ -844,9 +844,10 @@ export default function AddGoalDialog({
     if (!messageId) {
       throw new Error("Couldn't find the original proposal to reject.");
     }
+    // A rejection removes the card and nothing else. It used to ask the coach to "drop or rework" it,
+    // which re-planned the whole goal (5 changes became 7, and the title drifted between drafts). The
+    // remaining cards are confirmed as they are; a refinement is the way to ask for a rework.
     await reject(messageId, rejectingProposal.id, reason);
-    const msg = buildChangeMessage({ id: rejectingProposal.id, field: "rejection", value: reason });
-    if (msg) sendRef.current?.(msg, { showUser: false });
   };
 
   const clearChat = async () => {
@@ -881,8 +882,9 @@ export default function AddGoalDialog({
       // refined XOR rejected, so count both (founder feedback: rejecting
       // alone never changed the pinned footer).
       const refined = proposals.filter((p) => p.refinement);
-      const rejectedRefs = proposals.filter((p) => p.status === "rejected");
-      const changedCount = refined.length + rejectedRefs.length;
+      // Only refinements re-plan. A rejection just removes its card, so it does not count here and the
+      // footer stays on "Confirm" for what is left.
+      const changedCount = refined.length;
       if (changedCount > 0) {
         return {
           messageId: m.id,
@@ -994,7 +996,10 @@ export default function AddGoalDialog({
       }
       maxWidth="max-w-3xl"
       testId="add-goal-dialog"
-      dismissible={!required || planConfirmed}
+      // Always closable. This dialog is the first step of the guide, but it must never be a trap: a
+      // guest has to be able to reach sign-in, and anyone may want to look around first. The empty
+      // state's "Add your first goal" opens it again, so closing it costs nothing.
+      dismissible
       // On mobile the dialog morphs:
       //   step 1 (tiles) — half-height sheet pinned to bottom
       //   step 2 (chat)  — full-height sheet so the composer gets the

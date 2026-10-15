@@ -1,3 +1,7 @@
+import { STATE_STALE_EVENT } from "../lib/api";
+import { syncDisplayPrefs } from "../lib/displayPrefs";
+import { prefetchScratch } from "../lib/prefetch";
+import { ENABLE_DEV_TOOLS } from "../constants/features";
 import { useEffect, useState, useCallback, useRef, lazy, Suspense } from "react";
 import { toast } from "sonner";
 import { MessageSquare, Plus, Sparkles, ChevronLeft } from "lucide-react";
@@ -6,6 +10,7 @@ import { useAuth } from "../context/AuthContext";
 import { api } from "../lib/api";
 import {
   DESKTOP_SCREENS,
+  LANDING_SCREEN,
   MOBILE_MAX_WIDTH_PX,
   SCREEN_BY_KEY,
   mobileLandingKey,
@@ -85,15 +90,15 @@ import { CalendarSyncPrompt } from "../components/CalendarSync";
  * Keep it small and explicit; add a target here AND to the SYSTEM_PROMPT's
  * allowed `navigate` targets when you add a surface.
  *
- * The goal targets point at `home` because Overview is where goals are read
- * and edited now (the Goal tab's list moved there). `timeline` points at
- * `plan`: the Timeline tab's calendar is Plan's Calendar view.
+ * The goal targets point at `state` (the Goal tab), which is the landing screen and the one that
+ * reads and edits goals. `timeline` points at `plan`: the Timeline tab's calendar is Plan's Calendar
+ * view.
  */
 const NAV_TARGETS = {
-  add_goal: { panel: "home", openAddGoal: true },
-  drop_goal: { panel: "home" },
-  pause_goal: { panel: "home" },
-  edit_goal: { panel: "home" },
+  add_goal: { panel: "state", openAddGoal: true },
+  drop_goal: { panel: "state" },
+  pause_goal: { panel: "state" },
+  edit_goal: { panel: "state" },
   today: { panel: "today" },
   timeline: { panel: "plan" },
   sources: { panel: "sources" },
@@ -198,6 +203,8 @@ export default function Coach() {
   // disabled (they stay hidden). The shared flag prevents every
   // component from probing on its own.
   useEffect(() => {
+    // Production builds never probe: the route 404s there, so the request was pure waste on every load.
+    if (!ENABLE_DEV_TOOLS) return undefined
     let cancelled = false
     import("../lib/api").then(({ API }) => {
       fetch(`${API}/auth/dev-login?probe=1`, {
@@ -216,9 +223,29 @@ export default function Coach() {
     }
   }, [])
 
-  const refreshState = useCallback(async () => {
+  // Monotonic ticket: a slow GET /state that was started before a write must not land after (and
+  // overwrite) the fresher state that write returned.
+  const stateTicketRef = useRef(0);
+  const refreshState = useCallback(async (fresh) => {
+    // A function is a local patch of the board (the write already returned what changed), so the screen
+    // updates in place without re-reading the whole state.
+    if (typeof fresh === "function") {
+      stateTicketRef.current += 1;
+      setState((prev) => (prev ? fresh(prev) : prev));
+      return null;
+    }
+    // Callers that already hold the server's fresh board (confirm / plan responses) pass it in, so the
+    // screens update at once instead of waiting for, or racing, another round trip.
+    if (fresh && Array.isArray(fresh.goals)) {
+      stateTicketRef.current += 1;
+      setState(fresh);
+      setStateError(null);
+      return fresh;
+    }
+    const ticket = ++stateTicketRef.current;
     try {
       const next = await api.state();
+      if (ticket !== stateTicketRef.current) return next;
       setState(next);
       setStateError(null);
       return next;
@@ -231,8 +258,22 @@ export default function Coach() {
     }
   }, []);
 
+  // A calendar write's follow-up replan finished: the board may have moved, so read it again.
+  useEffect(() => {
+    const onStale = () => refreshState();
+    window.addEventListener(STATE_STALE_EVENT, onStale);
+    return () => window.removeEventListener(STATE_STALE_EVENT, onStale);
+  }, [refreshState]);
+
   useEffect(() => {
     if (loading || !user) return;
+    syncDisplayPrefs();
+    // Start the Scratch list at the same moment as the board when that is the screen being opened, so
+    // the two requests overlap instead of queueing behind each other.
+    if (new URLSearchParams(window.location.search).get("panel") === "scratch") {
+      prefetchScratch();
+      import("../components/ScratchScreen");
+    }
     refreshState();
   }, [loading, user, refreshState]);
 
@@ -499,7 +540,8 @@ export default function Coach() {
     const goals = (state.goals || []).filter((g) => g.status !== "dropped");
     // No goals: every width goes to the Goal screen, whose empty state and
     // auto-opened dialog walk the user through adding one. With goals, only
-    // the phone changes its landing (to Scratch); desktop keeps Overview.
+    // the phone changes its landing (to Scratch); desktop lands on Goal, which
+    // is the landing screen.
     if (!isPhone && goals.length > 0) return;
     setSearchParams(searchForScreen(mobileLandingKey(goals.length)), { replace: true });
   }, [state, searchParams, setSearchParams]);
@@ -559,11 +601,11 @@ export default function Coach() {
   const canGoBack =
     isAnyDialogOpen ||
     location.key !== "default" ||
-    panelView !== "home";
+    panelView !== LANDING_SCREEN;
   const goBack = () => {
     if (closeTopmostDialog()) return;
     if (location.key !== "default") navigate(-1);
-    else goPanel("home");
+    else goPanel(LANDING_SCREEN);
   };
 
   // "Take me there" — close the chat and route to the surface a `navigate`
@@ -655,6 +697,11 @@ export default function Coach() {
           {/* Desktop — the horizontal strip stays, now route-driven:
               each tab is a real URL, and the active screen carries
               aria-current. Visually unchanged. */}
+          {/* The desktop page heading: visually hidden, because the active tab already shows the name. The
+              mobile large title above is the visible h1 on a phone, so only one h1 is ever on screen. */}
+          <h1 data-testid="desktop-screen-title" className="sr-only hidden sm:block">
+            {SCREEN_BY_KEY[panelView]?.label || "Overview"}
+          </h1>
           <nav aria-label="Screens" className={`hidden sm:flex items-center${noGoals ? " pointer-events-none opacity-40" : ""}`} aria-disabled={noGoals}>
             {DESKTOP_SCREENS.map((s) => {
               const Icon = s.Icon;
@@ -684,7 +731,7 @@ export default function Coach() {
             <ReplanSuggestions
               suggestions={state?.replan_suggestions || []}
               engine={state?.replan_engine}
-              active={["home", "today", "plan"].includes(panelView)}
+              active={["state", "today", "plan"].includes(panelView)}
               onReplan={openReplanSuggestion}
             />
           </div>
@@ -790,7 +837,7 @@ export default function Coach() {
         setAutoAnswer={setAutoAnswer}
         grillMe={grillMe}
         setGrillMe={setGrillMe}
-        onStateChange={(next) => setState(next)}
+        onStateChange={(next) => refreshState(next)}
         onAction={(goal, type) => openAction(goal, type)}
         onNavigate={onChatNavigate}
         onUploadFile={uploadFile}
@@ -865,7 +912,7 @@ export default function Coach() {
         grillMe={grillMe}
         setAutoAnswer={setAutoAnswer}
         setGrillMe={setGrillMe}
-        onStateChange={(next) => setState(next)}
+        onStateChange={(next) => refreshState(next)}
         onNavigate={onChatNavigate}
         onUploadFile={uploadFile}
         onAddLink={addLink}
