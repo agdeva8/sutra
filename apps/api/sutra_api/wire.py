@@ -135,6 +135,8 @@ def goal_state(goal: Any, source_ids: list[str] | None = None) -> dict:
         "weekly_hours": goal.weekly_hours,
         "phase_objectives": goal.phase_objectives or {},
         "sources": source_ids or [],
+        "plan_status": getattr(goal, "plan_status", None),
+        "plan_started_at": iso_dt(getattr(goal, "plan_started_at", None)),
     }
 
 
@@ -154,6 +156,8 @@ def goal_row(goal: Any) -> dict:
         "phase_objectives": goal.phase_objectives or {},
         "drift_status": goal.drift_status,
         "life_area": goal.life_area,
+        "plan_status": getattr(goal, "plan_status", None),
+        "plan_started_at": iso_dt(getattr(goal, "plan_started_at", None)),
         "created_at": iso_dt(goal.created_at),
         "updated_at": iso_dt(goal.updated_at),
     }

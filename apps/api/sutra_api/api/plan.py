@@ -17,6 +17,7 @@ question is needed), `no_change` (nothing for the planner to do; use the ordinar
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from agentv2 import chat_turn, local_now, replan_goal
@@ -27,6 +28,7 @@ from ..agent_store import SqlStore
 from ..core.blast_radius import radius_for_intent
 from ..core.staleness import build_adjustments, classify_change, make_change
 from ..db import get_session
+from ..models import PLAN_FAILED, PLAN_PLANNING, PLAN_READY
 from ..rate_limit import llm_rate_limit
 from ..deps import CurrentUser, planner_enabled_for, require_user
 from ..store import repo, staleness
@@ -131,6 +133,14 @@ async def plan_confirm() -> dict:
     )
 
 
+async def _set_plan_status(session: AsyncSession, goal, status: str) -> None:
+    """Record where building the goal's schedule stands, committed at once so a poller sees it."""
+    goal.plan_status = status
+    if status == PLAN_PLANNING:
+        goal.plan_started_at = datetime.now(timezone.utc)
+    await session.commit()
+
+
 #: First progress line of a streamed plan change, before the planner reports its own.
 PLAN_CHANGE_FIRST = "Looking at what changed…"
 
@@ -173,10 +183,20 @@ async def plan_change(
         replanned = False
         if verdict.tier == "slim" or body.get("confirmed"):
             now = local_now(request.headers.get("x-timezone"))
-            out = await replan_goal(SqlStore(session, user.user_id, today=now.date()), goal_id, now=now, progress=say)
+            # Say the schedule is being built before the work starts, in its own commit, so the goal list
+            # (another tab, or this one after a reload) shows the coach working instead of "no schedule".
+            await _set_plan_status(session, goal, PLAN_PLANNING)
+            try:
+                out = await replan_goal(SqlStore(session, user.user_id, today=now.date()), goal_id, now=now, progress=say)
+            except Exception:
+                await session.rollback()
+                await _set_plan_status(session, goal, PLAN_FAILED)
+                raise
             if out.status != "applied":
                 await session.rollback()
+                await _set_plan_status(session, goal, PLAN_FAILED)
                 raise HTTPException(status_code=422, detail="Couldn't re-plan this goal safely.")
+            goal.plan_status = PLAN_READY
             replanned = True
             if verdict.tier != "slim":
                 await staleness.mark_planned(session, user_id=user.user_id, goal_id=goal_id)

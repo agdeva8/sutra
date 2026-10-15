@@ -26,6 +26,7 @@ import { useDialogBack } from "../hooks/useDialogBack";
 import { usePlanSend, renegotiationChoiceLabel, clearRenegotiation } from "../hooks/use-plan-send";
 import { toast } from "sonner";
 import { api, API } from "../lib/api";
+import { buildSchedule } from "../lib/goalPlanning";
 import { readDraftBucket, writeDraftBucket, clearDraftBucket } from "../hooks/useDraftPersistence";
 
 /**
@@ -670,16 +671,9 @@ export default function AddGoalDialog({
       // The goal exists now: show it on the board at once. Its card then says what the coach is doing (below)
       // instead of the goal appearing only when everything is finished.
       onGoalConfirmed?.(freshState);
-      // Place the goal's weeks on the calendar. The goal already exists, so a failure here is a retry, not a loss.
-      if (createdGoalId) {
-        setFinalStatus(CONFIRM_STATUS.placing);
-        try {
-          const planned = await api.planGoal(createdGoalId, setFinalStatus, createdGoalTitle);
-          freshState = planned?.state || freshState;
-        } catch {
-          toast.error("The goal is created, but its schedule couldn't be built yet. Try replanning from the goal.");
-        }
-      }
+      // Build the schedule in the background: it takes minutes, and the goal card shows the coach working on
+      // it, so the dialog does not hold the user. The board is re-read when it ends (lib/goalPlanning).
+      if (createdGoalId) buildSchedule({ id: createdGoalId, title: createdGoalTitle });
       setMessages((prev) => [
         ...prev,
         {
@@ -693,7 +687,6 @@ export default function AddGoalDialog({
       ]);
       setPlanConfirmed(true);
       setFinalStatus(CONFIRM_STATUS.done(createdGoalTitle));
-      onGoalConfirmed?.(freshState);
       setTimeout(() => onClose?.(), CLOSE_AFTER_CONFIRM_MS);
     } catch (e) {
       setFinalStatus("");

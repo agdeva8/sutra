@@ -17,6 +17,7 @@ import {
   ListTree,
 } from "lucide-react";
 import { api, sourceDownloadUrl } from "../lib/api";
+import { buildSchedule } from "../lib/goalPlanning";
 import SourceActionDialog from "./SourceActionDialog";
 import LinkPreviewDialog from "./LinkPreviewDialog";
 import GoalProgress from "./GoalProgress";
@@ -232,7 +233,7 @@ export default function GoalCard({ goal, milestones, progress, onAction, onUploa
               <span className="min-w-0 flex-1">{NO_SCHEDULE_TEXT}</span>
               <button
                 data-testid={`goal-build-schedule-${goal.id}`}
-                onClick={() => api.planGoal(goal.id, undefined, goal.title).then(() => onScheduled?.()).catch(() => onScheduled?.())}
+                onClick={() => buildSchedule(goal, { force: true }).then(() => onScheduled?.())}
                 className="h-9 px-3 rounded-md border border-[var(--accent)] text-[var(--accent)] text-[12px] font-medium"
               >
                 {NO_SCHEDULE_BUTTON}

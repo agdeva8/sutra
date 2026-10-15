@@ -10,3 +10,14 @@ export const ACTIVITY_ALL_GOALS = "*";
 /** Shown on a goal that has no schedule yet (the planner was interrupted), with the button that builds it. */
 export const NO_SCHEDULE_TEXT = "No schedule yet — the coach hasn't placed this goal on your calendar.";
 export const NO_SCHEDULE_BUTTON = "Build schedule";
+/** `goals.plan_status` values (sutra_api `PLAN_STATUSES`). */
+export const PLAN_STATUS_PLANNING = "planning";
+export const PLAN_STATUS_FAILED = "failed";
+/** How often the goal list re-reads the board while a goal's schedule is being built elsewhere. */
+export const PLAN_POLL_MS = 5000;
+/**
+ * A "planning" older than this is a run that died (the server's own limit is 300s), so the goal is treated
+ * as unscheduled again. Generous on purpose: a live run must never be mistaken for a dead one.
+ */
+export const PLAN_LEASE_MS = 10 * 60 * 1000;
+export const BUILD_FAILED_TOAST = (title) => `Couldn't build the schedule for ${title || "this goal"}. Try again from the goal.`;

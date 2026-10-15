@@ -18,6 +18,10 @@ const queryClient = new QueryClient({
   },
 });
 
+// iOS Safari ignores `user-scalable=no`; its pinch arrives as gesture events, so stop them here
+// (index.css `touch-action` covers the other browsers).
+["gesturestart", "gesturechange"].forEach((type) => document.addEventListener(type, (e) => e.preventDefault(), { passive: false }));
+
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(
   <React.StrictMode>

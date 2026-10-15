@@ -89,14 +89,14 @@ body,
   height: 100%;
   overflow: hidden;
   overscroll-behavior: none;
+  /* No pinch-zoom: the app is a native-feeling shell whose top bar and bottom nav must stay put, and a
+   * zoomed page carries them off screen. Panning stays, so every screen still scrolls. */
+  touch-action: pan-x pan-y;
 }
 
-/* Mobile-native tap hygiene. Scoped to interactive elements only —
- * NOT to html/body, so pinch-zoom keeps working (disabling zoom is an
- * accessibility anti-pattern). `manipulation` removes the ~300ms
- * double-tap-to-zoom delay on mobile web, and the explicit
- * tap-highlight stops the default gray flash on every tap, which is
- * the single loudest "this is a webview" tell on iOS/Android. */
+/* Mobile-native tap hygiene. `pan-x pan-y` (not `manipulation`, which would allow pinch-zoom again on
+ * these elements) also removes the ~300ms double-tap-to-zoom delay, and the explicit tap-highlight stops
+ * the default gray flash on every tap, the single loudest "this is a webview" tell on iOS/Android. */
 button,
 a,
 [role="button"],
@@ -106,7 +106,7 @@ input,
 textarea,
 select,
 label {
-  touch-action: manipulation;
+  touch-action: pan-x pan-y;
   -webkit-tap-highlight-color: transparent;
 }
 

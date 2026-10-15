@@ -58,6 +58,10 @@ from .db import Base, Timestamped
 
 GOAL_HORIZONS = ("weekly", "short", "medium", "long")
 GOAL_STATUSES = ("active", "paused", "dropped")
+PLAN_PLANNING = "planning"
+PLAN_READY = "ready"
+PLAN_FAILED = "failed"
+PLAN_STATUSES = (PLAN_PLANNING, PLAN_READY, PLAN_FAILED)
 DRIFT_STATUSES = ("on_track", "at_risk")
 PLAN_HORIZONS = ("daily", "weekly", "monthly", "quarterly", "yearly")
 PLAN_ITEM_STATUSES = ("open", "done")
@@ -191,6 +195,10 @@ class Goal(Timestamped, Base):
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")
     #: Total effort the goal needs, in hours, so progress can be measured against it. NULL = not stated.
     total_hours: Mapped[float | None] = mapped_column(Float)
+    #: Where building the goal's schedule stands (PLAN_STATUSES); NULL = never started (an older goal, or
+    #: one whose planning never began). `plan_started_at` lets a stale "planning" be told from a live one.
+    plan_status: Mapped[str | None] = mapped_column(String)
+    plan_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     milestones: Mapped[list["Milestone"]] = relationship(
         back_populates="goal", cascade="all, delete-orphan", passive_deletes=True

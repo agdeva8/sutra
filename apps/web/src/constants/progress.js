@@ -52,7 +52,7 @@ export const PENDING_REASSURANCE = [
 export const CONFIRM_STATUS = {
   saving: (done, total) => `Saving your goal and milestones (${done} of ${total})…`,
   placing: "Finding free time and placing your sessions in your week…",
-  done: (title) => `All set — "${title}" is in your plan. The coach is keeping an eye on it and will adjust your week as things change.`,
+  done: (title) => `"${title}" is saved. The coach is building its schedule now; you can close this and watch it on the goal.`,
 };
 /** How long the finished message stays up before the dialog closes itself. */
 export const CLOSE_AFTER_CONFIRM_MS = 2800;

@@ -23,6 +23,9 @@ export function setGoalActivity(goalId, line, title) {
   publish();
 }
 
+/** True while this page has work running for the goal. */
+export const isGoalBusy = (goalId) => lines.has(goalId);
+
 export function clearGoalActivity(goalId) {
   if (lines.delete(goalId)) publish();
 }

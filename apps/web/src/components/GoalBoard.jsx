@@ -4,6 +4,7 @@ import GoalMemoryDialog from "./GoalMemoryDialog";
 import GoalPlanPanel from "./GoalPlanPanel";
 import useGoalProgress from "../lib/useGoalProgress";
 import { goalNodes, goalMilestones } from "../lib/planNodes";
+import { isUnscheduled, usePlanWatch } from "../lib/goalPlanning";
 
 /**
  * GoalBoard — the editable goal list, grouped by horizon.
@@ -67,6 +68,8 @@ export default function GoalBoard({
   // only one plan is ever open, and so opening a second goal's plan replaces
   // the first instead of stacking panels.
   const [planGoal, setPlanGoal] = useState(null);
+  // Poll goals being built elsewhere and build the ones that have no schedule, without a click.
+  usePlanWatch(state, onCreated);
   const visible = goals.filter((g) => g.status !== "dropped");
   const grouped = [
     ...HORIZON_ORDER.map((h) => ({
@@ -95,7 +98,7 @@ export default function GoalBoard({
                 goal={g}
                 milestones={milestones}
                 progress={progress[g.id]}
-                unscheduled={!!state && !(state.plan_items || []).some((it) => it.goal_id === g.id && it.horizon !== "milestone")}
+                unscheduled={isUnscheduled(state, g.id)}
                 onScheduled={onCreated}
                 onAction={onAction}
                 onUploadSource={onUploadSource}

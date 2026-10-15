@@ -6,6 +6,7 @@ goes back to the model with the exact problem, up to `FIX_MAX_LOOPS` times, then
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
@@ -67,18 +68,22 @@ def _plan_months(chat, goal: GoalSpec, usable: dict[str, float]) -> tuple[dict[s
     for wid, h in usable.items():
         cap[_month_of(wid)] = round(cap.get(_month_of(wid), 0.0) + h, 2)
     listed = "\n".join(f"- {mid}: {h:g}h" for mid, h in cap.items())
+    # Ask only for what can fit. A goal needing more hours than the months hold can never pass the check,
+    # so asking for the full total burnt every retry (about a minute each) before the even split anyway.
+    # The hours that do not fit come back as the week level's shortfall.
+    target = round(min(goal.total_hours, sum(cap.values())), 2)
     problem: str | None = None
     for _ in range(1 + FIX_MAX_LOOPS):
-        plan = complete_json(chat, MONTH_SYSTEM, month_user(goal.title, goal.total_hours, goal.deadline and goal.deadline.isoformat(), listed, problem), MonthPlan)
+        plan = complete_json(chat, MONTH_SYSTEM, month_user(goal.title, target, goal.deadline and goal.deadline.isoformat(), listed, problem), MonthPlan)
         if plan is None:
             break
         alloc: dict[str, float] = {}
         for m in plan.months:
             alloc[m.month_id] = alloc.get(m.month_id, 0.0) + m.hours
-        problem = check_allocation(alloc, cap, goal.total_hours)
+        problem = check_allocation(alloc, cap, target)
         if problem is None:
             return {k: v for k, v in alloc.items() if v > 0}, {m.month_id: (m.focus, m.why) for m in plan.months if m.focus}, "model"
-    return even_split(goal.total_hours, cap), {}, "even_split"
+    return even_split(target, cap), {}, "even_split"
 
 
 def plan_weeks(chat, goal: GoalSpec, ctx: Context, now: datetime) -> WeekResult:
@@ -94,14 +99,21 @@ def plan_weeks(chat, goal: GoalSpec, ctx: Context, now: datetime) -> WeekResult:
 
     # Long goal: months first, then the weeks inside each month against that month's hours.
     months, month_meta, how = _plan_months(chat, goal, usable)
-    allocs: list[WeekAlloc] = []
-    shortfall = 0.0
-    for mid, hours in sorted(months.items()):
+    # Each month's weeks are planned at once: months cover different weeks, so the calls are independent.
+    # A month is told what the months before it are for (the month level's foci), which keeps the thread
+    # without waiting for their weeks.
+    order = sorted(months.items())
+
+    def weeks_of(i: int) -> WeekResult:
+        mid, hours = order[i]
         sub = {w: h for w, h in usable.items() if _month_of(w) == mid}
-        r = _alloc_weeks(chat, goal, hours, sub, [a.focus for a in allocs])
-        allocs += r.allocs
-        shortfall += r.shortfall
-    allocs = sorted(allocs, key=lambda a: a.week)
+        earlier = [month_meta[m][0] for m, _ in order[:i] if m in month_meta]
+        return _alloc_weeks(chat, goal, hours, sub, earlier)
+
+    with ThreadPoolExecutor(max_workers=max(1, len(order))) as pool:
+        results = list(pool.map(weeks_of, range(len(order))))
+    allocs = sorted((a for r in results for a in r.allocs), key=lambda a: a.week)
+    shortfall = sum(r.shortfall for r in results) + max(0.0, goal.total_hours - sum(months.values()))
     return WeekResult(allocs, f"month({how})+week", round(shortfall, 2), _roll_up(allocs, month_meta))
 
 
