@@ -3,6 +3,7 @@ import { useState, useEffect, ViewTransition } from "react";
 import { BrowserRouter, Routes, Route, useLocation, Navigate } from "react-router-dom";
 import { Toaster } from "sonner";
 import { Analytics } from "@vercel/analytics/react";
+import { SpeedInsights } from "@vercel/speed-insights/react";
 import { AuthProvider } from "./context/AuthContext";
 import AuthCallback from "./components/AuthCallback";
 import InstallPrompt from "./components/InstallPrompt";
@@ -97,6 +98,7 @@ function App() {
         <ToasterBridge />
       </BrowserRouter>
       <Analytics />
+      <SpeedInsights />
       <ServiceWorkerRegistrar />
     </div>
   );
