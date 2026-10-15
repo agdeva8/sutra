@@ -18,9 +18,9 @@ const tone = (active) =>
   active ? "text-[var(--accent)]" : "text-[var(--text-muted)] hover:text-[var(--text-primary)]";
 
 /**
- * MobileTabBar — the phone-width bottom navigation. Four pinned screens
+ * MobileTabBar — the phone-width bottom navigation. Five pinned screens
  * (`MOBILE_TAB_KEYS`) plus a trailing hamburger that opens every other screen
- * from `SCREENS` and, on a phone, "Chat with your coach" (there is no floating chat button there), so the bar never grows past five targets and never keeps its
+ * from `SCREENS` and, on a phone, "Chat with your coach" (there is no floating chat button there), so the bar never grows past six targets and never keeps its
  * own screen list. Hidden from `sm` up, where Coach's tab strip takes over.
  */
 export default function MobileTabBar({ activeKey, onOpenChat = null, locked = false }) {

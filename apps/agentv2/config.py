@@ -84,7 +84,19 @@ def load_settings() -> Settings:
 
 #: Change kinds the gateway may apply without asking (HLD §9). Anything else, and
 #: anything that touches a committed block, becomes a proposal.
-AUTO_APPLY_KINDS = frozenset({"add_recurring", "stop_recurring", "clear_goal_plan", "complete_item", "add_goal", "add_milestone", "add_task", "add_reminder", "add_block", "link_source", "add_plan_week", "add_plan_month", "add_blocker"})
+AUTO_APPLY_KINDS = frozenset({"add_recurring", "stop_recurring", "clear_goal_plan", "complete_item", "add_goal", "add_milestone", "add_task", "add_reminder", "add_block", "link_source", "add_plan_week", "add_plan_month", "add_blocker", "add_todo", "edit_todo"})
+
+# --- To-dos ------------------------------------------------------------------
+
+#: A to-do's priority. Named so the API, the store and the web app agree on the strings.
+TODO_PRIORITY_LOW = "low"
+TODO_PRIORITY_NORMAL = "normal"
+TODO_PRIORITY_HIGH = "high"
+TODO_PRIORITIES = (TODO_PRIORITY_LOW, TODO_PRIORITY_NORMAL, TODO_PRIORITY_HIGH)
+#: `plan_items.item_type` of a to-do; a goal's own task leaves it NULL.
+ITEM_TYPE_TODO = "todo"
+#: Id prefix of a to-do row.
+TODO_ID_PREFIX = "todo"
 
 #: Hours of planned work a single day can hold before the validator rejects more.
 DEFAULT_DAILY_CAPACITY_HOURS = 8.0
@@ -200,7 +212,7 @@ PROPOSAL_ACTIONS = {
     "drop_goal": "goal_title, reason?",
     "pause_goal": "goal_title, reason?",
     "set_goal_dates": "goal_title, start_date?, target_date?",
-    "add_milestone": "goal_title, title, target_date?",
+    "add_milestone": "goal_title, title, target_date?, parent?, hours?",
     "add_blocker": "title, start_date, end_date?, note?",
 }
 #: Argument names whose value is a date. The model gives the user's own words ("friday", "in 3 weeks",

@@ -12,7 +12,14 @@ export const WEEKDAYS = [
   { key: "sun", label: "Sun" },
 ];
 
-/** Pre-selected work or study days: the most common week, one tap to change. Times start empty. */
+/** Pre-filled answers: a common week, so the card is a quick confirm and every value is one tap from changed. */
+export const DEFAULT_WAKE = "07:00";
+export const DEFAULT_SLEEP = "23:00";
+export const DEFAULT_WORK_START = "09:00";
+export const DEFAULT_WORK_END = "17:00";
+export const DEFAULT_WEEKLY_HOURS = 8;
+
+/** Pre-selected work or study days. */
 export const DEFAULT_WORK_DAYS = ["mon", "tue", "wed", "thu", "fri"];
 
 /** Weekly hours for goals, as tap targets. "Other" opens a number field. */

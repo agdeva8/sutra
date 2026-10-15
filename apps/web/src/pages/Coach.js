@@ -36,6 +36,7 @@ const TrackingDashboard = lazy(() => import("../components/TrackingDashboard"));
 const Motivation = lazy(() => import("../components/Motivation"));
 const Timeline = lazy(() => import("../components/Timeline"));
 const ScratchScreen = lazy(() => import("../components/ScratchScreen"));
+const TodosScreen = lazy(() => import("../components/TodosScreen"));
 
 // Fallback while a panel's chunk fetches. Declared at module level rather
 // than inside Coach — a component defined during render is a new component
@@ -804,6 +805,8 @@ export default function Coach() {
                 onOpenChatWith={openChatWith}
                 onChange={refreshState}
               />
+            ) : panelView === "todos" ? (
+              <TodosScreen state={state} onChange={refreshState} />
             ) : panelView === "today" ? (
               <Today state={state} onChange={refreshState} onOpenChat={openChatWith} />
             ) : panelView === "sources" ? (

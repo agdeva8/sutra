@@ -8,6 +8,7 @@ import {
   Image as ImageIcon,
   FileText,
   PenLine,
+  ListTodo,
 } from "lucide-react";
 
 /**
@@ -53,6 +54,8 @@ export const SCREENS = [
   // greeting and the glance now sit at the top of Goal, and Overview has no tab.
   { key: "state", label: "Goal", to: "/", Icon: Flag },
   { key: "today", label: "Today", to: "/?panel=today", Icon: CalendarDays },
+  // The user's own list: every to-do, from here, Today's "+ To-do" or Scratch.
+  { key: "todos", label: "To-dos", to: "/?panel=todos", Icon: ListTodo },
   { key: "timeline", label: "Timeline", to: "/?panel=timeline", Icon: CalendarClock },
   { key: "memories", label: "Memories", to: "/?panel=memories", Icon: ImageIcon },
   { key: "sources", label: "Sources", to: "/?panel=sources", Icon: FileText },
@@ -64,9 +67,10 @@ export const SCREENS = [
 /**
  * Screens pinned to the mobile bottom tab bar, in order. The rest of
  * `SCREENS` collapses behind the bar's trailing "More" button, so the bar
- * stays at five targets however many screens exist.
+ * stays at five targets (four pinned + More) however many screens exist.
+ * Timeline lives in More: Today's day/week/month views cover the daily look-ahead on a phone.
  */
-export const MOBILE_TAB_KEYS = ["scratch", "state", "today", "timeline"];
+export const MOBILE_TAB_KEYS = ["scratch", "state", "today", "todos"];
 
 /** Screens drawn in the desktop tab strip: everything not flagged `mobileOnly`. */
 export const DESKTOP_SCREENS = SCREENS.filter((s) => !s.mobileOnly);

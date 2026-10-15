@@ -11,7 +11,8 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
 from ..config import BLOCK_COMMITTED, DEFAULT_BLOCK_MINUTES, MAX_AWAY_DAYS, TRIAGE_CONFIDENCE_MIN
-from ..contracts import AddBlocker, AddRecurring, StopRecurring, CompleteItem, AddBlock, AddGoal, AddReminder, AddTask, Change, ChangeSet, LinkSource, Origin
+from ..config import TODO_ID_PREFIX
+from ..contracts import AddBlocker, AddRecurring, StopRecurring, CompleteItem, AddBlock, AddGoal, AddReminder, AddTask, AddTodo, Change, ChangeSet, LinkSource, Origin
 from ..contracts.triage import ReminderSpec, TriageItem, TriageResult
 from ..core.context import BlockRow, Context
 from ..core.dates import WEEKDAYS, parse_date, parse_hhmm
@@ -89,7 +90,12 @@ def _item(chat, it: TriageItem, ctx: Context, now: datetime, source_id: str | No
         # A small action, or "task" work the model could not tie to a goal and a size: file it as a
         # plain to-do rather than interrogating the user. It is sized and scheduled later if they want.
         gid = it.goal_id if it.goal_id in ctx.goal_ids else None
-        return [AddTask(id=new_id("task"), goal_id=gid, title=it.title, effort_hours=it.effort_hours or None)], None, None
+        due_day = parse_date(it.due.date, now.date()) if it.due and it.due.date else None
+        due_time = parse_hhmm(it.due.time) if it.due and it.due.time else None
+        if due_day is not None and due_day < now.date():
+            due_day = None  # a due date already gone is a misread; file it undated rather than in the past
+        return [AddTodo(id=new_id(TODO_ID_PREFIX), goal_id=gid, title=it.title,
+                        day=due_day, due_time=due_time if due_day else None)], None, None
 
     if it.bucket == "task":
         task = AddTask(id=new_id("task"), goal_id=it.goal_id, title=it.title, effort_hours=it.effort_hours)

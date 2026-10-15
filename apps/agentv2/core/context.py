@@ -65,6 +65,10 @@ class Context:
     open_items: dict[str, str] = field(default_factory=dict)
     #: id -> title, shown to the triage model so it files against real goals.
     goal_titles: dict[str, str] = field(default_factory=dict)
+    #: goal id -> the user's weekly pace for it, where they gave one.
+    goal_weekly_hours: dict[str, float] = field(default_factory=dict)
+    #: goal id -> its open milestone breakdown (facets, each followed by its sub-milestones), for re-planning.
+    goal_milestones: dict[str, tuple] = field(default_factory=dict)
     blocks: tuple[BlockRow, ...] = ()
     #: The user's today, so the validator can refuse something dated in the past.
     today: date | None = None

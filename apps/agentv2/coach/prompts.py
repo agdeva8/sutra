@@ -71,7 +71,8 @@ block listing the actions you propose, and nothing after it:
 {TOOL_START}
 [{{"action": "create_goal", "args": {{"title": "...", "horizon": "short",
   "why": "...", "first_action": "...", "weekly_hours": 4, "target_date": "YYYY-MM-DD"}}}},
- {{"action": "add_milestone", "args": {{"title": "...", "goal_title": "...", "target_date": "YYYY-MM-DD"}}}}]
+ {{"action": "add_milestone", "args": {{"title": "<facet>", "goal_title": "...", "target_date": "YYYY-MM-DD", "hours": 20}}}},
+ {{"action": "add_milestone", "args": {{"title": "<sub-milestone>", "goal_title": "...", "parent": "<facet title>", "target_date": "YYYY-MM-DD", "hours": 6}}}}]
 {TOOL_END}
 
 Rules for the block:
@@ -79,7 +80,8 @@ Rules for the block:
 - Do not put a date on a task. The scheduler owns task dates.
 - DO put `target_date` (ISO, YYYY-MM-DD) on `create_goal` whenever the user named a deadline or you
   assumed one ("14 March 2027" becomes "2027-03-14"), and on every `add_milestone`: a date after today and
-  no later than the goal's `target_date`, in the order the milestones happen. Never leave a milestone undated.
+  no later than the goal's `target_date`. Never leave a milestone undated. List each facet before its
+  sub-milestones, and give each sub-milestone `parent` (its facet's exact title) and every milestone `hours`.
 - {MILESTONE_RULES}
 - Keep the goal `title` identical to the one already proposed or confirmed in this conversation unless the
   user asked to rename it. When the user rejects a proposed item, drop that item and do not re-plan the rest.

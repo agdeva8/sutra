@@ -1,4 +1,5 @@
 import React, { Fragment } from "react";
+import { cardSurface } from "../constants/calendarKinds";
 
 /**
  * Calendar card grid — Option C presentation.
@@ -31,10 +32,8 @@ export function CalendarCard({ card, onClick }) {
       aria-label={`${card.title}${card.goalTitle ? `, ${card.goalTitle}` : ""}`}
       className="w-full text-left rounded px-1.5 py-1 transition-[filter] hover:brightness-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--accent)]"
       style={{
-        borderLeft: `3px solid ${card.color}`,
-        // Very light wash of the goal colour (theme-aware: mixes toward the
-        // page background so it stays subtle in both light and dark).
-        background: `color-mix(in srgb, ${card.color} 13%, var(--bg-primary))`,
+        // The kind's surface (wash, hatched, pill, dashed) in the card's colour. Mirrors apps/web.
+        ...cardSurface(card.color, card.look),
       }}
     >
       <div className={`truncate text-[11px] leading-tight ${card.status === "done" ? "line-through text-[var(--text-muted)]" : "text-[var(--text-primary)]"}`}>

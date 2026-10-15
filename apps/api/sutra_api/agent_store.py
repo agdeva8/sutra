@@ -25,19 +25,20 @@ import re
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 
-from agentv2.config import BLOCK_COMMITTED, BLOCK_TENTATIVE
+from agentv2.config import BLOCK_COMMITTED, BLOCK_TENTATIVE, ITEM_TYPE_TODO
 from agentv2.contracts import (
-    AddBlock, AddBlocker, AddRecurring, StopRecurring, ClearGoalPlan, CompleteItem, AddGoal, AddMilestone, AddPlanMonth, AddPlanWeek, AddReminder, AddTask, Change, ChangeSet, LinkSource, MoveBlock, Origin, Proposal,
+    AddBlock, AddBlocker, AddRecurring, StopRecurring, ClearGoalPlan, CompleteItem, AddGoal, AddMilestone, AddPlanMonth, AddPlanWeek, AddReminder, AddTask, AddTodo, EditTodo, Change, ChangeSet, LinkSource, MoveBlock, Origin, Proposal,
 )
 from agentv2.contracts import ChangeSet as _ChangeSet
+from agentv2.contracts.planner import MilestoneSpec
 from agentv2.core.calendar import week_start
 from agentv2.core.context import BlockRow, Context, GoalHours, PlanWeekRow, RecurringRow
 from agentv2.core.profile import UserProfile, to_planner
 from agentv2.core.recurring import occurrences
 from pydantic import TypeAdapter
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .ids import new_id
@@ -65,6 +66,8 @@ STATUS_SKIPPED = "skipped"
 
 #: A planned week runs Monday to Sunday: its end date is six days after its start.
 WEEK_LAST_DAY_OFFSET = 6
+#: Shown on a dated to-do that has a time of day ("by 5 PM"); it is a deadline, not a scheduled block.
+DUE_BY = "Due by {time}"
 
 CHANGE_ADAPTER = TypeAdapter(Change)
 
@@ -84,6 +87,19 @@ def _weekday_hours(availability: dict | None) -> dict[int, float] | None:
     if not availability:
         return None
     return {i: float(availability[k]) for i, k in enumerate(WEEKDAY_KEYS) if isinstance(availability.get(k), (int, float))}
+
+
+def _milestone_trees(rows) -> dict[str, tuple[MilestoneSpec, ...]]:
+    """Open milestones per goal in the planner's order: each facet, then its sub-milestones."""
+    titles = {m.id: m.title for m in rows}
+    out: dict[str, list[MilestoneSpec]] = {}
+    facets = sorted((m for m in rows if not m.parent_id or m.parent_id not in titles), key=lambda m: m.target_date)
+    for f in facets:
+        kids = sorted((m for m in rows if m.parent_id == f.id), key=lambda m: m.target_date)
+        out.setdefault(f.goal_id, []).extend(
+            MilestoneSpec(id=m.id, title=m.title, due=m.target_date, hours=float(m.hours or 0), parent=f.title if m is not f else "")
+            for m in (f, *kids))
+    return {g: tuple(ms) for g, ms in out.items()}
 
 
 def _effort(note: str | None) -> float:
@@ -114,7 +130,7 @@ class SqlStore:
 
     async def context(self) -> Context:
         goals = (await self.session.execute(
-            select(Goal.id, Goal.title, Goal.target_date).where(Goal.user_id == self.user_id, Goal.status != "dropped")
+            select(Goal.id, Goal.title, Goal.target_date, Goal.weekly_hours).where(Goal.user_id == self.user_id, Goal.status != "dropped")
         )).all()
         goal_rows = goals
         until = self.today + timedelta(days=CONTEXT_DAYS_AHEAD)
@@ -134,6 +150,10 @@ class SqlStore:
             select(Milestone.id, Milestone.title).where(
                 Milestone.user_id == self.user_id, Milestone.status == STATUS_OPEN).limit(OPEN_ITEMS_LIMIT)
         )).all()
+        goal_miles = (await self.session.execute(
+            select(Milestone).where(Milestone.user_id == self.user_id, Milestone.status == STATUS_OPEN,
+                                    Milestone.goal_id.is_not(None), Milestone.target_date.is_not(None))
+        )).scalars().all()
         weekly = (await self.session.execute(
             select(PlanItem).where(
                 PlanItem.user_id == self.user_id, PlanItem.horizon == "weekly", PlanItem.status == STATUS_OPEN,
@@ -177,6 +197,8 @@ class SqlStore:
             open_items={**{t.id: t.title for t in tasks}, **{m.id: m.title for m in miles}},
             goal_ids=frozenset(g.id for g in goals),
             goal_titles={g.id: g.title for g in goals},
+            goal_weekly_hours={g.id: float(g.weekly_hours) for g in goal_rows if g.weekly_hours},
+            goal_milestones=_milestone_trees(goal_miles),
             blocks=tuple(BlockRow(b.id, b.block_date, b.start_time, b.end_time, _status(b.kind), b.label, b.goal_id) for b in blocks),
         )
 
@@ -231,7 +253,7 @@ class SqlStore:
                     row.done_hours = round((change.fraction or 0) * _note_hours(row.note), 2)
         elif isinstance(change, CompleteItem):
             # Ids are prefixed by table, so one id names exactly one row.
-            await s.execute(update(PlanItem).where(PlanItem.id == change.item_id, PlanItem.user_id == self.user_id).values(status=STATUS_DONE))
+            await s.execute(update(PlanItem).where(PlanItem.id == change.item_id, PlanItem.user_id == self.user_id).values(status=STATUS_DONE, done_at=func.now()))
             await s.execute(update(Milestone).where(Milestone.id == change.item_id, Milestone.user_id == self.user_id).values(status=STATUS_DONE))
             # A finished task no longer needs the time the agent set aside for it.
             await s.execute(delete(TimetableBlock).where(
@@ -242,7 +264,8 @@ class SqlStore:
         elif isinstance(change, AddMilestone):
             goal = await s.get(Goal, change.goal_id)
             s.add(Milestone(id=change.id, user_id=self.user_id, goal_id=change.goal_id,
-                            goal_title=goal.title if goal else "", title=change.title, target_date=change.target_date))
+                            goal_title=goal.title if goal else "", title=change.title, target_date=change.target_date,
+                            parent_id=change.parent_id, hours=change.hours or None))
         elif isinstance(change, AddPlanMonth):
             last = (change.month_start.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
             s.add(PlanItem(id=change.id, user_id=self.user_id, goal_id=change.goal_id, horizon="monthly", title=change.focus,
@@ -258,7 +281,16 @@ class SqlStore:
             s.add(PlanItem(id=change.id, user_id=self.user_id, goal_id=change.goal_id, horizon="daily",
                            title=change.title, note=f"{change.effort_hours:g}h" if change.effort_hours else "",
                            start_date=change.day, due_date=change.day,
-                           description=change.description or None, why=change.why or None))
+                           description=change.description or (DUE_BY.format(time=change.due_time.strftime("%-I:%M %p")) if change.due_time else None),
+                           why=change.why or None, milestone_id=change.milestone_id))
+        elif isinstance(change, AddTodo):
+            s.add(PlanItem(id=change.id, user_id=self.user_id, goal_id=change.goal_id, horizon="daily",
+                           item_type=ITEM_TYPE_TODO, priority=change.priority, title=change.title,
+                           description=change.description or None, start_date=change.day, due_date=change.day,
+                           due_time=change.due_time))
+        elif isinstance(change, EditTodo):
+            await s.execute(update(PlanItem).where(PlanItem.id == change.id, PlanItem.user_id == self.user_id,
+                                                   PlanItem.item_type == ITEM_TYPE_TODO).values(**_todo_columns(change)))
         elif isinstance(change, AddReminder):
             s.add(Reminder(id=change.id, user_id=self.user_id, goal_id=change.goal_id, title=change.title,
                            days=[d.isoformat() for d in change.days],
@@ -328,7 +360,7 @@ class SqlStore:
     async def revert(self, change: Change) -> None:
         s, uid = self.session, self.user_id
         if isinstance(change, CompleteItem):
-            await s.execute(update(PlanItem).where(PlanItem.id == change.item_id, PlanItem.user_id == uid).values(status=STATUS_OPEN, done_hours=None))
+            await s.execute(update(PlanItem).where(PlanItem.id == change.item_id, PlanItem.user_id == uid).values(status=STATUS_OPEN, done_hours=None, done_at=None))
             await s.execute(update(Milestone).where(Milestone.id == change.item_id, Milestone.user_id == uid).values(status=STATUS_OPEN))
         elif isinstance(change, AddRecurring):
             await s.execute(delete(TimetableBlock).where(TimetableBlock.user_id == uid, TimetableBlock.source_id == change.id))
@@ -336,6 +368,11 @@ class SqlStore:
         elif isinstance(change, AddGoal):
             await s.execute(delete(Milestone).where(Milestone.goal_id == change.id, Milestone.user_id == uid))
             await s.execute(delete(Goal).where(Goal.id == change.id, Goal.user_id == uid))  # cascades its plan rows
+        elif isinstance(change, AddTodo):
+            await s.execute(delete(PlanItem).where(PlanItem.id == change.id, PlanItem.user_id == uid))
+        elif isinstance(change, EditTodo):
+            if change.before:
+                await s.execute(update(PlanItem).where(PlanItem.id == change.id, PlanItem.user_id == uid).values(**_todo_columns_from(change.before)))
         elif isinstance(change, AddTask):
             await s.execute(delete(TimetableBlock).where(TimetableBlock.source_id == change.id, TimetableBlock.user_id == uid))
             await s.execute(delete(PlanItem).where(PlanItem.id == change.id, PlanItem.user_id == uid))
@@ -383,3 +420,33 @@ class SqlStore:
             summary=f"rejected: {len(violations)} violation(s)",
             payload={"origin": cs.origin.model_dump(), "violations": [v.model_dump() for v in violations]}))
         await self.session.flush()
+
+
+#: To-do fields (agentv2 `EditTodo`) to their `plan_items` columns; `day` is both start and due date.
+_TODO_FIELD_COLUMNS = {"title": ("title",), "goal_id": ("goal_id",), "day": ("start_date", "due_date"),
+                       "due_time": ("due_time",), "priority": ("priority",), "description": ("description",)}
+
+
+def _todo_columns_from(fields: dict) -> dict:
+    """Column values for a dict of to-do fields (`done` maps to `status`). Dates and times may arrive as
+    ISO strings, from the audit row's JSON."""
+    out: dict = {}
+    for k, v in fields.items():
+        if k == "done":
+            out["status"] = STATUS_DONE if v else STATUS_OPEN
+            out["done_at"] = func.now() if v else None
+        elif k == "day":
+            v = date.fromisoformat(v) if isinstance(v, str) else v
+            out.update(start_date=v, due_date=v)
+        elif k == "due_time":
+            out["due_time"] = time.fromisoformat(v) if isinstance(v, str) else v
+        elif k in _TODO_FIELD_COLUMNS:
+            out[_TODO_FIELD_COLUMNS[k][0]] = v
+    return out
+
+
+def _todo_columns(change: EditTodo) -> dict:
+    """The columns an edit sets: the fields it gives, and the ones it clears as NULL."""
+    given = {k: v for k, v in change.model_dump(include=set(_TODO_FIELD_COLUMNS) | {"done"}).items() if v is not None}
+    given.update({k: None for k in change.clear})
+    return _todo_columns_from(given)

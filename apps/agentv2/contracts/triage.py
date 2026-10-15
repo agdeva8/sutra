@@ -34,6 +34,11 @@ class BlockSpec(_Llm):
     end_time: str | None = Field(None, description="24h HH:MM if the user gave an end, else null.")
 
 
+class DueSpec(_Llm):
+    date: str | None = Field(None, description="YYYY-MM-DD the to-do is due, read off the calendar ('today', 'by Friday'); null if no day was named.")
+    time: str | None = Field(None, description="24h HH:MM if the user named a time ('by 5 PM' -> '17:00'); else null.")
+
+
 class AwaySpec(_Llm):
     start_date: str = Field(description="The first day away, YYYY-MM-DD, read off the calendar you were given.")
     end_date: str | None = Field(None, description="The last day away, YYYY-MM-DD; null if it is a single day.")
@@ -55,6 +60,7 @@ class TriageItem(_Llm):
     goal_id: str | None = Field(None, description="Must be one of the listed goal ids, or null.")
     effort_hours: float | None = Field(None, description="Rough hours of work, for a task.")
     reminder: ReminderSpec | None = None
+    due: DueSpec | None = Field(None, description="For a todo or task: the day and time it is due, if the user said one.")
     block: BlockSpec | None = None
     recurring: RecurringSpec | None = None
     away: AwaySpec | None = None

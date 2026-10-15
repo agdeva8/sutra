@@ -15,7 +15,7 @@ from ..core.budget import check_allocation, even_split
 from ..core.calendar import free_hours_by_week
 from ..core.context import Context
 from ..llm import complete_json
-from ..prompts.planner import MONTH_SYSTEM, WEEK_SYSTEM, month_user, week_user
+from ..prompts.planner import MONTH_SYSTEM, WEEK_SYSTEM, milestones_text, month_user, week_user
 
 WEEK_PREFIX = "wk_"
 
@@ -26,6 +26,8 @@ class WeekAlloc:
     focus: str
     hours: float
     why: str = ""
+    #: Titles of the milestones this week works toward, for the day level.
+    milestones: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -81,7 +83,9 @@ def _plan_months(chat, goal: GoalSpec, usable: dict[str, float]) -> tuple[dict[s
 
 def plan_weeks(chat, goal: GoalSpec, ctx: Context, now: datetime) -> WeekResult:
     free = free_hours_by_week(ctx, now, _weeks_until(goal, now))
-    usable = {f"{WEEK_PREFIX}{d.isoformat()}": round(h * GOAL_MAX_SHARE_OF_FREE, 2) for d, h in free.items() if h > 0}
+    # The goal's own pace, when the user gave one, caps every week: "10 hours a week" means no 17-hour week.
+    pace = goal.weekly_hours or float("inf")
+    usable = {f"{WEEK_PREFIX}{d.isoformat()}": round(min(h * GOAL_MAX_SHARE_OF_FREE, pace), 2) for d, h in free.items() if h > 0}
     if len(usable) <= MONTH_LEVEL_MIN_WEEKS:
         # A short goal needs no separate month call: its months are just its weeks, summed.
         r = _alloc_weeks(chat, goal, goal.total_hours, usable)
@@ -115,10 +119,12 @@ def _roll_up(allocs: list[WeekAlloc], meta: dict[str, tuple[str, str]] | None = 
 
 def _alloc_weeks(chat, goal: GoalSpec, total: float, usable: dict[str, float], earlier: list[str] | None = None) -> WeekResult:
     listed = "\n".join(f"- {wid}: {h:g}h" for wid, h in usable.items())
+    tree = milestones_text(goal.milestones)
+    known = {m.title for m in goal.milestones}
 
     problem: str | None = None
     for _ in range(1 + FIX_MAX_LOOPS):
-        plan = complete_json(chat, WEEK_SYSTEM, week_user(goal.title, total, goal.deadline and goal.deadline.isoformat(), listed, problem, earlier), WeekPlan)
+        plan = complete_json(chat, WEEK_SYSTEM, week_user(goal.title, total, goal.deadline and goal.deadline.isoformat(), listed, problem, earlier, tree), WeekPlan)
         if plan is None:
             break
         alloc: dict[str, float] = {}
@@ -128,7 +134,8 @@ def _alloc_weeks(chat, goal: GoalSpec, total: float, usable: dict[str, float], e
         if problem is None:
             focus = {w.week_id: w.focus for w in plan.weeks}
             why = {w.week_id: w.why for w in plan.weeks}
-            return WeekResult([WeekAlloc(date.fromisoformat(w[len(WEEK_PREFIX):]), focus.get(w, goal.title), h, why.get(w, ""))
+            serves = {w.week_id: [t for t in w.milestones if t in known] for w in plan.weeks}
+            return WeekResult([WeekAlloc(date.fromisoformat(w[len(WEEK_PREFIX):]), focus.get(w, goal.title), h, why.get(w, ""), serves.get(w, []))
                                for w, h in sorted(alloc.items()) if h > 0], "model", 0.0)
 
     split = even_split(total, usable)

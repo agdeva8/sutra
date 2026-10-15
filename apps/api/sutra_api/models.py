@@ -219,6 +219,10 @@ class Milestone(Timestamped, Base):
     target_date: Mapped[date | None] = mapped_column(Date)
     phase: Mapped[str] = mapped_column(String, nullable=False, default="")
     status: Mapped[str] = mapped_column(String, nullable=False, default="open")
+    #: The facet milestone this one is a step of; NULL for a facet (a top-level milestone).
+    parent_id: Mapped[str | None] = mapped_column(ForeignKey("milestones.id", ondelete="SET NULL"))
+    #: Effort the milestone needs on its own; NULL when unknown.
+    hours: Mapped[float | None] = mapped_column(Float)
 
     goal: Mapped[Goal | None] = relationship(back_populates="milestones")
 
@@ -255,6 +259,16 @@ class PlanItem(Base):
     why: Mapped[str | None] = mapped_column(String)
     #: Hours of this row that are finished when it is only part done; null when nothing was ticked partially.
     done_hours: Mapped[float | None] = mapped_column(Float)
+    #: When it was ticked done; NULL while open. An undated to-do shows on Today only on the day it was done.
+    done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The milestone a session works toward. Plain string, no FK: a dropped milestone leaves the task alone.
+    milestone_id: Mapped[str | None] = mapped_column(String)
+    #: "todo" for a to-do (agentv2 `AddTodo`); NULL for a goal's task. How a read tells the two apart.
+    item_type: Mapped[str | None] = mapped_column(String)
+    #: A to-do's priority (low / normal / high); NULL for a goal's task.
+    priority: Mapped[str | None] = mapped_column(String)
+    #: The time of day a to-do is due by, on `due_date`.
+    due_time: Mapped[time | None] = mapped_column(Time)
     start_date: Mapped[date | None] = mapped_column(Date)
     end_date: Mapped[date | None] = mapped_column(Date)
     due_date: Mapped[date | None] = mapped_column(Date)

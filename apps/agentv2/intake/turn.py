@@ -8,12 +8,12 @@ a best-effort draft instead of asking again.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from ..config import INTAKE_MAX_WEEKS, MAX_INTAKE_TURNS
 from ..contracts import AddGoal, AddMilestone, Change
-from ..contracts.intake import GoalDraft, IntakeReply, IntakeState, Turn
-from ..contracts.planner import GoalSpec
+from ..contracts.intake import GoalDraft, IntakeReply, MilestoneDraft, IntakeState, Turn
+from ..contracts.planner import GoalSpec, MilestoneSpec
 from ..core.ids import new_id
 from ..llm import complete_json
 from ..prompts.intake import INTAKE_SYSTEM, intake_user
@@ -59,8 +59,33 @@ def draft_to_changes(draft: GoalDraft, now: datetime, *, priority: int = 1) -> t
     target = start + timedelta(weeks=weeks)
     goal_id = new_id("goal")
     changes: list[Change] = [AddGoal(id=goal_id, title=draft.title, why=draft.why, life_area=draft.life_area, start_date=start, target_date=target, total_hours=max(draft.total_hours, 1.0))]
-    for m in sorted(draft.milestones, key=lambda m: m.week):
-        when = start + timedelta(weeks=max(1, min(m.week, weeks)))
-        changes.append(AddMilestone(id=new_id("mile"), goal_id=goal_id, title=m.title, target_date=when))
-    spec = GoalSpec(id=goal_id, title=draft.title, total_hours=max(draft.total_hours, 1.0), deadline=target, priority=priority)
+    specs = [m.model_copy(update={"id": new_id("mile")}) for m in milestone_tree(draft.milestones, start, weeks)]
+    ids = {m.title: m.id for m in specs}
+    for m in specs:
+        changes.append(AddMilestone(id=ids[m.title], goal_id=goal_id, title=m.title, target_date=m.due, parent_id=ids.get(m.parent), hours=m.hours))
+    spec = GoalSpec(id=goal_id, title=draft.title, total_hours=max(draft.total_hours, 1.0), deadline=target, priority=priority, milestones=specs, weekly_hours=draft.weekly_hours or None)
     return spec, changes
+
+
+def milestone_tree(drafts: list[MilestoneDraft], start: date, weeks: int) -> list[MilestoneSpec]:
+    """The model's breakdown made valid: facets first, each followed by its sub-milestones.
+
+    Week offsets become dates clamped to the goal's span. A sub-milestone naming a facet that does not
+    exist becomes a facet itself, and a facet is due no earlier than its latest sub-milestone (the
+    model may give several milestones the same week; that is allowed, not corrected)."""
+    seen: dict[str, MilestoneDraft] = {}
+    for d in drafts:
+        if d.title.strip() and d.title not in seen:
+            seen[d.title] = d
+    parent_of = {t: (d.parent if d.parent in seen and d.parent != t and not seen[d.parent].parent else "") for t, d in seen.items()}
+    week_of = {t: max(1, min(d.week, weeks)) for t, d in seen.items()}
+    for t, p in parent_of.items():
+        if p:
+            week_of[p] = max(week_of[p], week_of[t])
+    out: list[MilestoneSpec] = []
+    for facet in sorted((t for t, p in parent_of.items() if not p), key=lambda t: week_of[t]):
+        kids = sorted((t for t, p in parent_of.items() if p == facet), key=lambda t: week_of[t])
+        hours = seen[facet].hours or sum(seen[k].hours for k in kids)
+        out.append(MilestoneSpec(title=facet, due=start + timedelta(weeks=week_of[facet]), hours=max(hours, 0)))
+        out += [MilestoneSpec(title=k, due=start + timedelta(weeks=week_of[k]), hours=max(seen[k].hours, 0), parent=facet) for k in kids]
+    return out

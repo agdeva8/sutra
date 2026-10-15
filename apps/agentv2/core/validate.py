@@ -13,7 +13,7 @@ from datetime import date, datetime
 
 from ..config import BLOCK_COMMITTED, BLOCK_TENTATIVE
 from .context import BlockRow, Context
-from ..contracts import AddBlocker, AddRecurring, StopRecurring, ClearGoalPlan, CompleteItem, AddBlock, AddGoal, AddMilestone, AddPlanMonth, AddPlanWeek, AddReminder, AddTask, ChangeSet, LinkSource, MoveBlock, Violation
+from ..contracts import AddBlocker, AddRecurring, StopRecurring, ClearGoalPlan, CompleteItem, AddBlock, AddGoal, AddMilestone, AddPlanMonth, AddPlanWeek, AddReminder, AddTask, AddTodo, EditTodo, ChangeSet, LinkSource, MoveBlock, Violation
 
 RULE_GOAL_EXISTS = "goal_exists"
 RULE_BLOCK_EXISTS = "block_exists"
@@ -81,7 +81,7 @@ def validate(cs: ChangeSet, ctx: Context) -> list[Violation]:
 
         if ctx.today is not None:
             when = getattr(c, "day", None) or getattr(c, "target_date", None)
-            if isinstance(c, (AddBlock, AddMilestone)) and when is not None and when < ctx.today:
+            if isinstance(c, (AddBlock, AddMilestone, AddTodo)) and when is not None and when < ctx.today:
                 fail(i, RULE_NOT_IN_PAST, f"{c.title}: {when} has already passed")
 
         if isinstance(c, AddGoal):
@@ -89,6 +89,11 @@ def validate(cs: ChangeSet, ctx: Context) -> list[Violation]:
         elif isinstance(c, AddTask):
             if c.goal_id is not None and c.goal_id not in goals:
                 fail(i, RULE_GOAL_EXISTS, f"task {c.id}: goal {c.goal_id} does not exist")
+        elif isinstance(c, (AddTodo, EditTodo)):
+            if c.goal_id is not None and c.goal_id not in goals:
+                fail(i, RULE_GOAL_EXISTS, f"to-do {c.id}: goal {c.goal_id} does not exist")
+            if isinstance(c, AddTodo) and not c.title.strip():
+                fail(i, RULE_ITEM_EXISTS, "a to-do needs a title")
         elif isinstance(c, AddBlocker):
             if c.end_date < c.start_date:
                 fail(i, RULE_BLOCK_ORDER, f"{c.title}: it ends ({c.end_date}) before it starts ({c.start_date})")

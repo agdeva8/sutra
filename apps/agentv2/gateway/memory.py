@@ -13,7 +13,7 @@ from ..core.context import BlockRow, Context, GoalHours, PlanWeekRow, RecurringR
 from datetime import date as _date, timedelta as _timedelta
 
 from ..core.recurring import occurrences
-from ..contracts import AddRecurring, StopRecurring, ClearGoalPlan, CompleteItem, AddBlock, AddBlocker, AddGoal, AddMilestone, AddPlanMonth, AddPlanWeek, AddReminder, AddTask, Change, ChangeSet, LinkSource, MoveBlock, Origin, Proposal
+from ..contracts import AddRecurring, StopRecurring, ClearGoalPlan, CompleteItem, AddBlock, AddBlocker, AddGoal, AddMilestone, AddPlanMonth, AddPlanWeek, AddReminder, AddTask, AddTodo, EditTodo, Change, ChangeSet, LinkSource, MoveBlock, Origin, Proposal
 
 
 class InMemoryStore:
@@ -29,6 +29,8 @@ class InMemoryStore:
         self.today = base.today
         self.tasks: dict[str, AddTask] = {}
         self.reminders: dict[str, AddReminder] = {}
+        #: To-dos as plain dicts of their current fields (an edit changes them in place); `done` included.
+        self.todos: dict[str, dict] = {}
         self.sources: dict[str, LinkSource] = {}
         self.weeks: dict[str, AddPlanWeek] = {}
         self.months: dict[str, AddPlanMonth] = {}
@@ -84,6 +86,12 @@ class InMemoryStore:
                 self.goal_total[change.id] = change.total_hours
         elif isinstance(change, AddTask):
             self.tasks[change.id] = change
+        elif isinstance(change, AddTodo):
+            self.todos[change.id] = {**change.model_dump(exclude={"kind", "id"}), "done": False}
+        elif isinstance(change, EditTodo):
+            row = self.todos.get(change.id)
+            if row is not None:
+                row.update(_todo_patch(change))
         elif isinstance(change, AddReminder):
             self.reminders[change.id] = change
         elif isinstance(change, AddRecurring):
@@ -175,7 +183,13 @@ class InMemoryStore:
         return None
 
     async def revert(self, change: Change) -> None:
-        if isinstance(change, AddRecurring):
+        if isinstance(change, AddTodo):
+            self.todos.pop(change.id, None)
+        elif isinstance(change, EditTodo):
+            row = self.todos.get(change.id)
+            if row is not None:
+                row.update(change.before)
+        elif isinstance(change, AddRecurring):
             self.recurring.pop(change.id, None)
             for b in [b for b, rid in self.block_rule.items() if rid == change.id]:
                 self.blocks.pop(b, None)
@@ -210,3 +224,10 @@ class InMemoryStore:
 
     async def log_reject(self, cs: ChangeSet, violations: list) -> None:
         self.rejects.append({"origin": cs.origin.model_dump(), "violations": [v.model_dump() for v in violations]})
+
+
+def _todo_patch(change: EditTodo) -> dict:
+    """The fields an edit sets: the given ones, plus the cleared ones as None."""
+    out = {k: v for k, v in change.model_dump(include={"title", "goal_id", "day", "due_time", "priority", "description", "done"}).items() if v is not None}
+    out.update({k: None for k in change.clear})
+    return out

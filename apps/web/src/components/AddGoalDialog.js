@@ -123,6 +123,10 @@ const CATEGORIES = [
  *
  * The dialog auto-closes after a successful confirm.
  */
+/** "Confirm 9 items", or "Confirm 9 items · 1 removed" once the user has rejected some. */
+const confirmLabel = (count, removed) =>
+  `Confirm ${count} ${count === 1 ? "item" : "items"}${removed > 0 ? ` · ${removed} removed` : ""}`;
+
 export default function AddGoalDialog({
   open,
   onClose,
@@ -660,9 +664,9 @@ export default function AddGoalDialog({
 
       const createdProposal = plan.find((proposal) => proposal.action === "create_goal");
       const createdGoalTitle = createdProposal?.args?.title || "your new goal";
-      const createdGoalId = freshState?.goals?.find(
-        (goal) => goal.title === createdGoalTitle && goal.status === "active",
-      )?.id;
+      // By title first; if the server stored a different title, the newest active goal is the one just made.
+      const activeGoals = (freshState?.goals || []).filter((goal) => goal.status === "active");
+      const createdGoalId = (activeGoals.filter((goal) => goal.title === createdGoalTitle).at(-1) || activeGoals.at(-1))?.id;
       // The goal exists now: show it on the board at once. Its card then says what the coach is doing (below)
       // instead of the goal appearing only when everything is finished.
       onGoalConfirmed?.(freshState);
@@ -877,13 +881,9 @@ export default function AddGoalDialog({
       const proposals = m.proposals || [];
       if (proposals.length === 0) continue;
 
-      // Priority 1 — if the user has saved any refinements OR rejections,
-      // the button becomes the batch "Apply changes" action. A card is
-      // refined XOR rejected, so count both (founder feedback: rejecting
-      // alone never changed the pinned footer).
-      const refined = proposals.filter((p) => p.refinement);
-      // Only refinements re-plan. A rejection just removes its card, so it does not count here and the
-      // footer stays on "Confirm" for what is left.
+      // Priority 1 — any saved change (a refinement or a rejection) is addressed first: the coach
+      // re-proposes the plan with every change applied, and the user confirms that new plan, not the old one.
+      const refined = proposals.filter((p) => p.refinement || p.status === "rejected");
       const changedCount = refined.length;
       if (changedCount > 0) {
         return {
@@ -910,7 +910,7 @@ export default function AddGoalDialog({
           messageId: m.id,
           proposalId: createProposal.id,
           label: hasMilestones
-            ? `Confirm${pending.length > 0 ? ` (${pending.length} ${pending.length === 1 ? "change" : "changes"})` : ""}`
+            ? confirmLabel(pending.length, proposals.filter((p) => p.status === "rejected").length)
             : "Recreate goals & milestones",
           variant: hasMilestones ? "confirm" : "recreate",
         };

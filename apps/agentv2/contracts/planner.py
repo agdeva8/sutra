@@ -8,6 +8,20 @@ from pydantic import BaseModel, ConfigDict, Field
 from .triage import _Llm
 
 
+class MilestoneSpec(BaseModel):
+    """A milestone as the planner sees it: what the week and day sessions are built from."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    due: date
+    hours: float = 0
+    #: The milestone row's id, so a task can point at the milestone it serves; empty before it is written.
+    id: str = ""
+    #: Title of the facet it belongs to; empty for a facet.
+    parent: str = ""
+
+
 class GoalSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -18,11 +32,16 @@ class GoalSpec(BaseModel):
     deadline: date | None = None
     #: Lower runs first when goals compete for the same time.
     priority: int = 1
+    #: The pace the user asked for on this goal; no week is planned above it. None when they gave none.
+    weekly_hours: float | None = None
+    #: The goal's breakdown, facets and their sub-milestones. Empty for a goal planned without one.
+    milestones: list[MilestoneSpec] = Field(default_factory=list)
 
 
 class WeekItem(_Llm):
     week_id: str
     focus: str = Field(description="What to concentrate on that week, a short phrase.")
+    milestones: list[str] = Field(default_factory=list, description="Titles of the milestones this week's work moves forward, copied exactly; usually several, from different facets.")
     hours: float
     why: str = Field("", description="One plain sentence to the user on why this is here: how it serves the goal, the deadline or the calendar. Not a restatement of the title.")
 
@@ -34,6 +53,7 @@ class WeekPlan(_Llm):
 class DayItem(_Llm):
     day_id: str
     title: str = Field(description="The session, a short phrase.")
+    milestone: str = Field("", description="Title of the milestone this session works toward, copied exactly from the week's list.")
     hours: float
     #: One line on what this session actually involves, so the task can explain itself. Optional: an
     #: older reply without it is still a usable plan.

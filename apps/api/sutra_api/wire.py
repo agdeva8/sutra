@@ -209,6 +209,11 @@ def plan_item(item: Any, *, with_created_at: bool = True) -> dict:
         "due_date": iso_date(item.due_date),
         "weekly_hours": item.weekly_hours,
         "status": item.status,
+        # "todo" for a to-do, None for a goal's task; a to-do also carries its priority and due-by time.
+        "item_type": getattr(item, "item_type", None),
+        "priority": getattr(item, "priority", None),
+        "due_time": hhmm(getattr(item, "due_time", None)) if getattr(item, "due_time", None) else None,
+        "done_at": iso_dt(getattr(item, "done_at", None)),
     }
     if with_created_at:
         out["created_at"] = iso_dt(item.created_at)

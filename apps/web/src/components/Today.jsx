@@ -1,7 +1,43 @@
-import { useState, useRef, useLayoutEffect } from "react";
-import { CalendarDays, MessageSquare, Send, Sparkles } from "lucide-react";
+import { useState, useRef, useLayoutEffect, useMemo } from "react";
+import { CalendarDays, MessageSquare, Plus, Send, Sparkles } from "lucide-react";
+import { toast } from "sonner";
 import { localDateKey } from "../lib/utils";
-import TodayTimetable from "./TodayTimetable";
+import { toggleDone, upsertPlanItem } from "../lib/todos";
+import { buildAgenda, dayKeys } from "../lib/agenda";
+import {
+  TODAY_RANGE_DAY,
+  TODAY_RANGE_WEEK,
+  TODAY_RANGE_MONTH,
+  TODAY_RANGES,
+  TODAY_RANGE_STORAGE_KEY,
+} from "../constants/todayRanges";
+import { AgendaDay, AgendaWeek, MonthSummary, RangeTabs } from "./TodayAgenda";
+import TodoForm from "./TodoForm";
+
+const DAYS_PER_WEEK = 7;
+
+/** The days a range covers: today; Monday to Sunday of this week; the 1st to the last of this month. */
+function rangeKeys(range, now) {
+  if (range === TODAY_RANGE_WEEK) {
+    const monday = new Date(now);
+    monday.setDate(now.getDate() - ((now.getDay() + DAYS_PER_WEEK - 1) % DAYS_PER_WEEK));
+    return dayKeys(monday, DAYS_PER_WEEK);
+  }
+  if (range === TODAY_RANGE_MONTH) {
+    const first = new Date(now.getFullYear(), now.getMonth(), 1);
+    return dayKeys(first, new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate());
+  }
+  return [localDateKey(now)];
+}
+
+function readRange() {
+  try {
+    const v = window.localStorage.getItem(TODAY_RANGE_STORAGE_KEY);
+    return TODAY_RANGES.some((r) => r.key === v) ? v : TODAY_RANGE_DAY;
+  } catch {
+    return TODAY_RANGE_DAY;
+  }
+}
 
 /**
  * Today — the "Today" tab. Hosts:
@@ -21,6 +57,38 @@ import TodayTimetable from "./TodayTimetable";
  */
 export default function Today({ state, onChange, onOpenChat }) {
   const [text, setText] = useState("");
+  const [range, setRangeState] = useState(readRange);
+  const [savingId, setSavingId] = useState(null);
+  const setRange = (r) => {
+    setRangeState(r);
+    try {
+      window.localStorage.setItem(TODAY_RANGE_STORAGE_KEY, r);
+    } catch {
+      /* a private window: the range just is not remembered */
+    }
+  };
+  const byDay = useMemo(() => buildAgenda(state, rangeKeys(range, new Date())), [state, range]);
+  const todayEntries = byDay[localDateKey()] || [];
+
+  const [adding, setAdding] = useState(false);
+  // Ticking a to-do, a task, or a session made for a task flips it in place: it stays listed, struck through.
+  const toggle = async (entry) => {
+    if (!entry.task) return;
+    setSavingId(entry.task.id);
+    try {
+      await toggleDone(entry.task, onChange);
+    } catch (err) {
+      toast.error(typeof err?.message === "string" ? err.message : "Couldn't update that.");
+    } finally {
+      setSavingId(null);
+    }
+  };
+  // Both openers pass an empty prefill: the button already names the action and the task.
+  const cantDo = (item) =>
+    onOpenChat?.("", { scope: "plan", refId: item.id, kind: "plan_day", title: `Renegotiate "${item.title}"`, helperText: "What part feels off? Be specific — the coach will suggest a keep / shrink / drop." });
+  const breakDown = (item) =>
+    onOpenChat?.("", { scope: "plan", refId: item.id, kind: "plan_day", title: `Break down "${item.title}"`, helperText: "Describe the smallest concrete next step and the rough when." });
+  const rowProps = { onToggle: toggle, savingId, onCant: cantDo, onBreakDown: breakDown };
 
   const handleSend = (e) => {
     e?.preventDefault?.();
@@ -50,17 +118,39 @@ export default function Today({ state, onChange, onOpenChat }) {
           What's on the docket?
         </h2>
         <p className="text-sm text-[var(--text-secondary)] leading-relaxed">
-          Tick off tasks as you finish them (fixed commitments, like classes or meetings, don't have a tick), or ask the coach to renegotiate / break one down. When you want to talk about the day as a whole, use the box at the bottom — that goes straight to the chat.
+          Tick off tasks as you finish them, or ask the coach to renegotiate / break one down. Each kind keeps its calendar look: goal sessions, reminders, repeating and fixed commitments, to-dos, milestones and time away.
         </p>
       </header>
 
-      <TodayTimetable
-        state={state}
-        onChange={onChange}
-        onOpenChat={onOpenChat}
-        compact={false}
-        fullTimetable={true}
-      />
+      <RangeTabs value={range} onChange={setRange} />
+
+      {range === TODAY_RANGE_DAY && (
+        <section className="space-y-3" data-testid="agenda-today">
+          {adding ? (
+            <TodoForm
+              goals={state?.goals || []}
+              onSaved={(row) => {
+                if (row) onChange?.(upsertPlanItem(row));
+                setAdding(false);
+              }}
+              onCancel={() => setAdding(false)}
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={() => setAdding(true)}
+              data-testid="todo-quick-add-open"
+              className="min-h-11 inline-flex items-center gap-1.5 rounded-full border border-dashed border-[var(--border)] px-4 text-[13px] font-medium text-[var(--text-secondary)] hover:border-[var(--accent)] hover:text-[var(--accent)]"
+            >
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              To-do
+            </button>
+          )}
+          <AgendaDay entries={todayEntries} empty="Nothing on today. Add a to-do, or drop anything in Scratch." {...rowProps} />
+        </section>
+      )}
+      {range === TODAY_RANGE_WEEK && <AgendaWeek byDay={byDay} {...rowProps} />}
+      {range === TODAY_RANGE_MONTH && <MonthSummary byDay={byDay} goals={state?.goals || []} />}
 
       <SectionChatInput
         text={text}

@@ -91,10 +91,10 @@ def plan_day_level(chat, goal: GoalSpec, wk: WeekAlloc, ctx: Context, now: datet
     cap = {k: v for k, v in cap.items() if v > 0}
     listed = "\n".join(f"- {did}: {h:g}h" for did, h in cap.items())
 
-    sessions: list[tuple[str, str, float, str, str]] | None = None
+    sessions: list[tuple[str, str, float, str, str, str]] | None = None
     problem: str | None = feedback
     for _ in range(1 + FIX_MAX_LOOPS):
-        plan = complete_json(chat, DAY_SYSTEM, day_user(goal.title, wk.focus, wk.hours, listed, problem), DayPlan)
+        plan = complete_json(chat, DAY_SYSTEM, day_user(goal.title, wk.focus, wk.hours, listed, problem, wk.milestones), DayPlan)
         if plan is None:
             break
         per_day: dict[str, float] = {}
@@ -105,23 +105,24 @@ def plan_day_level(chat, goal: GoalSpec, wk: WeekAlloc, ctx: Context, now: datet
         if problem is None and short:
             problem = f"sessions must be at least {MIN_SESSION_HOURS:g}h; too short: {short[0]}"
         if problem is None:
-            sessions = [(s.day_id, s.title, s.hours, s.description, s.why) for s in plan.sessions if s.hours > 0]
+            sessions = [(s.day_id, s.title, s.hours, s.description, s.why, s.milestone) for s in plan.sessions if s.hours > 0]
             break
     how = "model"
     if sessions is None:
         how = "even_split"
-        sessions = [(did, wk.focus, h, "", "") for did, h in even_split(wk.hours, cap).items()]
+        sessions = [(did, wk.focus, h, "", "", "") for did, h in even_split(wk.hours, cap).items()]
 
     placed, slot_problem = _model_slots(chat, goal, sessions, ctx, now)
     if placed is None:
         how += f"; times not placed ({slot_problem or 'no reply'})"
     gap_ctx = ctx  # placement view only: the real ctx never gets the gap padding
     changes: list[Change] = []
-    for i, (day_id, title, hours, description, why) in enumerate(sessions):
+    milestone_ids = {m.title: m.id for m in goal.milestones if m.id}
+    for i, (day_id, title, hours, description, why, milestone) in enumerate(sessions):
         day = date.fromisoformat(day_id[len(DAY_PREFIX):])
         # The day travels with the task. Without it the row has no date, so the week and day views have
         # nowhere to draw it — the task existed but was invisible on every calendar.
-        task = AddTask(id=new_id("task"), goal_id=goal.id, title=title, effort_hours=hours, day=day, description=description, why=why)
+        task = AddTask(id=new_id("task"), goal_id=goal.id, title=title, effort_hours=hours, day=day, description=description, why=why, milestone_id=milestone_ids.get(milestone))
         blocks: list[AddBlock] = []
         if placed is not None:
             window, offset, slot_why = placed[i]

@@ -24,11 +24,12 @@ from difflib import SequenceMatcher
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.blast_radius import radius_for
 from ..ids import new_id
-from ..models import BLOCKER_KINDS, GOAL_HORIZONS, TimetableBlock, User
+from ..models import BLOCKER_KINDS, GOAL_HORIZONS, Milestone, TimetableBlock, User
 from . import goal_drop, repo, staleness
 
 #: v1's cap on how many attached sources a confirmed goal adopts.
@@ -423,6 +424,15 @@ async def _add_milestone(
     ref = await _resolve_goal_ref(session, user_id=user_id, args=args)
     goal_title = ref.goal_title if ref else str(args.get("goal_title") or "")
 
+    # A sub-milestone names its facet by title; the facet was proposed earlier in the same block, so
+    # it is already a row. An unknown facet title leaves this one a facet itself.
+    parent_title = str(args.get("parent") or "").strip()
+    parent_id = None
+    if parent_title and ref:
+        parent_id = (await session.execute(select(Milestone.id).where(
+            Milestone.user_id == user_id, Milestone.goal_id == ref.goal_id, Milestone.title == parent_title,
+            Milestone.parent_id.is_(None)).limit(1))).scalar_one_or_none()
+
     ms = await repo.create_milestone(
         session,
         user_id=user_id,
@@ -431,6 +441,8 @@ async def _add_milestone(
         goal_title=goal_title,
         target_date=_as_date(args.get("target_date")),
         phase=str(args.get("phase") or ""),
+        parent_id=parent_id,
+        hours=_as_hours(args.get("hours")),
     )
     if ref:
         await _apply_plan_items(session, user_id=user_id, goal_id=ref.goal_id, args=args)

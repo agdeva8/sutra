@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Loader2 } from "lucide-react";
 import TimeWheelInput from "./TimeWheelInput";
 import { weekProblem } from "../lib/profileCheck";
-import { WEEKDAYS, DEFAULT_WORK_DAYS, WEEKLY_HOURS_CHOICES, MAX_WEEKLY_GOAL_HOURS } from "../constants/profile";
+import { WEEKDAYS, DEFAULT_WORK_DAYS, WEEKLY_HOURS_CHOICES, MAX_WEEKLY_GOAL_HOURS, DEFAULT_WAKE, DEFAULT_SLEEP, DEFAULT_WORK_START, DEFAULT_WORK_END, DEFAULT_WEEKLY_HOURS } from "../constants/profile";
 
 /**
  * AboutYouCard — asked once, at the start of the first Add Goal: the user's usual week.
@@ -14,11 +14,11 @@ import { WEEKDAYS, DEFAULT_WORK_DAYS, WEEKLY_HOURS_CHOICES, MAX_WEEKLY_GOAL_HOUR
  */
 export default function AboutYouCard({ onSave, onSkip }) {
   const [workDays, setWorkDays] = useState(DEFAULT_WORK_DAYS);
-  const [wake, setWake] = useState("");
-  const [sleep, setSleep] = useState("");
-  const [workStart, setWorkStart] = useState("");
-  const [workEnd, setWorkEnd] = useState("");
-  const [hours, setHours] = useState(null);
+  const [wake, setWake] = useState(DEFAULT_WAKE);
+  const [sleep, setSleep] = useState(DEFAULT_SLEEP);
+  const [workStart, setWorkStart] = useState(DEFAULT_WORK_START);
+  const [workEnd, setWorkEnd] = useState(DEFAULT_WORK_END);
+  const [hours, setHours] = useState(DEFAULT_WEEKLY_HOURS);
   const [otherHours, setOtherHours] = useState("");
   const [restDays, setRestDays] = useState([]);
   const [busy, setBusy] = useState(false);

@@ -767,7 +767,7 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
           </div>
         )}
         {messages.slice(-CHAT_RENDER_CAP).map((m) => (
-          <Message key={m.id} m={m} settled={settledId === m.id} onConfirm={onConfirm} onReject={onReject} onRefine={onRefine} onOpenRefine={onOpenRefine} onOpenReject={onOpenReject} onNavigate={onNavigate} onAnswerChoice={onAnswerChoice} showConfirm={showConfirm} busyProposal={busyProposal} onViewGoal={onViewGoal} locked={readOnly} />
+          <Message key={m.id} m={m} settled={settledId === m.id} onConfirm={onConfirm} onReject={onReject} onRefine={onRefine} onOpenRefine={onOpenRefine} onOpenReject={onOpenReject} onNavigate={onNavigate} onAnswerChoice={onAnswerChoice} showConfirm={showConfirm} busyProposal={busyProposal} onViewGoal={onViewGoal} locked={readOnly || sending} />
         ))}
         {/* Clarification card lives at the END of the transcript, not below the
             composer: it is part of the coach's turn, so it scrolls with the

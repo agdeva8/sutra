@@ -57,7 +57,8 @@ import { toast } from "sonner";
 import useMediaQuery from "../hooks/useMediaQuery";
 import useGoalProgress from "../lib/useGoalProgress";
 import { progressStatus } from "../constants/goalProgress";
-import { KIND_STYLE, REMINDER_SLOT_MINUTES } from "../constants/calendarKinds";
+import { planItemEvent, isTodo } from "../lib/events";
+import { KIND_STYLE, REMINDER_SLOT_MINUTES, SOURCE_RECURRING, GOAL_PALETTE, goalColor, reminderColor, recurringColor } from "../constants/calendarKinds";
 
 /* ---------------------------------------------------------------------------
  * Sutra Timeline — 3-view dropdown: Day by day (Drill), At a glance (Strip),
@@ -102,7 +103,19 @@ const HORIZON_COLOR = {
 const HORIZON_LABEL = { weekly: "WK", short: "SHORT", medium: "MED", long: "LONG" };
 
 /** Per-goal stripe colours for the calendar cards (deterministic by goal id). */
-const GOAL_PALETTE = ["#0A84FF", "#34C759", "#FF9F0A", "#BF5AF2", "#FF375F", "#5AC8FA"];
+
+/**
+ * Glyph, look and colour for one timetable block. A repeating commitment's occurrences share their series
+ * colour; any other fixed commitment is neutral; a planned session takes its goal's colour.
+ */
+function timeBlockStyle(b) {
+  if (b.source === SOURCE_RECURRING) {
+    const k = KIND_STYLE.recurring;
+    return { glyph: k.glyph, look: k.look, color: recurringColor(b.source_id || b.label) };
+  }
+  if (b.kind === "committed") return { glyph: KIND_STYLE.fixed.glyph, look: KIND_STYLE.fixed.look, color: KIND_STYLE.fixed.color };
+  return { glyph: KIND_STYLE.session.glyph, look: KIND_STYLE.session.look, color: b.goal_id ? goalColor(b.goal_id) : GOAL_PALETTE[0] };
+}
 
 /* Status → color token. Issue 2/3 (Iteration 5) — tile color is now
    driven by status, not horizon, so on-track / overdue / in-progress /
@@ -624,7 +637,7 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
   // with the goal (title + colour) and the milestone a task fulfils. Goals
   // become the stripe/context, not cards.
   const calendarCards = useMemo(() => {
-    const colorByGoal = new Map(goals.map((g, i) => [g.id, GOAL_PALETTE[i % GOAL_PALETTE.length]]));
+    const colorByGoal = new Map(goals.map((g) => [g.id, goalColor(g.id)]));
     const out = [];
     for (const it of allItems) {
       if (it.kind === "goal") continue;
@@ -2384,23 +2397,20 @@ function CalendarView({
   const sessionCards = useMemo(
     () =>
       (blocks || []).map((b) => {
-        const goalIndex = (goals || []).findIndex((g) => g.id === b.goal_id);
         const hhmm = (t) => String(t || "").slice(0, 5);
         return {
           id: `session-${b.id}`,
           item: { id: b.id, kind: "block", title: b.label, date: b.block_date, start_date: b.block_date, end_date: b.block_date, goalTitle: b.goal_title, goal_id: b.goal_id, source_id: b.source_id, why: b.why, start_time: b.start_time, end_time: b.end_time },
           date: new Date(`${String(b.block_date).slice(0, 10)}T00:00:00`),
-          glyph: b.kind === "committed" ? KIND_STYLE.fixed.glyph : KIND_STYLE.session.glyph,
-          look: "wash",
+          ...timeBlockStyle(b),
           title: `${hhmm(b.start_time)} ${b.label}`.trim(),
           goalTitle: b.goal_title || "",
-          color: b.kind === "committed" ? KIND_STYLE.fixed.color : GOAL_PALETTE[(goalIndex < 0 ? 0 : goalIndex) % GOAL_PALETTE.length],
           fulfils: "",
           hours: "",
           status: b.kind === "committed" ? "committed" : "",
         };
       }),
-    [blocks, goals],
+    [blocks],
   );
 
   // Month view goal filter — `null` means "all goals visible".
@@ -2466,7 +2476,7 @@ function CalendarView({
   // view, MONTHLY (milestones) for the year view — not an aggregation of the
   // daily tasks.
   const planTargets = useMemo(() => {
-    const colorByGoal = new Map((goals || []).map((g, i) => [g.id, GOAL_PALETTE[i % GOAL_PALETTE.length]]));
+    const colorByGoal = new Map((goals || []).map((g) => [g.id, goalColor(g.id)]));
     const mk = (p, glyph) => {
       const goal = (goals || []).find((g) => g.id === p.goal_id);
       const when =
@@ -2515,7 +2525,7 @@ function CalendarView({
             title: m.title || "",
             glyph: "◆",
             goalTitle: m.goal_title || (gi >= 0 ? goals[gi].title : ""),
-            color: hasVerdict(verdicts[m.id]) ? progressStatus(verdicts[m.id].status).color : GOAL_PALETTE[(gi < 0 ? 0 : gi) % GOAL_PALETTE.length],
+            color: hasVerdict(verdicts[m.id]) ? progressStatus(verdicts[m.id].status).color : (gi < 0 ? GOAL_PALETTE[0] : goalColor(goals[gi].id)),
             status: m.status || "",
             date: new Date(`${String(raw).slice(0, 10)}T00:00:00`),
           };
@@ -2534,13 +2544,16 @@ function CalendarView({
           const gi = (goals || []).findIndex((g) => g.id === p.goal_id);
           const raw = p.start_date || p.due_date;
           const hours = (p.note || "").match(/^([\d.]+)h$/);
+          // The shared Event shape decides the look: a to-do is drawn as a to-do, a goal's task as a task.
+          const ev = planItemEvent(p, gi >= 0 ? goals[gi].title : p.goal_title || "");
           return {
             id: p.id,
-            item: { ...p, kind: "plan", title: p.title, date: raw },
-            title: p.title || "",
-            glyph: "○",
-            goalTitle: (gi >= 0 ? goals[gi].title : "") || p.goal_title || "",
-            color: GOAL_PALETTE[(gi < 0 ? 0 : gi) % GOAL_PALETTE.length],
+            item: { ...p, kind: isTodo(p) ? "todo" : "plan", title: p.title, date: raw },
+            title: ev.dueTime ? `${ev.dueTime} ${p.title}` : p.title || "",
+            glyph: ev.glyph,
+            look: ev.look,
+            goalTitle: ev.goalTitle,
+            color: ev.color,
             hours: hours ? `${hours[1]}h` : "",
             status: p.status || "",
             date: new Date(`${String(raw).slice(0, 10)}T00:00:00`),
@@ -2567,7 +2580,7 @@ function CalendarView({
             glyph: KIND_STYLE.reminder.glyph,
             look: KIND_STYLE.reminder.look,
             goalTitle: "",
-            color: KIND_STYLE.reminder.color,
+            color: reminderColor(r.id),
             status: "",
             date: day,
           });
@@ -2638,7 +2651,6 @@ function CalendarView({
         const endAt = new Date(day);
         endAt.setHours(eh || 0, em || 0, 0, 0);
         if (endAt <= startAt) endAt.setDate(endAt.getDate() + 1); // a session running past midnight
-        const gi = (goals || []).findIndex((g) => g.id === b.goal_id);
         return {
           id: b.id,
           item: {
@@ -2658,15 +2670,13 @@ function CalendarView({
             why: b.why,
           },
           title: b.label,
-          glyph: b.kind === "committed" ? KIND_STYLE.fixed.glyph : KIND_STYLE.session.glyph,
-          look: "wash",
+          ...timeBlockStyle(b),
           goalTitle: b.goal_title || "",
-          color: b.kind === "committed" ? KIND_STYLE.fixed.color : GOAL_PALETTE[(gi < 0 ? 0 : gi) % GOAL_PALETTE.length],
           status: b.kind === "committed" ? "" : "",
           date: day,
         };
       }),
-    [blocks, goals],
+    [blocks],
   );
 
   const tracksByWeek = useMemo(() => {
@@ -2740,7 +2750,7 @@ function CalendarView({
   // Every zoom shares one nested calendar: goal box ▸ milestone boxes ▸ weekly
   // task boxes. The column unit is the smallest unit of the span — day → day
   // columns, 3 months → week columns, year → month columns.
-  const colorByGoal = new Map((goals || []).map((g, i) => [g.id, GOAL_PALETTE[i % GOAL_PALETTE.length]]));
+  const colorByGoal = new Map((goals || []).map((g) => [g.id, goalColor(g.id)]));
   const goalItems = allItems
     .filter((it) => it.kind === "goal")
     .map((g) => ({ ...g, color: colorByGoal.get(g.id) || GOAL_PALETTE[0] }));
@@ -3191,6 +3201,8 @@ export function TimelineItemDetailsDialog({ item, state, verdicts = {}, onClose,
       ? "Blocker"
       : item.kind === "reminder"
       ? "Reminder"
+      : item.kind === "todo"
+      ? "To-do"
       : item.kind === "block" && !item.goal_id
       ? "Fixed time"
       : level === "month"
@@ -3228,7 +3240,7 @@ export function TimelineItemDetailsDialog({ item, state, verdicts = {}, onClose,
       : item.kind === "milestone"
       ? "var(--warning)"
       : item.kind === "reminder"
-      ? "var(--reminder)"
+      ? reminderColor(item.id)
       : "var(--accent)";
   // The chain rendered top-to-bottom: the item itself, the milestone it
   // fulfils, then the goal it serves.

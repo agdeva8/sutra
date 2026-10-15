@@ -95,6 +95,8 @@ export default function GoalBoard({
                 goal={g}
                 milestones={milestones}
                 progress={progress[g.id]}
+                unscheduled={!!state && !(state.plan_items || []).some((it) => it.goal_id === g.id && it.horizon !== "milestone")}
+                onScheduled={onCreated}
                 onAction={onAction}
                 onUploadSource={onUploadSource}
                 onAddLink={onAddLink}

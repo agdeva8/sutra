@@ -268,7 +268,7 @@ async def _events_for(session: AsyncSession, user_id: str, since: date) -> list[
         end = it.end_date or it.due_date or start
         if end < since:
             continue
-        desc = "\n".join(p for p in (goal.title if goal else "", it.phase, it.note) if p)
+        desc = "\n".join(p for p in (goal.title if goal else "", it.phase, it.note, it.description) if p)
         events.append(
             FeedEvent(
                 uid=it.id, title=it.title, start=start, end=end,

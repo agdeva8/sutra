@@ -21,6 +21,7 @@ import SourceActionDialog from "./SourceActionDialog";
 import LinkPreviewDialog from "./LinkPreviewDialog";
 import GoalProgress from "./GoalProgress";
 import useGoalActivity from "../lib/goalActivity";
+import { NO_SCHEDULE_BUTTON, NO_SCHEDULE_TEXT } from "../constants/goalActivity";
 
 /**
  * GoalCard — one editable goal: status, why, target, next action, its
@@ -207,7 +208,7 @@ function SourcesChip({ goal, sources, onUpload, onAddLink, onDelete }) {
   );
 }
 
-export default function GoalCard({ goal, milestones, progress, onAction, onUploadSource, onAddLink, onDeleteSource, onAddMemory, onOpenPlan }) {
+export default function GoalCard({ goal, milestones, progress, onAction, onUploadSource, onAddLink, onDeleteSource, onAddMemory, onOpenPlan, unscheduled = false, onScheduled }) {
   const goalMiles = milestones.filter((m) => m.goal_id === goal.id || m.goal_title === goal.title);
   const sources = goal.sources || [];
   const activity = useGoalActivity(goal.id);
@@ -224,6 +225,18 @@ export default function GoalCard({ goal, milestones, progress, onAction, onUploa
             <div role="status" aria-live="polite" data-testid={`goal-activity-${goal.id}`} className="mt-2 flex items-center gap-2 rounded-lg bg-[color-mix(in_srgb,var(--accent)_10%,transparent)] px-3 py-2 text-[12px] text-[var(--accent)]">
               <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden="true" />
               <span className="min-w-0">{activity}</span>
+            </div>
+          )}
+          {!activity && unscheduled && goal.status === "active" && (
+            <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg bg-[var(--bg-tertiary)] px-3 py-2 text-[12px] text-[var(--text-secondary)]">
+              <span className="min-w-0 flex-1">{NO_SCHEDULE_TEXT}</span>
+              <button
+                data-testid={`goal-build-schedule-${goal.id}`}
+                onClick={() => api.planGoal(goal.id, undefined, goal.title).then(() => onScheduled?.()).catch(() => onScheduled?.())}
+                className="h-9 px-3 rounded-md border border-[var(--accent)] text-[var(--accent)] text-[12px] font-medium"
+              >
+                {NO_SCHEDULE_BUTTON}
+              </button>
             </div>
           )}
           <GoalProgress progress={progress} />

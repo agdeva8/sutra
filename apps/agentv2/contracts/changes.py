@@ -12,7 +12,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..config import BLOCK_TENTATIVE
+from ..config import BLOCK_TENTATIVE, TODO_PRIORITY_NORMAL
 
 
 class _Strict(BaseModel):
@@ -43,6 +43,10 @@ class AddMilestone(_Strict):
     goal_id: str
     title: str
     target_date: date
+    #: The facet milestone this one is a step of; `None` for a facet (a top-level milestone).
+    parent_id: str | None = None
+    #: Effort the milestone needs on its own; 0 when unknown (milestones added by hand).
+    hours: float = 0
 
 
 class AddTask(_Strict):
@@ -62,10 +66,14 @@ class AddTask(_Strict):
     effort_hours: float | None = Field(None, gt=0)
     #: The day this session is for. `None` when the day could not hold it.
     day: date | None = None
+    #: The time of day a dated to-do is due by ("by 5 PM"); shown with the task, never a scheduled block.
+    due_time: time | None = None
     #: One line on what the session actually involves, for the task's own detail view.
     description: str = ""
     #: Why this exists, one plain sentence for the user, shown when they open it.
     why: str = ""
+    #: The milestone this session works toward, when the goal has a breakdown.
+    milestone_id: str | None = None
 
 
 class AddReminder(_Strict):
@@ -189,6 +197,48 @@ class LinkSource(_Strict):
     summary: str
 
 
+TodoPriority = Literal["low", "normal", "high"]  # config.TODO_PRIORITIES
+#: Fields of a to-do an edit may set back to empty.
+TodoClearable = Literal["day", "due_time", "description", "goal_id"]
+
+
+class AddTodo(_Strict):
+    """Something the user means to do, owned by nobody's plan: no hours, no scheduling, just a list.
+
+    Distinct from `AddTask` (a goal's sized session the planner places) so every read can tell the two
+    apart: a to-do has a priority and the user's own description, and never gets goal-task actions.
+    """
+
+    kind: Literal["add_todo"] = "add_todo"
+    id: str
+    title: str
+    #: Optional: a to-do may be "for" a goal without being part of its plan.
+    goal_id: str | None = None
+    #: The day it is for; `None` keeps it on Today until it is done.
+    day: date | None = None
+    #: The time of day it is due by, on `day`.
+    due_time: time | None = None
+    priority: TodoPriority = TODO_PRIORITY_NORMAL
+    description: str = ""
+
+
+class EditTodo(_Strict):
+    """Change a to-do's fields, or tick / un-tick it. Only the fields given (not None) change; `clear`
+    empties optional ones. `before` holds the previous values so undo can put them back."""
+
+    kind: Literal["edit_todo"] = "edit_todo"
+    id: str
+    title: str | None = None
+    goal_id: str | None = None
+    day: date | None = None
+    due_time: time | None = None
+    priority: TodoPriority | None = None
+    description: str | None = None
+    done: bool | None = None
+    clear: list[TodoClearable] = Field(default_factory=list)
+    before: dict = Field(default_factory=dict)
+
+
 class MoveBlock(_Strict):
     kind: Literal["move_block"] = "move_block"
     block_id: str
@@ -198,7 +248,7 @@ class MoveBlock(_Strict):
 
 
 Change = Annotated[
-    AddBlocker | AddRecurring | StopRecurring | ClearGoalPlan | CompleteItem | AddGoal | AddMilestone | AddTask | AddReminder | AddBlock | MoveBlock | LinkSource | AddPlanWeek | AddPlanMonth,
+    AddBlocker | AddRecurring | StopRecurring | ClearGoalPlan | CompleteItem | AddGoal | AddMilestone | AddTask | AddReminder | AddBlock | MoveBlock | LinkSource | AddPlanWeek | AddPlanMonth | AddTodo | EditTodo,
     Field(discriminator="kind"),
 ]
 

@@ -8,12 +8,14 @@ from ..contracts.planner import DayPlan, WeekPlan
 from ..llm import schema_text
 
 WEEK_SYSTEM = f"""You spread one goal's effort across the coming weeks. You are given the weeks with the free hours that can be used for this goal. You cannot invent weeks: every item names a week_id from the list.
-Give early weeks a gentle start and put the heaviest work nearer the deadline only if the goal needs it. Each week gets a short focus (a phrase of at most eight words) and a `why` (one sentence: why this week, with this load, at this point before the deadline). The hours across all weeks must add up to the goal's total, and no week may exceed its hours.
+If the goal has milestones, they are its plan: facets run in parallel, each with sub-milestones and a due date. Work the facets side by side, never one facet at a time: while two or more facets are still open, every week moves at least two of them forward, splitting its hours between them, and lists those milestones by exact title in `milestones` (the sub-milestones being worked, from different facets). Within a facet, start a sub-milestone only once the earlier ones are underway, and give each milestone enough hours before its due date. Keep the weekly load steady rather than piling one week high. The focus names what the week achieves across those facets.
+Keep the weekly load close to even across the weeks; start a little lighter only in the first week, and load a week near its cap only when the total needs it. Each week gets a short focus (a phrase of at most eight words) and a `why` (one sentence: why this week, with this load, at this point before the deadline). The hours across all weeks must add up to the goal's total, and no week may exceed its hours.
 
 Reply with only JSON matching this schema:
 {schema_text(WeekPlan)}"""
 
 DAY_SYSTEM = f"""You break one week of a goal into sessions on specific days. You are given the days with their free hours. You cannot invent days: every session names a day_id from the list.
+If the week lists milestones, every session works toward exactly one of them (name it in `milestone`), and the week's sessions cover every listed milestone. Interleave them across the week rather than doing one milestone's sessions back to back; when a day has room, it can carry two sessions for different milestones.
 Keep sessions between one and three hours. A day may get no session at all, or several sessions of different work; choose what suits the week, do not give every day one. Spread the work rather than loading one long day. The hours across the sessions must add up to the week's hours, and no day may exceed its free hours.
 
 Each session also carries a `why`: one sentence on why this session is on this day and why it is next in the sequence (not what it is, that is the description). {WHY_VOICE}
@@ -27,15 +29,24 @@ Reply with only JSON matching this schema:
 {schema_text(DayPlan)}"""
 
 
-def week_user(goal_title: str, total: float, deadline: str | None, weeks: str, problem: str | None, earlier: list[str] | None = None) -> str:
+def milestones_text(milestones) -> str:
+    """The breakdown as an indented list: facets, then their sub-milestones under them."""
+    return "\n".join(f"{'    ' if m.parent else ''}- {m.title} (due {m.due.isoformat()}, {m.hours:g}h)" for m in milestones)
+
+
+def week_user(goal_title: str, total: float, deadline: str | None, weeks: str, problem: str | None, earlier: list[str] | None = None, milestones: str = "") -> str:
     base = f"Goal: {goal_title}\nTotal effort: {total:g} hours\nDeadline: {deadline or 'none given'}\n\nWeeks (id: usable hours):\n{weeks}"
+    if milestones:
+        base += f"\n\nMilestones (facets, with their sub-milestones indented):\n{milestones}"
     if earlier:
         base += "\n\nEarlier weeks are already planned, so continue from where they end and do not repeat them:\n" + "\n".join(f"- {f}" for f in earlier)
     return base + (f"\n\nYour previous plan was rejected: {problem}. Fix that." if problem else "")
 
 
-def day_user(goal_title: str, focus: str, hours: float, days: str, problem: str | None) -> str:
+def day_user(goal_title: str, focus: str, hours: float, days: str, problem: str | None, milestones: list[str] | None = None) -> str:
     base = f"Goal: {goal_title}\nThis week's focus: {focus}\nWeek's hours: {hours:g}\n\nDays (id: free hours):\n{days}"
+    if milestones:
+        base += "\n\nMilestones this week works toward:\n" + "\n".join(f"- {m}" for m in milestones)
     return base + (f"\n\nYour previous plan was rejected: {problem}. Fix that." if problem else "")
 
 from ..contracts.planner import Critique, MonthPlan  # noqa: E402

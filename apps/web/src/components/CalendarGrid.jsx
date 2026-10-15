@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { CalendarCard } from "./CalendarCards";
+import { cardSurface } from "../constants/calendarKinds";
 import useMediaQuery from "../hooks/useMediaQuery";
 
 /**
@@ -319,11 +320,7 @@ export default function CalendarGrid({
               gridColumn: `${b.c0 + 1 + gutter} / ${b.c1 + 2 + gutter}`,
               gridRow: `${b.r0 + 1 + headerRow} / ${b.r1 + 2 + headerRow}`,
               margin: "2px 3px",
-              background:
-                b.card.look === "stripes"
-                  ? `repeating-linear-gradient(135deg, color-mix(in srgb, ${b.card.color} 24%, var(--bg-primary)) 0 6px, color-mix(in srgb, ${b.card.color} 10%, var(--bg-primary)) 6px 12px)`
-                  : `color-mix(in srgb, ${b.card.color} 16%, var(--bg-primary))`,
-              boxShadow: `inset 3px 0 0 0 ${b.card.color}`,
+              ...cardSurface(b.card.color, b.card.look),
             }}
             className="z-10 flex items-center gap-1.5 overflow-hidden rounded-[3px] px-1.5 text-left text-[11px] font-medium text-[var(--text-primary)] transition-[filter] hover:brightness-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--accent)]"
           >

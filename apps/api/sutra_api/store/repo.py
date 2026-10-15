@@ -195,8 +195,12 @@ async def create_milestone(
     target_date: date | None = None,
     phase: str = "",
     status: str = "open",
+    parent_id: str | None = None,
+    hours: float | None = None,
 ) -> Milestone:
     row = Milestone(
+        parent_id=parent_id,
+        hours=hours,
         id=new_id("mile"),
         user_id=user_id,
         title=title,

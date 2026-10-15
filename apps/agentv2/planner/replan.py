@@ -33,6 +33,8 @@ def replan_changes(chat, ctx: Context, goal_id: str, now: datetime, progress=Non
     ))
     cleared_ctx = replace(cleared_ctx, plan_weeks=tuple(w for w in ctx.plan_weeks if w.goal_id != goal_id))
     spec = GoalSpec(id=goal_id, title=ctx.goal_titles.get(goal_id, goal_id), total_hours=remaining,
-                    deadline=ctx.goal_targets.get(goal_id) or now.date() + timedelta(weeks=12))
+                    deadline=ctx.goal_targets.get(goal_id) or now.date() + timedelta(weeks=12),
+                    weekly_hours=ctx.goal_weekly_hours.get(goal_id),
+                    milestones=[m for m in ctx.goal_milestones.get(goal_id, ()) if m.due >= now.date()])
     plan = plan_goal(chat, spec, cleared_ctx, now, progress)
     return [ClearGoalPlan(goal_id=goal_id, from_date=now.date()), *plan.changes], ["replanned"] + plan.notes

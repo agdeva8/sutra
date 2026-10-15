@@ -7,8 +7,13 @@ from .triage import _Llm
 
 
 class MilestoneDraft(_Llm):
+    """One node of the goal's breakdown. Flat on the wire (a `parent` title, not nesting), so the schema
+    the model reads stays simple; `draft_to_changes` rebuilds the tree."""
+
     title: str
-    week: int = Field(description="Weeks from today when this should be reached.")
+    parent: str = Field("", description="The exact title of the facet this sub-milestone belongs to; empty for a facet itself.")
+    hours: float = Field(0, description="Effort this milestone needs on its own, in hours.")
+    week: int = Field(description="Weeks from today when this should be reached. Attached after the breakdown; milestones may share a week.")
 
 
 class GoalDraft(_Llm):
@@ -18,6 +23,7 @@ class GoalDraft(_Llm):
     life_area: str = ""
     total_hours: float = Field(description="Total effort the goal needs, in hours.")
     deadline_weeks: int = Field(description="Weeks from today until the goal should be done.")
+    weekly_hours: float | None = Field(None, description="Hours a week the user said they can give this goal, if they said.")
     milestones: list[MilestoneDraft] = Field(default_factory=list)
 
 

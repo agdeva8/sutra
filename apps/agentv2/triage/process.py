@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from ..contracts import (
-    AddBlock, AddBlocker, AddRecurring, StopRecurring, ClearGoalPlan, CompleteItem, AddGoal, AddMilestone, AddPlanMonth, AddPlanWeek, AddReminder, AddTask, Applied, Change, LinkSource, MoveBlock, Origin, Rejected,
+    AddBlock, AddBlocker, AddRecurring, StopRecurring, ClearGoalPlan, CompleteItem, AddGoal, AddMilestone, AddPlanMonth, AddPlanWeek, AddReminder, AddTask, AddTodo, EditTodo, Applied, Change, LinkSource, MoveBlock, Origin, Rejected,
 )
 from ..gateway import Store, apply
 from ..llm import Image
@@ -47,6 +47,10 @@ def describe(c: Change) -> str:
         return f"New goal: {c.title}"
     if isinstance(c, AddTask):
         return f"{'New task' if c.goal_id else 'To-do'}: {c.title}" + (f" ({c.effort_hours:g}h)" if c.effort_hours else "")
+    if isinstance(c, AddTodo):
+        return f"To-do: {c.title}" + (f", {c.day:%a %d %b}" if c.day else "") + (f" by {c.due_time:%H:%M}" if c.due_time else "")
+    if isinstance(c, EditTodo):
+        return f"To-do {'done' if c.done else 'updated'}: {c.title or c.id}"
     if isinstance(c, AddReminder):
         times = ", ".join(t.strftime("%H:%M") for t in c.times)
         when = f"{c.days[0]:%a %d %b}" if len(c.days) == 1 else f"{len(c.days)} days from {c.days[0]:%a %d %b}"

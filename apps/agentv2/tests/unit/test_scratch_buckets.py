@@ -3,7 +3,7 @@
 import asyncio
 from datetime import date, datetime
 
-from agentv2.contracts import AddBlocker, AddReminder, AddTask, CompleteItem, Origin
+from agentv2.contracts import AddBlocker, AddReminder, AddTodo, CompleteItem, Origin
 from agentv2.contracts.triage import AwaySpec, ReminderSpec, TriageItem, TriageResult
 from agentv2.core.context import Context
 from agentv2.gateway import apply
@@ -21,12 +21,12 @@ def _route(*items, ctx=None):
 def test_a_todo_needs_no_goal_and_no_hours():
     routed = _route(TriageItem(bucket="todo", title="Reply to Mohit on Slack"))
     task = routed.changeset.changes[0]
-    assert isinstance(task, AddTask) and task.goal_id is None and task.effort_hours is None and routed.waiting is None
+    assert isinstance(task, AddTodo) and task.goal_id is None and routed.waiting is None
 
 
 def test_a_task_that_cannot_be_tied_to_a_goal_becomes_a_todo_instead_of_a_question():
     routed = _route(TriageItem(bucket="task", title="Buy milk"))
-    assert routed.waiting is None and isinstance(routed.changeset.changes[0], AddTask)
+    assert routed.waiting is None and isinstance(routed.changeset.changes[0], AddTodo)
 
 
 def test_a_bare_reminder_gets_defaults_and_an_explicit_time_is_honoured():

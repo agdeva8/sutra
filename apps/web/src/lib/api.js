@@ -145,6 +145,16 @@ function replanAfter(result) {
   return result;
 }
 
+/**
+ * A Scratch entry files its own changes (a reminder, a goal, a task) on the server, and the board the
+ * other screens hold was read before it. Say the board moved once the call lands, so the Timeline and
+ * Today read it again instead of showing the plan as it was before the entry.
+ */
+function boardChanged(result) {
+  window.dispatchEvent(new Event(STATE_STALE_EVENT));
+  return result;
+}
+
 export const api = {
   me: () => req("/auth/me", { quiet: true }),
   guest: () => req("/auth/guest", { method: "POST" }),
@@ -195,12 +205,12 @@ export const api = {
   scratch: () => req("/scratch"),
   // `defer` writes the row and returns; the client then files it with `processScratch`, which streams progress.
   createScratch: (body) => req("/scratch", { method: "POST", body: JSON.stringify({ defer: true, ...body }) }),
-  processScratch: (id, onStatus) => reqStream(`/scratch/${id}/process`, {}, onStatus),
+  processScratch: (id, onStatus) => reqStream(`/scratch/${id}/process`, {}, onStatus).then(boardChanged),
   dismissScratch: (id) => req(`/scratch/${id}/dismiss`, { method: "POST" }),
-  retryScratch: (id) => req(`/scratch/${id}/retry`, { method: "POST" }),
+  retryScratch: (id) => req(`/scratch/${id}/retry`, { method: "POST" }).then(boardChanged),
   discardScratch: (id) => req(`/scratch/${id}`, { method: "DELETE" }),
-  chatScratch: (id, message) => req(`/scratch/${id}/chat`, { method: "POST", body: JSON.stringify({ message }) }),
-  undoScratch: (id) => req(`/scratch/${id}/undo`, { method: "POST" }),
+  chatScratch: (id, message) => req(`/scratch/${id}/chat`, { method: "POST", body: JSON.stringify({ message }) }).then(boardChanged),
+  undoScratch: (id) => req(`/scratch/${id}/undo`, { method: "POST" }).then(boardChanged),
   // Goal progress: the numbers (always fresh) with the model's verdict when one is current.
   goalProgress: () => req("/agent/progress"),
   judgeProgress: () => req("/agent/progress/judge", { method: "POST" }),
@@ -239,6 +249,10 @@ export const api = {
   // Plan items (multi-horizon execution lattice) — tick a task done/open, or
   // add a user-owned daily task directly.
   createPlanItem: (p) => req("/plan-items", { method: "POST", body: JSON.stringify(p) }),
+  // A to-do through the gateway: `{ title, day?, due_time?, priority?, description?, goal_id? }`. Audited and undoable like Scratch's.
+  createTodo: (t) => req("/todos", { method: "POST", body: JSON.stringify(t) }),
+  // Edit a to-do or tick it: send only what changes; a field sent as null clears it.
+  editTodo: (id, patch) => req(`/todos/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   updatePlanItem: (id, patch) => req(`/plan-items/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   // Sources
   sources: () => req("/sources"),

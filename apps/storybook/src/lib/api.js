@@ -118,6 +118,8 @@ export const api = {
   // add a user-owned daily task directly.
   createPlanItem: (p) => req("/plan-items", { method: "POST", body: JSON.stringify(p) }),
   updatePlanItem: (id, patch) => req(`/plan-items/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  createTodo: (t) => req("/todos", { method: "POST", body: JSON.stringify(t) }),
+  editTodo: (id, patch) => req(`/todos/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   // Sources
   sources: () => req("/sources"),
   getSource: (id) => req(`/sources/${id}`),
