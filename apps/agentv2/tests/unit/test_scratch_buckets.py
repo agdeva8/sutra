@@ -65,3 +65,32 @@ def test_an_away_range_blocks_planning_and_clears_planned_time_on_those_days():
     res = asyncio.run(apply(ChangeSet(origin=ORIGIN, changes=[AddBlocker(id="a1", title="Trip", start_date=date(2026, 10, 21), end_date=date(2026, 10, 23))]), store))
     assert not hasattr(res, "violations") and "b1" not in store.blocks and "g" in res.displaced_goals
     assert date(2026, 10, 22) in asyncio.run(store.context()).blocked_dates
+
+
+def test_a_timed_block_keeps_its_goal_when_the_goal_is_real_and_none_otherwise():
+    from agentv2.contracts import AddBlock
+    from agentv2.contracts.triage import BlockSpec
+    spec = BlockSpec(date="2026-10-15", start_time="18:00", end_time="20:00")
+    linked = _route(TriageItem(bucket="block", title="LLD prep", goal_id="g", block=spec)).changeset.changes[0]
+    assert isinstance(linked, AddBlock) and linked.goal_id == "g" and linked.status == "committed"
+    plain = _route(TriageItem(bucket="block", title="Dentist", block=spec)).changeset.changes[0]
+    assert plain.goal_id is None
+    invented = _route(TriageItem(bucket="block", title="Dentist", goal_id="g_made_up", block=spec)).changeset.changes[0]
+    assert invented.goal_id is None
+
+
+def test_a_goal_task_placed_from_scratch_gives_its_slots_the_goal(monkeypatch):
+    from datetime import time
+    from agentv2.contracts import AddBlock
+    import importlib
+    route_mod = importlib.import_module("agentv2.triage.route")
+    seen = {}
+
+    def fake_place(chat, title, hours, ctx, now, *, task_id=None, goal_id=None):
+        seen["goal_id"] = goal_id
+        return [AddBlock(id="b", title=title, day=date(2026, 10, 15), start=time(9), end=time(10), status="tentative", task_id=task_id, goal_id=goal_id)], "model"
+
+    monkeypatch.setattr(route_mod, "place_task", fake_place)
+    routed = _route(TriageItem(bucket="task", title="Mock interview", goal_id="g", effort_hours=1))
+    slot = routed.changeset.changes[1]
+    assert seen["goal_id"] == "g" and slot.goal_id == "g"

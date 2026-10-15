@@ -13,16 +13,28 @@
  *       "dashed"  light fill + dashed border — a repeating commitment
  *       "outline" page background + thin border + left tick bar — a to-do: a list item, not planned time
  */
+import { createElement } from "react";
+import { Bell, CalendarOff, CalendarRange, CircleCheck, Flag, ListTodo, Lock, Repeat, Target, Timer } from "lucide-react";
+
+/** Glyphs scale with the text they sit in (1em), so a card's icon matches its title at any density. */
+const GLYPH_SIZE = "1em";
+const GLYPH_STROKE = 2.25;
+const kindIcon = (Icon) =>
+  createElement(Icon, { size: GLYPH_SIZE, strokeWidth: GLYPH_STROKE, "aria-hidden": true, style: { display: "inline-block", verticalAlign: "-0.125em" } });
+
 export const KIND_STYLE = {
-  task: { glyph: "○", label: "Task", color: null, look: "wash" },
-  session: { glyph: "◷", label: "Time slot", color: null, look: "wash" },
-  fixed: { glyph: "▣", label: "Fixed commitment", color: "var(--text-secondary)", look: "wash" },
-  blocker: { glyph: "▲", label: "Away", color: "var(--danger)", look: "stripes" },
-  milestone: { glyph: "◆", label: "Milestone", color: null, look: "wash" },
-  reminder: { glyph: "✦", label: "Reminder", color: null, look: "pill" },
-  recurring: { glyph: "↻", label: "Repeats", color: null, look: "dashed" },
-  todo: { glyph: "☐", label: "To-do", color: null, look: "outline" },
+  task: { glyph: kindIcon(CircleCheck), label: "Task", color: null, look: "wash" },
+  session: { glyph: kindIcon(Timer), label: "Time slot", color: null, look: "wash" },
+  fixed: { glyph: kindIcon(Lock), label: "Commitment", color: "var(--text-secondary)", look: "wash" },
+  blocker: { glyph: kindIcon(CalendarOff), label: "Away", color: "var(--danger)", look: "stripes" },
+  milestone: { glyph: kindIcon(Flag), label: "Milestone", color: null, look: "wash" },
+  reminder: { glyph: kindIcon(Bell), label: "Reminder", color: null, look: "pill" },
+  recurring: { glyph: kindIcon(Repeat), label: "Repeats", color: null, look: "dashed" },
+  todo: { glyph: kindIcon(ListTodo), label: "To-do", color: null, look: "outline" },
 };
+/** Glyphs for things drawn outside the per-kind table: a goal's span and a week of its plan. */
+export const GOAL_GLYPH = kindIcon(Target);
+export const WEEK_GLYPH = kindIcon(CalendarRange);
 
 /** A to-do's priority, as the API spells it (agentv2 `TODO_PRIORITIES`). */
 export const TODO_PRIORITY_LOW = "low";
@@ -38,6 +50,17 @@ export const TODO_PRIORITY_BY_KEY = Object.fromEntries(TODO_PRIORITIES.map((p) =
 export const todoColor = (priority) => (TODO_PRIORITY_BY_KEY[priority] || TODO_PRIORITY_BY_KEY[TODO_PRIORITY_NORMAL]).color;
 /** `plan_items.item_type` of a to-do (a goal's task has none). */
 export const ITEM_TYPE_TODO = "todo";
+
+/** `timetable_blocks.kind` of a fixed commitment (sutra_api `KIND_COMMITTED`). */
+export const BLOCK_KIND_COMMITMENT = "commitment";
+/** `kind` GET /timetable gives a reminder's occurrence when it lists reminders among the blocks (sutra_api `KIND_REMINDER`). */
+export const BLOCK_KIND_REMINDER = "reminder";
+/**
+ * A block is goal work when it belongs to a goal, whether the planner placed it (tentative) or the user named
+ * the time (commitment). Everything else (a commitment, a focus block, a slot with no goal) is the user's own
+ * time and draws as a commitment, to keep the kinds few. A repeating commitment is drawn by its series first.
+ */
+export const isGoalSession = (b) => !!b?.goal_id;
 
 /** `timetable_blocks.source` of a repeating commitment's occurrences (`source_id` is the series). */
 export const SOURCE_RECURRING = "recurring";

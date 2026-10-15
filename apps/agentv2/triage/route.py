@@ -99,7 +99,7 @@ def _item(chat, it: TriageItem, ctx: Context, now: datetime, source_id: str | No
 
     if it.bucket == "task":
         task = AddTask(id=new_id("task"), goal_id=it.goal_id, title=it.title, effort_hours=it.effort_hours)
-        blocks, how = place_task(chat, it.title, it.effort_hours, ctx, now, task_id=task.id)
+        blocks, how = place_task(chat, it.title, it.effort_hours, ctx, now, task_id=task.id, goal_id=task.goal_id)
         left_over = "no free room this week" if how == "no_room" else "couldn't find a good time yet"
         return [task, *blocks], (f"placed via {how}" if blocks else f"{left_over}; task added unscheduled"), None
 
@@ -124,7 +124,9 @@ def _item(chat, it: TriageItem, ctx: Context, now: datetime, source_id: str | No
         return [], None, f"Which day and what time for “{it.title}”?"
     end = parse_hhmm(b.end_time) if b and b.end_time else None
     end = end or (datetime.combine(day, start) + timedelta(minutes=DEFAULT_BLOCK_MINUTES)).time()
-    return [AddBlock(id=new_id("blk"), title=it.title, day=day, start=start, end=end, status=BLOCK_COMMITTED)], None, None
+    # A time the user named stays committed (the planner must not move it); a goal on it is colour and progress, not a licence to move.
+    gid = it.goal_id if it.goal_id in ctx.goal_ids else None
+    return [AddBlock(id=new_id("blk"), title=it.title, day=day, start=start, end=end, status=BLOCK_COMMITTED, goal_id=gid)], None, None
 
 
 def route(chat, r: TriageResult, ctx: Context, now: datetime, origin: Origin, source_id: str | None = None) -> Routed:

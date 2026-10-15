@@ -17,6 +17,8 @@ import {
   reminderColor,
   recurringColor,
   todoColor,
+  isGoalSession,
+  BLOCK_KIND_REMINDER,
 } from "../constants/calendarKinds";
 
 export const EVENT_KIND = {
@@ -33,7 +35,6 @@ export const EVENT_KIND = {
 /** The calendarKinds key that draws each event kind. */
 const STYLE_KEY = { commitment: "fixed", away: "blocker" };
 const STATUS_DONE = "done";
-const BLOCK_COMMITTED = "committed";
 
 const hhmm = (t) => (t ? String(t).slice(0, 5) : "");
 const dayOf = (v) => (v ? String(v).slice(0, 10) : null);
@@ -57,10 +58,14 @@ export function todoEvent(p, goalTitle = "") {
 
 /** A goal's task with a day and no slot. */
 export function taskEvent(p, goalTitle = "") {
-  return base(EVENT_KIND.task, p.goal_id ? goalColor(p.goal_id) : GOAL_PALETTE[0], {
+  const fields = {
     id: `task-${p.id}`, title: p.title, day: dayOf(p.due_date), goalId: p.goal_id, goalTitle,
     done: p.status === STATUS_DONE, note: p.description || "", task: p, raw: p,
-  });
+  };
+  if (p.goal_id) return base(EVENT_KIND.task, goalColor(p.goal_id), fields);
+  // A task with no goal is the user's own item: it still ticks off like a task, but draws as a commitment.
+  const fixed = KIND_STYLE.fixed;
+  return { ...base(EVENT_KIND.task, fixed.color, fields), glyph: fixed.glyph, look: fixed.look, label: fixed.label };
 }
 
 /** A plan item as whichever event it is. */
@@ -69,10 +74,12 @@ export const planItemEvent = (p, goalTitle) => (isTodo(p) ? todoEvent(p, goalTit
 /** A timetable block: a repeating commitment's occurrence, a fixed commitment, or a goal session. */
 export function blockEvent(b, { taskById = new Map(), goalTitle = "" } = {}) {
   const common = { id: `block-${b.id}`, title: b.label, day: dayOf(b.block_date), time: hhmm(b.start_time), start: hhmm(b.start_time), end: hhmm(b.end_time), raw: b };
+  if (b.kind === BLOCK_KIND_REMINDER) return base(EVENT_KIND.reminder, reminderColor(b.source_id || b.label), { ...common, goalId: b.goal_id });
   if (b.source === SOURCE_RECURRING) return base(EVENT_KIND.recurring, recurringColor(b.source_id || b.label), { ...common, seriesId: b.source_id });
-  if (b.kind === BLOCK_COMMITTED) return base(EVENT_KIND.commitment, KIND_STYLE.fixed.color, common);
   const task = b.source_id ? taskById.get(b.source_id) || null : null;
-  return base(EVENT_KIND.session, b.goal_id ? goalColor(b.goal_id) : GOAL_PALETTE[0], {
+  // A slot made for a goal-less task still ticks that task off when done.
+  if (!isGoalSession(b)) return base(EVENT_KIND.commitment, KIND_STYLE.fixed.color, { ...common, task, done: task ? task.status === STATUS_DONE : false });
+  return base(EVENT_KIND.session, goalColor(b.goal_id), {
     ...common, goalId: b.goal_id, goalTitle: b.goal_title || goalTitle, task, done: task ? task.status === STATUS_DONE : false,
   });
 }

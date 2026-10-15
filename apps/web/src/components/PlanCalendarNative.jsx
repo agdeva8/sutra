@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react';
 import CalendarMonthGrid from './CalendarMonthGrid';
 import { HourGrid } from './CalendarHourGrid';
 import { paletteFor, PLAN_INK } from './planColors';
+import { KIND_STYLE, GOAL_GLYPH } from '../constants/calendarKinds';
 
 function useMinWidth(px) {
   const [match, setMatch] = useState(() => (typeof window === 'undefined' || !window.matchMedia) ? true : window.matchMedia('(min-width: ' + px + 'px)').matches);
@@ -31,7 +32,7 @@ export function toNativeCards({ goals = [], milestones = [], blockers = [], bloc
     const start = startIso ? new Date(String(startIso).slice(0, 10) + 'T00:00:00') : null;
     if (!start || Number.isNaN(start.getTime())) return;
     const end = endIso && endIso !== startIso ? new Date(String(endIso).slice(0, 10) + 'T00:00:00') : start;
-    const glyph = kind === 'milestone' ? '\u25c6' : kind === 'blocker' ? '\u25b2' : kind === 'goal' ? '\u25cf' : '\u25cb';
+    const glyph = kind === 'milestone' ? KIND_STYLE.milestone.glyph : kind === 'blocker' ? KIND_STYLE.blocker.glyph : kind === 'goal' ? GOAL_GLYPH : KIND_STYLE.session.glyph;
     cards.push({ id, item: { id, kind, title, start, end }, date: start, glyph, title, color, ...extra });
   };
   for (const g of goals) push('g-' + g.id, 'goal', g.title, g.start_date, g.target_date, pal(g.id).strong);

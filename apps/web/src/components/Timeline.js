@@ -58,7 +58,7 @@ import useMediaQuery from "../hooks/useMediaQuery";
 import useGoalProgress from "../lib/useGoalProgress";
 import { progressStatus } from "../constants/goalProgress";
 import { planItemEvent, isTodo } from "../lib/events";
-import { KIND_STYLE, REMINDER_SLOT_MINUTES, SOURCE_RECURRING, GOAL_PALETTE, goalColor, reminderColor, recurringColor } from "../constants/calendarKinds";
+import { KIND_STYLE, REMINDER_SLOT_MINUTES, SOURCE_RECURRING, GOAL_PALETTE, GOAL_GLYPH, WEEK_GLYPH, isGoalSession, BLOCK_KIND_REMINDER, goalColor, reminderColor, recurringColor } from "../constants/calendarKinds";
 
 /* ---------------------------------------------------------------------------
  * Sutra Timeline — 3-view dropdown: Day by day (Drill), At a glance (Strip),
@@ -109,12 +109,16 @@ const HORIZON_LABEL = { weekly: "WK", short: "SHORT", medium: "MED", long: "LONG
  * colour; any other fixed commitment is neutral; a planned session takes its goal's colour.
  */
 function timeBlockStyle(b) {
+  if (b.kind === BLOCK_KIND_REMINDER) {
+    const k = KIND_STYLE.reminder;
+    return { glyph: k.glyph, look: k.look, color: reminderColor(b.source_id || b.label) };
+  }
   if (b.source === SOURCE_RECURRING) {
     const k = KIND_STYLE.recurring;
     return { glyph: k.glyph, look: k.look, color: recurringColor(b.source_id || b.label) };
   }
-  if (b.kind === "committed") return { glyph: KIND_STYLE.fixed.glyph, look: KIND_STYLE.fixed.look, color: KIND_STYLE.fixed.color };
-  return { glyph: KIND_STYLE.session.glyph, look: KIND_STYLE.session.look, color: b.goal_id ? goalColor(b.goal_id) : GOAL_PALETTE[0] };
+  if (!isGoalSession(b)) return { glyph: KIND_STYLE.fixed.glyph, look: KIND_STYLE.fixed.look, color: KIND_STYLE.fixed.color };
+  return { glyph: KIND_STYLE.session.glyph, look: KIND_STYLE.session.look, color: goalColor(b.goal_id) };
 }
 
 /* Status → color token. Issue 2/3 (Iteration 5) — tile color is now
@@ -645,7 +649,9 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
       const goal =
         goals.find((g) => g.id === goalId) ||
         goals.find((g) => g.title === (it.goalTitle || it.goal_title));
-      const color = it.kind === "blocker" ? KIND_STYLE.blocker.color : colorByGoal.get(goal?.id) || GOAL_PALETTE[0];
+      // Anything not tied to a goal (other than an away range) is the user's own item and draws as a commitment.
+      const style = it.kind !== "blocker" && !goal ? KIND_STYLE.fixed : KIND_STYLE[it.kind] || KIND_STYLE.task;
+      const color = it.kind === "blocker" ? KIND_STYLE.blocker.color : goal ? colorByGoal.get(goal.id) : KIND_STYLE.fixed.color;
       let fulfils = "";
       let hours = "";
       if (it.kind === "task") {
@@ -658,8 +664,8 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
         id: it.id,
         item: it,
         date: it.date,
-        glyph: (KIND_STYLE[it.kind] || KIND_STYLE.task).glyph,
-        look: (KIND_STYLE[it.kind] || KIND_STYLE.task).look,
+        glyph: style.glyph,
+        look: style.look,
         title: it.title,
         goalTitle: goal?.title || it.goalTitle || it.goal_title || "",
         color,
@@ -2407,7 +2413,7 @@ function CalendarView({
           goalTitle: b.goal_title || "",
           fulfils: "",
           hours: "",
-          status: b.kind === "committed" ? "committed" : "",
+          status: isGoalSession(b) ? "" : "committed",
         };
       }),
     [blocks],
@@ -2491,7 +2497,7 @@ function CalendarView({
         title: p.title,
         glyph,
         goalTitle: goal?.title || "",
-        color: hasVerdict(verdicts[p.id]) ? progressStatus(verdicts[p.id].status).color : colorByGoal.get(p.goal_id) || GOAL_PALETTE[0],
+        color: hasVerdict(verdicts[p.id]) ? progressStatus(verdicts[p.id].status).color : colorByGoal.get(p.goal_id) || KIND_STYLE.fixed.color,
         hours: p.horizon === "weekly" && p.weekly_hours ? `${p.weekly_hours}h/wk` : "",
         when,
         // Carried so a finished item strikes through in the grid, the same as everywhere else.
@@ -2504,8 +2510,8 @@ function CalendarView({
       };
     };
     return {
-      weekly: planItems.filter((p) => p.horizon === "weekly").map((p) => mk(p, "▤")),
-      monthly: planItems.filter((p) => p.horizon === "monthly").map((p) => mk(p, "◆")),
+      weekly: planItems.filter((p) => p.horizon === "weekly").map((p) => mk(p, WEEK_GLYPH)),
+      monthly: planItems.filter((p) => p.horizon === "monthly").map((p) => mk(p, KIND_STYLE.milestone.glyph)),
     };
   }, [planItems, goals, verdicts]);
 
@@ -2523,7 +2529,7 @@ function CalendarView({
             id: m.id,
             item: { ...m, kind: "milestone", title: m.title, date: raw },
             title: m.title || "",
-            glyph: "◆",
+            glyph: KIND_STYLE.milestone.glyph,
             goalTitle: m.goal_title || (gi >= 0 ? goals[gi].title : ""),
             color: hasVerdict(verdicts[m.id]) ? progressStatus(verdicts[m.id].status).color : (gi < 0 ? GOAL_PALETTE[0] : goalColor(goals[gi].id)),
             status: m.status || "",
@@ -2672,7 +2678,6 @@ function CalendarView({
           title: b.label,
           ...timeBlockStyle(b),
           goalTitle: b.goal_title || "",
-          status: b.kind === "committed" ? "" : "",
           date: day,
         };
       }),
@@ -3203,8 +3208,8 @@ export function TimelineItemDetailsDialog({ item, state, verdicts = {}, onClose,
       ? "Reminder"
       : item.kind === "todo"
       ? "To-do"
-      : item.kind === "block" && !item.goal_id
-      ? "Fixed time"
+      : (item.kind === "block" || isTask) && !item.goal_id
+      ? KIND_STYLE.fixed.label
       : level === "month"
       ? "Month"
       : level === "week"
@@ -3214,7 +3219,7 @@ export function TimelineItemDetailsDialog({ item, state, verdicts = {}, onClose,
       : isTask
       ? "Task"
       : "Item";
-  const kindGlyph = (KIND_STYLE[item.kind] || KIND_STYLE.task).glyph;
+  const kindGlyph = (item.kind === "block" ? (item.goal_id ? KIND_STYLE.session : KIND_STYLE.fixed) : isTask && !item.goal_id ? KIND_STYLE.fixed : KIND_STYLE[item.kind] || KIND_STYLE.task).glyph;
   // The chain is Task → Milestone → Goal. A task fulfils a milestone (the
   // planner's "Fulfils <milestone>" note); the milestone belongs to the goal.
   const fulfilsTitle = isTask
@@ -3257,7 +3262,7 @@ export function TimelineItemDetailsDialog({ item, state, verdicts = {}, onClose,
   if (item.kind !== "milestone" && milestoneNode) {
     chainRows.push({
       key: "milestone",
-      glyph: "◆",
+      glyph: KIND_STYLE.milestone.glyph,
       color: "var(--warning)",
       label: "Milestone",
       value: milestoneNode.title,
@@ -3267,7 +3272,7 @@ export function TimelineItemDetailsDialog({ item, state, verdicts = {}, onClose,
   if (goalTitle && item.kind !== "goal") {
     chainRows.push({
       key: "goal",
-      glyph: "◉",
+      glyph: GOAL_GLYPH,
       color: "var(--success)",
       label: "Goal",
       value: goalTitle,
