@@ -24,6 +24,7 @@ class WeekItem(_Llm):
     week_id: str
     focus: str = Field(description="What to concentrate on that week, a short phrase.")
     hours: float
+    why: str = Field("", description="One plain sentence to the user on why this is here: how it serves the goal, the deadline or the calendar. Not a restatement of the title.")
 
 
 class WeekPlan(_Llm):
@@ -34,6 +35,10 @@ class DayItem(_Llm):
     day_id: str
     title: str = Field(description="The session, a short phrase.")
     hours: float
+    #: One line on what this session actually involves, so the task can explain itself. Optional: an
+    #: older reply without it is still a usable plan.
+    description: str = ""
+    why: str = Field("", description="One plain sentence to the user on why this is here: how it serves the goal, the deadline or the calendar. Not a restatement of the title.")
 
 
 class DayPlan(_Llm):
@@ -42,7 +47,9 @@ class DayPlan(_Llm):
 
 class MonthItem(_Llm):
     month_id: str
+    focus: str = Field("", description="What the month is for, a short phrase: the outcome its weeks add up to.")
     hours: float
+    why: str = Field("", description="One plain sentence to the user on why this is here: how it serves the goal, the deadline or the calendar. Not a restatement of the title.")
 
 
 class MonthPlan(_Llm):
@@ -58,6 +65,7 @@ class SessionPlacement(_Llm):
     session_id: str
     window_id: str
     start_offset_min: int = 0
+    why: str = Field("", description="One plain sentence on why this time suits the session: what is around it, the user's energy, the gap it leaves.")
 
 
 class SessionPlan(_Llm):

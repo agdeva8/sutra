@@ -13,7 +13,7 @@ from ..core.context import BlockRow, Context, GoalHours, PlanWeekRow, RecurringR
 from datetime import date as _date, timedelta as _timedelta
 
 from ..core.recurring import occurrences
-from ..contracts import AddRecurring, StopRecurring, ClearGoalPlan, CompleteItem, AddBlock, AddGoal, AddMilestone, AddPlanWeek, AddReminder, AddTask, Change, ChangeSet, LinkSource, MoveBlock, Origin, Proposal
+from ..contracts import AddRecurring, StopRecurring, ClearGoalPlan, CompleteItem, AddBlock, AddBlocker, AddGoal, AddMilestone, AddPlanMonth, AddPlanWeek, AddReminder, AddTask, Change, ChangeSet, LinkSource, MoveBlock, Origin, Proposal
 
 
 class InMemoryStore:
@@ -24,11 +24,18 @@ class InMemoryStore:
         self.goals: dict[str, str] = {g: base.goal_titles.get(g, g) for g in base.goal_ids}
         self.blocks: dict[str, BlockRow] = {b.id: b for b in base.blocks}
         self.capacity = base.daily_capacity_hours
+        #: The user's own week (waking hours, work hours, weekly cap, away days), carried through unchanged.
+        self.base = base
         self.today = base.today
         self.tasks: dict[str, AddTask] = {}
         self.reminders: dict[str, AddReminder] = {}
         self.sources: dict[str, LinkSource] = {}
         self.weeks: dict[str, AddPlanWeek] = {}
+        self.months: dict[str, AddPlanMonth] = {}
+        self.ticks: dict[str, CompleteItem] = {}
+        self.blockers: dict[str, AddBlocker] = {}
+        #: block id -> why, which the trimmed `BlockRow` does not carry.
+        self.block_why: dict[str, str] = {}
         self.milestones: dict[str, AddMilestone] = {}
         self.done: set[str] = set()
         self.recurring: dict[str, AddRecurring] = {}
@@ -45,7 +52,7 @@ class InMemoryStore:
         return Context(
             goal_ids=frozenset(self.goals),
             goal_titles=dict(self.goals),
-            goal_hours={g: GoalHours(t, sum(self.tasks[i].effort_hours for i in self.done if i in self.tasks and self.tasks[i].goal_id == g))
+            goal_hours={g: GoalHours(t, sum((self.tasks[i].effort_hours or 0) for i in self.done if i in self.tasks and self.tasks[i].goal_id == g))
                         for g, t in self.goal_total.items()},
             recurring=tuple(RecurringRow(r.id, r.title, tuple(r.weekdays), r.start, r.end, r.end_date) for r in self.recurring.values()
                             if r.end_date is None or r.end_date >= (self.today or _date.today())),
@@ -55,6 +62,9 @@ class InMemoryStore:
             open_items={i: t.title for i, t in self.tasks.items() if i not in self.done},
             blocks=tuple(self.blocks.values()),
             daily_capacity_hours=self.capacity,
+            active_spans=self.base.active_spans, busy_weekly=self.base.busy_weekly,
+            weekly_cap_hours=self.base.weekly_cap_hours,
+            blocked_dates=self.base.blocked_dates | frozenset(b.start_date + _timedelta(days=n) for b in self.blockers.values() for n in range((b.end_date - b.start_date).days + 1)),
         )
 
     @asynccontextmanager
@@ -93,18 +103,26 @@ class InMemoryStore:
                 self.tasks.pop(self.block_task.get(b, ""), None)
                 self.blocks.pop(b, None)
             self.weeks = {k: w for k, w in self.weeks.items() if not (w.goal_id == change.goal_id and w.week_start >= _monday(change.from_date))}
+            self.months = {k: m for k, m in self.months.items() if not (m.goal_id == change.goal_id and m.month_start >= change.from_date.replace(day=1))}
+        elif isinstance(change, CompleteItem) and change.outcome != "full":
+            self.ticks[change.item_id] = change  # part done or skipped: still on the list, not finished
         elif isinstance(change, CompleteItem):
             self.done.add(change.item_id)
             for bid in [b for b, t in self.block_task.items() if t == change.item_id]:
                 self.blocks.pop(bid, None)
         elif isinstance(change, AddMilestone):
             self.milestones[change.id] = change
+        elif isinstance(change, AddBlocker):
+            self.blockers[change.id] = change
         elif isinstance(change, AddPlanWeek):
             self.weeks[change.id] = change
+        elif isinstance(change, AddPlanMonth):
+            self.months[change.id] = change
         elif isinstance(change, LinkSource):
             self.sources[change.source_id] = change
         elif isinstance(change, AddBlock):
             self.blocks[change.id] = BlockRow(change.id, change.day, change.start, change.end, change.status, change.title, change.goal_id)
+            self.block_why[change.id] = change.why
             if change.task_id:
                 self.block_task[change.id] = change.task_id
             if change.goal_id:
@@ -164,6 +182,7 @@ class InMemoryStore:
                 self.block_rule.pop(b, None)
         elif isinstance(change, CompleteItem):
             self.done.discard(change.item_id)
+            self.ticks.pop(change.item_id, None)
         elif isinstance(change, AddGoal):
             self.goals.pop(change.id, None)
         elif isinstance(change, AddTask):
@@ -175,8 +194,12 @@ class InMemoryStore:
             self.reminders.pop(change.id, None)
         elif isinstance(change, AddPlanWeek):
             self.weeks.pop(change.id, None)
+        elif isinstance(change, AddPlanMonth):
+            self.months.pop(change.id, None)
         elif isinstance(change, AddMilestone):
             self.milestones.pop(change.id, None)
+        elif isinstance(change, AddBlocker):
+            self.blockers.pop(change.id, None)
         elif isinstance(change, LinkSource):
             self.sources.pop(change.source_id, None)
 

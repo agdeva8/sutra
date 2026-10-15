@@ -9,11 +9,16 @@ from __future__ import annotations
 
 from langchain_deepseek import ChatDeepSeek
 
-from .config import LLM_MAX_RETRIES, Settings
+from .config import LLM_MAX_RETRIES, PROVIDER_ANTHROPIC, Settings
 
 
-def build_model(settings: Settings) -> ChatDeepSeek:
-    """The chat model this agent runs on."""
+def build_model(settings: Settings):
+    """The chat model this agent runs on: DeepSeek, or Claude when `LLM_PROVIDER=anthropic`."""
+    if settings.provider == PROVIDER_ANTHROPIC:
+        from langchain_anthropic import ChatAnthropic  # only needed on this path
+
+        return ChatAnthropic(model_name=settings.model, api_key=settings.api_key, max_tokens=settings.max_tokens,
+                             timeout=settings.timeout_s, max_retries=LLM_MAX_RETRIES)
     return ChatDeepSeek(
         model_name=settings.model,
         api_key=settings.api_key,

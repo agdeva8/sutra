@@ -9,11 +9,11 @@ rows. A model that calls its own change "low-risk" is not consulted.
 from __future__ import annotations
 
 from ..core.recurring import occurrences
-from ..config import AUTO_APPLY_KINDS, BLOCK_COMMITTED, BLOCK_TENTATIVE
+from ..config import AUTO_APPLY_KINDS, BLOCK_COMMITTED, BLOCK_TENTATIVE, END_OF_DAY
 from ..core.context import Context
-from datetime import date
+from datetime import date, time, timedelta
 
-from ..contracts import AddBlock, AddRecurring, Applied, Change, ChangeSet, MoveBlock, Proposal, Rejected
+from ..contracts import AddBlock, AddBlocker, AddRecurring, Applied, Change, ChangeSet, MoveBlock, Proposal, Rejected
 from .store import Store
 from ..core.validate import validate
 
@@ -45,6 +45,8 @@ async def apply(cs: ChangeSet, store: Store, *, approved: bool = False) -> Appli
     # A fixed block takes precedence over the agent's own planned time: remove what it covers.
     fixed = [(c.day, c.start, c.end) for c in cs.changes if isinstance(c, AddBlock) and c.status == BLOCK_COMMITTED]
     for c in cs.changes:
+        if isinstance(c, AddBlocker):
+            fixed += [(c.start_date + timedelta(days=n), time.min, END_OF_DAY) for n in range((c.end_date - c.start_date).days + 1)]
         if isinstance(c, AddRecurring):
             fixed += occurrences(c.weekdays, c.start, c.end, c.start_date, c.end_date, ctx.today or date.today())
     displaced = {

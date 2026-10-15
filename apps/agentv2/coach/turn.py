@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from .clarify_options import enrich
-from .prompts import KIND_ADD_GOAL, MAX_QUESTIONS_PER_ROUND, PROPOSE_NOW_PROMPT, REFINE_PROMPT, assemble_system
+from .prompts import KIND_ADD_GOAL, KIND_PLAN_DAY, MAX_QUESTIONS_PER_ROUND, PROPOSE_NOW_PROMPT, REFINE_PROMPT, assemble_system
 from .questions import drop_answered_by_profile, filter_repeats
 from .safety import signals_crisis
 from .tools_block import (
@@ -48,7 +48,7 @@ Outcome = Literal["prose", "clarify", "proposals"]
 
 #: Clarifying rounds one conversation may have before the coach must propose. Generous but finite
 #: (CLAUDE.md principle 6): a vague goal can never become an endless questionnaire.
-MAX_INTERVIEW_ROUNDS = 3
+MAX_INTERVIEW_ROUNDS = 6
 #: The question asked when the model asked none and a question is wanted.
 FALLBACK_QUESTION = "What would make this plan wrong — what should I know before I build it?"
 
@@ -126,7 +126,7 @@ async def run_turn(
         not proposals
         and auto_answer
         and not clarify
-        and scoped_kind != "general"
+        and scoped_kind not in ("general", KIND_PLAN_DAY)
         and prose.strip()
         and not block
     ):
@@ -140,7 +140,8 @@ async def run_turn(
             prose = f"{prose}\n\n{extra_prose.strip()}".strip()
 
     # ── ask: questions, when the user asked for them ────────────────────────
-    wants_questions = (clarify or not auto_answer) and scoped_kind != "general"
+    # Day planning answers with slots, never with an interview (its prompt asks at most one question).
+    wants_questions = (clarify or not auto_answer) and scoped_kind not in ("general", KIND_PLAN_DAY)
     questions: list[dict] = []
     dropped: list[str] = []
     replaced = False

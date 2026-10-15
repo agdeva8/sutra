@@ -169,14 +169,18 @@ def extract_clarifying_questions(text: str, max_questions: int = 6) -> list[dict
         return []
     out: list[dict] = []
     seen: set[str] = set()
+    #: True while the lines just read are a question and its bullets, so a bullet is one of its answers.
+    collecting = False
 
     for line in text.split("\n"):
         stripped = line.strip()
         if not stripped:
             continue
-        is_bullet = line[: len(line) - len(line.lstrip())] != "" and re.match(r"^[-*•]\s+", stripped)
-        # A bullet indented under a question is one of its answers, not a question of its own.
-        if is_bullet and out and not stripped.endswith("?"):
+        # Indented or not: models write the answers flush-left as often as indented. What makes a bullet an
+        # answer is that it directly follows a question (or another answer), not how far it is indented.
+        is_bullet = bool(re.match(r"^[-*•]\s+", stripped))
+        # A bullet under a question is one of its answers, not a question of its own.
+        if is_bullet and out and collecting and not stripped.endswith("?"):
             option = re.sub(r"^[-*•]\s+", "", stripped).replace("**", "").strip()
             if option and len(option) <= OPTION_MAX_CHARS:
                 out[-1]["options"].append(option)
@@ -201,6 +205,7 @@ def extract_clarifying_questions(text: str, max_questions: int = 6) -> list[dict
             added += 1
         if inline and added:
             out[-1]["options"] = inline
+        collecting = bool(added)
     return out[:max_questions]
 
 

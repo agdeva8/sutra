@@ -46,13 +46,26 @@ class AddMilestone(_Strict):
 
 
 class AddTask(_Strict):
-    """Undated work under a goal. Placing it on a day is the planner's job."""
+    """Work under a goal, and the day it is for when the planner has picked one.
+
+    `day` is what makes a task visible on a calendar: without it the row has no date, so the week and
+    day views have nowhere to put it. The planner always knows the day it chose, so it passes it; a
+    task with no day is the honest case of work that would not fit any day.
+    """
 
     kind: Literal["add_task"] = "add_task"
     id: str
-    goal_id: str
+    #: `None` for a plain to-do that belongs to no goal.
+    goal_id: str | None = None
     title: str
-    effort_hours: float = Field(gt=0)
+    #: `None` for a to-do the user never sized; the planner always sets it.
+    effort_hours: float | None = Field(None, gt=0)
+    #: The day this session is for. `None` when the day could not hold it.
+    day: date | None = None
+    #: One line on what the session actually involves, for the task's own detail view.
+    description: str = ""
+    #: Why this exists, one plain sentence for the user, shown when they open it.
+    why: str = ""
 
 
 class AddReminder(_Strict):
@@ -77,6 +90,19 @@ class AddBlock(_Strict):
     #: Set for a block the agent placed for a task, so finishing the task can clear it.
     task_id: str | None = None
     goal_id: str | None = None
+    #: Why this exists, one plain sentence for the user, shown when they open it.
+    why: str = ""
+
+
+class AddBlocker(_Strict):
+    """The user is unavailable for whole days (a trip, leave, an illness): one date range, not a block per day.
+    No goal work is planned on these days, and planned time already on them gives way."""
+
+    kind: Literal["add_blocker"] = "add_blocker"
+    id: str
+    title: str
+    start_date: date
+    end_date: date
 
 
 class AddPlanWeek(_Strict):
@@ -88,6 +114,23 @@ class AddPlanWeek(_Strict):
     week_start: date
     focus: str
     hours: float = Field(gt=0)
+    #: Why this exists, one plain sentence for the user, shown when they open it.
+    why: str = ""
+
+
+class AddPlanMonth(_Strict):
+    """One month of a goal's plan: what the month is for and the hours set aside. The weeks inside it
+    are what achieves it; a month with no weeks of work is simply a month with no row."""
+
+    kind: Literal["add_plan_month"] = "add_plan_month"
+    id: str
+    goal_id: str
+    #: The first day of the month.
+    month_start: date
+    focus: str
+    hours: float = Field(gt=0)
+    #: Why this exists, one plain sentence for the user, shown when they open it.
+    why: str = ""
 
 
 class CompleteItem(_Strict):
@@ -96,6 +139,10 @@ class CompleteItem(_Strict):
     kind: Literal["complete_item"] = "complete_item"
     item_id: str
     title: str = ""
+    #: A tick: all of it, part of it (`fraction` of the work), or it was not done at all and is let go.
+    outcome: Literal["full", "partial", "skip"] = "full"
+    #: For "partial": the share of the work that got done, between 0 and 1 (exclusive).
+    fraction: float | None = Field(None, gt=0, lt=1)
 
 
 class AddRecurring(_Strict):
@@ -151,7 +198,7 @@ class MoveBlock(_Strict):
 
 
 Change = Annotated[
-    AddRecurring | StopRecurring | ClearGoalPlan | CompleteItem | AddGoal | AddMilestone | AddTask | AddReminder | AddBlock | MoveBlock | LinkSource | AddPlanWeek,
+    AddBlocker | AddRecurring | StopRecurring | ClearGoalPlan | CompleteItem | AddGoal | AddMilestone | AddTask | AddReminder | AddBlock | MoveBlock | LinkSource | AddPlanWeek | AddPlanMonth,
     Field(discriminator="kind"),
 ]
 

@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from ..contracts import (
-    AddBlock, AddRecurring, StopRecurring, ClearGoalPlan, CompleteItem, AddGoal, AddMilestone, AddPlanWeek, AddReminder, AddTask, Applied, Change, LinkSource, MoveBlock, Origin, Rejected,
+    AddBlock, AddBlocker, AddRecurring, StopRecurring, ClearGoalPlan, CompleteItem, AddGoal, AddMilestone, AddPlanMonth, AddPlanWeek, AddReminder, AddTask, Applied, Change, LinkSource, MoveBlock, Origin, Rejected,
 )
 from ..gateway import Store, apply
 from ..llm import Image
@@ -46,12 +46,16 @@ def describe(c: Change) -> str:
     if isinstance(c, AddGoal):
         return f"New goal: {c.title}"
     if isinstance(c, AddTask):
-        return f"New task: {c.title} ({c.effort_hours:g}h)"
+        return f"{'New task' if c.goal_id else 'To-do'}: {c.title}" + (f" ({c.effort_hours:g}h)" if c.effort_hours else "")
     if isinstance(c, AddReminder):
         times = ", ".join(t.strftime("%H:%M") for t in c.times)
-        return f"Reminder: {c.title} on {len(c.days)} day(s) at {times}"
+        when = f"{c.days[0]:%a %d %b}" if len(c.days) == 1 else f"{len(c.days)} days from {c.days[0]:%a %d %b}"
+        return f"Reminder: {c.title}, {when} at {times}"
     if isinstance(c, AddBlock):
         return f"{'Fixed' if c.status == 'committed' else 'Planned'}: {c.title}, {c.day:%a %d %b} {c.start:%H:%M}-{c.end:%H:%M}"
+    if isinstance(c, AddBlocker):
+        span = f"{c.start_date:%a %d %b}" if c.start_date == c.end_date else f"{c.start_date:%a %d %b} to {c.end_date:%a %d %b}"
+        return f"Away: {c.title}, {span}"
     if isinstance(c, AddRecurring):
         days = ", ".join(("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")[d] for d in c.weekdays)
         until = f" until {c.end_date:%d %b}" if c.end_date else ""
@@ -61,9 +65,15 @@ def describe(c: Change) -> str:
     if isinstance(c, ClearGoalPlan):
         return f"Cleared the open plan from {c.from_date:%d %b} to plan it again"
     if isinstance(c, CompleteItem):
+        if c.outcome == "partial":
+            return f"Part done ({c.fraction:.0%}): {c.title}"
+        if c.outcome == "skip":
+            return f"Skipped: {c.title}"
         return f"Marked done: {c.title}"
     if isinstance(c, AddMilestone):
         return f"Milestone: {c.title} by {c.target_date:%d %b %Y}"
+    if isinstance(c, AddPlanMonth):
+        return f"{c.month_start:%B %Y}: {c.focus} ({c.hours:g}h)"
     if isinstance(c, AddPlanWeek):
         return f"Week of {c.week_start:%d %b}: {c.focus} ({c.hours:g}h)"
     if isinstance(c, LinkSource):

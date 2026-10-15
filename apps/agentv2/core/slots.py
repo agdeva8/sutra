@@ -116,14 +116,14 @@ def validate_picks(picks: list[Pick], effort_hours: float, windows: list[Window]
     return None
 
 
-def picks_to_blocks(picks: list[Pick], windows: list[Window], title: str, *, task_id: str | None = None, goal_id: str | None = None) -> list[AddBlock]:
+def picks_to_blocks(picks: list[Pick], windows: list[Window], title: str, *, task_id: str | None = None, goal_id: str | None = None, why: str = "") -> list[AddBlock]:
     by_id = {w.id: w for w in windows}
     blocks = []
     for wid, hours, offset in picks:
         w = by_id[wid]
         begin = _at(w.day, w.start) + timedelta(minutes=offset)
         end = begin + timedelta(hours=hours)
-        blocks.append(AddBlock(id=new_id("blk"), title=title, day=w.day, start=begin.time(), end=end.time(), status=BLOCK_TENTATIVE, task_id=task_id, goal_id=goal_id))
+        blocks.append(AddBlock(id=new_id("blk"), title=title, day=w.day, start=begin.time(), end=end.time(), status=BLOCK_TENTATIVE, task_id=task_id, goal_id=goal_id, why=why))
     return blocks
 
 

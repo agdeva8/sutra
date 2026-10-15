@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import time
 
-from ..config import ACTIVE_WINDOW_END, ACTIVE_WINDOW_START, DEFAULT_DAILY_CAPACITY_HOURS, END_OF_DAY, PROFILE_WEEKDAY_KEYS
+from ..config import ACTIVE_WINDOW_END, ACTIVE_WINDOW_START, DEFAULT_DAILY_CAPACITY_HOURS, END_OF_DAY, MIN_AWAKE_HOURS, PROFILE_WEEKDAY_KEYS
 
 Span = tuple[time, time]
 DAY_START = time(0, 0)
@@ -106,6 +106,29 @@ def active_spans(wake: time | None, sleep: time | None) -> tuple[Span, ...]:
     return ((DAY_START, end), (start, END_OF_DAY))
 
 
+def _hours(spans: tuple[Span, ...]) -> float:
+    return sum((e.hour * 60 + e.minute) - (s.hour * 60 + s.minute) for s, e in spans) / 60
+
+
+def waking_conflict(profile: UserProfile) -> str | None:
+    """Why the wake and sleep times cannot be right, or None. The check a person would make by eye:
+    work hours must fall inside waking hours, and a waking day must be long enough to be a day.
+
+    Only when both wake and sleep were given; a skipped field is not a contradiction."""
+    if not (profile.wake and profile.sleep):
+        return None
+    awake = active_spans(profile.wake, profile.sleep)
+    span = f"{profile.wake:%H:%M} to {profile.sleep:%H:%M}"
+    if profile.work_start and profile.work_end and profile.work_start != profile.work_end:
+        today, tomorrow = split_span(profile.work_start, profile.work_end)
+        if any(not any(a <= s and e <= b for a, b in awake) for s, e in (*today, *tomorrow)):
+            return (f"Your work hours ({profile.work_start:%H:%M} to {profile.work_end:%H:%M}) fall outside the hours you are "
+                    f"awake ({span}). Did you swap wake and sleep, or mean different times?")
+    if _hours(awake) < MIN_AWAKE_HOURS:
+        return f"That leaves you awake for only {_hours(awake):g} hours ({span}). Check your wake and sleep times."
+    return None
+
+
 def to_planner(profile: UserProfile) -> PlannerProfile:
     busy: dict[int, list[Span]] = {}
     if profile.work_start and profile.work_end and profile.work_days:
@@ -120,7 +143,9 @@ def to_planner(profile: UserProfile) -> PlannerProfile:
         # separate cap, so the planner decides how the week's hours fall across those days.
         weekday_hours = {d: DEFAULT_DAILY_CAPACITY_HOURS for d in range(7) if d not in profile.rest_days}
     return PlannerProfile(
-        active_spans=active_spans(profile.wake, profile.sleep),
+        # Contradictory wake and sleep times are not planned around: a plan in hours the person is asleep is
+        # worse than one in the usual day. (Saving such a profile is refused, so this is for older stored ones.)
+        active_spans=active_spans(None, None) if waking_conflict(profile) else active_spans(profile.wake, profile.sleep),
         busy_weekly={d: tuple(sorted(s)) for d, s in busy.items()},
         weekday_hours=weekday_hours,
         weekly_cap_hours=profile.weekly_goal_hours,

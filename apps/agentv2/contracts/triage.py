@@ -16,13 +16,15 @@ class _Llm(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 
-Bucket = Literal["goal", "task", "reminder", "block", "recurring", "stop_recurring", "source", "done", "noise"]
+Bucket = Literal["goal", "task", "reminder", "todo", "away", "block", "recurring", "stop_recurring", "source", "done", "noise"]
 
 
 class ReminderSpec(_Llm):
     times_per_day: int = Field(1, description="How many times a day, e.g. 3 for '3x daily'.")
     duration_days: int = Field(1, description="For how many days, e.g. 5 for 'x5 days'.")
     start: Literal["today", "tomorrow"] = "today"
+    at_time: str | None = Field(None, description="24h HH:MM if the user named a time ('at 5pm' -> '17:00'); else null.")
+    date: str | None = Field(None, description="YYYY-MM-DD if the user named a day, read off the calendar; else null.")
 
 
 class BlockSpec(_Llm):
@@ -30,6 +32,11 @@ class BlockSpec(_Llm):
     day_ref: str | None = Field(None, description="Only if you cannot give a date: the user's own words for the day.")
     start_time: str = Field(description="24h HH:MM copied from what the user said.")
     end_time: str | None = Field(None, description="24h HH:MM if the user gave an end, else null.")
+
+
+class AwaySpec(_Llm):
+    start_date: str = Field(description="The first day away, YYYY-MM-DD, read off the calendar you were given.")
+    end_date: str | None = Field(None, description="The last day away, YYYY-MM-DD; null if it is a single day.")
 
 
 class RecurringSpec(_Llm):
@@ -50,7 +57,10 @@ class TriageItem(_Llm):
     reminder: ReminderSpec | None = None
     block: BlockSpec | None = None
     recurring: RecurringSpec | None = None
+    away: AwaySpec | None = None
     stop_from: str | None = Field(None, description="For stop_recurring: YYYY-MM-DD it should stop from, if the user said; else null (from today).")
+    outcome: Literal["full", "partial", "skip"] = Field("full", description="For done: full if it is finished; partial if they did only part of it ('did half of the DP session'); skip if they did not do it and are letting it go ('skipped the gym', 'couldn't do the mock').")
+    fraction: float | None = Field(None, description="For a partial done: the share that got done, between 0 and 1, e.g. 0.5 for 'half'. Leave null if they gave no amount.")
     target_id: str | None = Field(None, description="For done: the id of the listed open item the user finished. For stop_recurring: the id of the listed recurring commitment.")
     summary: str | None = Field(None, description="For a source: one or two sentences on what it contains and why it is worth keeping.")
 
@@ -77,6 +87,7 @@ class Placement(_Llm):
     hours: float
     #: Minutes after the window opens, on the offered grid. 0 starts right at the window.
     start_offset_min: int = 0
+    why: str = Field("", description="One plain sentence on why this time suits the task.")
 
 
 class SlotPick(_Llm):

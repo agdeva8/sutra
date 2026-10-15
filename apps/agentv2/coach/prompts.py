@@ -19,6 +19,8 @@ becomes a questionnaire.
 """
 from __future__ import annotations
 
+from ..prompts.milestones import MILESTONE_RULES
+from ..prompts.sources import SOURCE_REQUEST_RULES
 from .tools_block import TOOL_END, TOOL_START
 
 #: Questions the coach may ask in one round. The code enforces it too (`turn.MAX_QUESTIONS_PER_ROUND`
@@ -68,13 +70,19 @@ block listing the actions you propose, and nothing after it:
 
 {TOOL_START}
 [{{"action": "create_goal", "args": {{"title": "...", "horizon": "short",
-  "why": "...", "first_action": "...", "weekly_hours": 4}}}},
- {{"action": "add_milestone", "args": {{"title": "...", "goal_title": "..."}}}}]
+  "why": "...", "first_action": "...", "weekly_hours": 4, "target_date": "YYYY-MM-DD"}}}},
+ {{"action": "add_milestone", "args": {{"title": "...", "goal_title": "...", "target_date": "YYYY-MM-DD"}}}}]
 {TOOL_END}
 
 Rules for the block:
 - Prose first, then the block. Nothing after the block.
-- Do not put a date on a task. The scheduler owns dates.
+- Do not put a date on a task. The scheduler owns task dates.
+- DO put `target_date` (ISO, YYYY-MM-DD) on `create_goal` whenever the user named a deadline or you
+  assumed one ("14 March 2027" becomes "2027-03-14"), and on every `add_milestone`: a date after today and
+  no later than the goal's `target_date`, in the order the milestones happen. Never leave a milestone undated.
+- {MILESTONE_RULES}
+- Keep the goal `title` identical to the one already proposed or confirmed in this conversation unless the
+  user asked to rename it. When the user rejects a proposed item, drop that item and do not re-plan the rest.
 - `horizon` is one of: weekly, short, medium, long.
 - Omit the block entirely when you are asking a question.
 """
@@ -120,9 +128,11 @@ the plan), and anything the LIVE STATE (their week, hours, commitments, facts) o
 SOURCES already answer. Typical useful ones: their starting point against what the goal needs, a hard
 deadline, a constraint that changes the order of the work.
 
+{SOURCE_REQUEST_RULES}
+
 How to ask: at most {MAX_QUESTIONS_PER_ROUND} questions, fewer is better. Each on its own numbered
 line that names the specific goal, with two to four short answer options as bullets underneath it
-(never inline in the sentence). Options must fit the question and must not assume their country,
+(never inline in the sentence). Every numbered line must be a question that ends in "?". Options must fit the question and must not assume their country,
 currency, gender, age or means.
 
 Never ask a question that is in the ALREADY ASKED list or was asked earlier in this conversation,
@@ -149,8 +159,8 @@ For any of these the user did not answer, state a one-line assumption and move o
 #: Sent when every question the model wanted to ask was a repeat, or the interview hit its round cap.
 #: The interview is over: assume, say so, propose.
 PROPOSE_NOW_PROMPT = """Do not ask any more questions. For anything still unanswered, state a
-reasonable assumption in one line each ("I'll assume ..."), then propose the goal, two to four
-milestones and the first action in the tools block. Prose first, then the block."""
+reasonable assumption in one line each ("I'll assume ..."), then propose the goal, its milestones
+and the first action in the tools block. Prose first, then the block."""
 
 #: The follow-up that forces a proposal when a turn produced prose but no block.
 #:
@@ -159,8 +169,28 @@ milestones and the first action in the tools block. Prose first, then the block.
 #: the repair turn — it is cheap, and it converts a dead end into a card.
 REFINE_PROMPT = """That reply described a plan but did not include the tools block, so the user
 has nothing to accept. Restate it as a tools block now: one `create_goal` and,
-if the plan has phases, two to four `add_milestone` actions. Prose first, then
+one `add_milestone` action per checkpoint (see the milestone rules in the system prompt). Prose first, then
 the block. Do not ask any questions."""
+
+
+#: Scoped kind of the "Plan my day" chat.
+KIND_PLAN_DAY = "plan_day"
+
+#: Appended for "Plan my day". The user wants a schedule for today, built around what is already on it.
+PLAN_DAY_MODE = """
+=== PLAN MY DAY MODE — OVERRIDES GENERAL CLARIFY RULE ===
+The user wants a schedule for today. Answer with the day laid out as time slots, not with questions.
+Start from TODAY'S TIMETABLE in the LIVE STATE: everything already on it stays exactly where it is, and it
+counts as the user's plan, including study and prep sessions for their goals (interview prep, LLD prep,
+exercise). Never advise against, replace or duplicate something already on the timetable; build around it.
+Fit the open tasks and milestones of their active goals into the free gaps, with realistic breaks.
+If their wake or sleep time is not known, assume a normal waking day and say so in one line instead of
+asking. Ask at most one question, and only if the day cannot be laid out without it.
+Reply with a short opening line, then one slot per line as `HH:MM-HH:MM  what`, then propose each new slot
+as an `add_block` action in the tools block: {"action": "add_block", "args": {"label": "...",
+"block_date": "YYYY-MM-DD", "start_time": "HH:MM", "end_time": "HH:MM", "kind": "focus",
+"goal_title": "..."}}. Never propose a slot that overlaps something already on the timetable.
+"""
 
 
 def mode_hint(*, proactive_propose: bool, clarify: bool, auto_answer: bool, scoped_kind: str = "general") -> str:
@@ -171,6 +201,8 @@ def mode_hint(*, proactive_propose: bool, clarify: bool, auto_answer: bool, scop
     """
     if clarify:
         return GRILL_MODE
+    if scoped_kind == KIND_PLAN_DAY:
+        return PLAN_DAY_MODE
     if scoped_kind == KIND_ADD_GOAL and not auto_answer:
         return INTAKE_MODE
     if not auto_answer:

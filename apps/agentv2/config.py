@@ -28,6 +28,13 @@ DEFAULT_MODEL = "deepseek-v4-flash"
 DEFAULT_MAX_TOKENS = 32768
 DEFAULT_TIMEOUT_S = 120.0
 
+PROVIDER_DEEPSEEK = "deepseek"
+PROVIDER_ANTHROPIC = "anthropic"
+#: Which model family answers. Read from `LLM_PROVIDER`; DeepSeek stays the default.
+DEFAULT_PROVIDER = PROVIDER_DEEPSEEK
+DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5-5"
+DEFAULT_ANTHROPIC_MAX_TOKENS = 16384
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -38,6 +45,7 @@ class Settings:
     model: str = DEFAULT_MODEL
     max_tokens: int = DEFAULT_MAX_TOKENS
     timeout_s: float = DEFAULT_TIMEOUT_S
+    provider: str = DEFAULT_PROVIDER
 
 
 def load_settings() -> Settings:
@@ -48,6 +56,17 @@ def load_settings() -> Settings:
     the key belongs in.
     """
     load_dotenv(ENV_PATH, override=False)
+
+    provider = os.environ.get("LLM_PROVIDER", DEFAULT_PROVIDER).strip().lower()
+    if provider == PROVIDER_ANTHROPIC:
+        key = os.environ.get("CLAUDE_API_KEY", "").strip()
+        if not key:
+            raise SystemExit(f"CLAUDE_API_KEY is not set — add it to {ENV_PATH}")
+        return Settings(
+            api_key=key, provider=provider,
+            model=os.environ.get("CLAUDE_MODEL", DEFAULT_ANTHROPIC_MODEL).strip(),
+            max_tokens=int(os.environ.get("CLAUDE_MAX_TOKENS", DEFAULT_ANTHROPIC_MAX_TOKENS)),
+        )
 
     api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
     if not api_key:
@@ -65,7 +84,7 @@ def load_settings() -> Settings:
 
 #: Change kinds the gateway may apply without asking (HLD §9). Anything else, and
 #: anything that touches a committed block, becomes a proposal.
-AUTO_APPLY_KINDS = frozenset({"add_recurring", "stop_recurring", "clear_goal_plan", "complete_item", "add_goal", "add_milestone", "add_task", "add_reminder", "add_block", "link_source", "add_plan_week"})
+AUTO_APPLY_KINDS = frozenset({"add_recurring", "stop_recurring", "clear_goal_plan", "complete_item", "add_goal", "add_milestone", "add_task", "add_reminder", "add_block", "link_source", "add_plan_week", "add_plan_month", "add_blocker"})
 
 #: Hours of planned work a single day can hold before the validator rejects more.
 DEFAULT_DAILY_CAPACITY_HOURS = 8.0
@@ -111,9 +130,13 @@ LLM_REPAIR_ROUNDS = 1
 # --- Planner (step 3) --------------------------------------------------------
 
 #: How many weeks ahead the week level plans (HLD §6). Months come in step 5.
-WEEK_HORIZON = 12
-#: Weeks (from this one) that get day-level detail and real blocks; later weeks stay weekly.
-DAY_WINDOW_WEEKS = 4
+WEEK_HORIZON = 52
+#: Weeks (from this one) that get day-level detail and real blocks. Every planned week does: a goal is
+#: built month, then week, then day, in one go, so the whole plan can be seen on the calendar.
+DAY_WINDOW_WEEKS = 12
+#: Weeks planned down to days at the same time. Weeks do not share days, so they are independent; this
+#: only bounds how many model calls are in flight at once.
+PLAN_PARALLEL_WEEKS = 6
 #: One goal may take at most this share of a week's free hours, so goals coexist.
 GOAL_MAX_SHARE_OF_FREE = 0.5
 #: A week-level plan may land this far under the goal's total before it counts as unusable.
@@ -207,6 +230,10 @@ REPLAN_DRIFT_HOURS = 2.0
 
 #: Label the planner shows the model for the user's own work or study hours, which it never plans into.
 PROFILE_WORK_LABEL = "Work or study"
+#: A waking day shorter than this is almost certainly wake and sleep entered the wrong way round.
+MIN_AWAKE_HOURS = 10
+#: The longest stretch one "away" note may cover (a long trip or leave is fine; a year is a typo).
+MAX_AWAY_DAYS = 120
 #: A day's last minute. A span that runs past midnight is split here and continues the next day.
 END_OF_DAY = _time(23, 59)
 #: Weekday keys the profile uses, Monday first (index = Python's weekday()).

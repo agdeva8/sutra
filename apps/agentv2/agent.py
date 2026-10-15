@@ -162,7 +162,10 @@ async def tick(store: Store, *, now: datetime | None = None, tz: str | None = No
     added = await store.extend_recurring(now.date())
     if added:
         notes.append(f"laid out {added} more recurring block(s)")
-        await replan_conflicts(store, now=now, chat=chat)
+    # Always, not only after new recurring blocks: it also catches a conflict a calendar change left behind (a trip,
+    # an appointment) that its own re-plan missed, so the person is never asked about something the agent can fix.
+    fixed = await replan_conflicts(store, now=now, chat=chat)
+    notes += [n for n in fixed.notes if n != "no conflicts"]
 
     # 2. give day-level detail to weeks that came into the window
     changes, expand_notes = await asyncio.to_thread(tick_changes, chat, await store.context(), now)

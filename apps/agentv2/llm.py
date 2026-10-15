@@ -39,11 +39,19 @@ def _user_content(user: str, images: list[Image] | None):
     return parts
 
 
+def reply_text(content) -> str:
+    """The text of a model reply. DeepSeek answers with a string; Claude can answer with a list of
+    content blocks (text, and thinking when it is on), of which only the text blocks are the answer."""
+    if isinstance(content, str):
+        return content
+    return "".join(b if isinstance(b, str) else b.get("text", "") for b in content if isinstance(b, (str, dict)) and (isinstance(b, str) or b.get("type", "text") == "text"))
+
+
 def complete_json(chat, system: str, user: str, schema: type[T], images: list[Image] | None = None) -> T | None:
     """`chat` is any object with `.invoke(messages) -> .content` (a LangChain chat model)."""
     messages = [("system", system), ("user", _user_content(user, images))]
     for _ in range(1 + LLM_REPAIR_ROUNDS):
-        content = chat.invoke(messages).content
+        content = reply_text(chat.invoke(messages).content)
         try:
             return schema.model_validate_json(_FENCE.sub("", content).strip())
         except (ValidationError, ValueError) as e:

@@ -13,7 +13,7 @@ from datetime import date, datetime
 
 from ..config import BLOCK_COMMITTED, BLOCK_TENTATIVE
 from .context import BlockRow, Context
-from ..contracts import AddRecurring, StopRecurring, ClearGoalPlan, CompleteItem, AddBlock, AddGoal, AddMilestone, AddPlanWeek, AddReminder, AddTask, ChangeSet, LinkSource, MoveBlock, Violation
+from ..contracts import AddBlocker, AddRecurring, StopRecurring, ClearGoalPlan, CompleteItem, AddBlock, AddGoal, AddMilestone, AddPlanMonth, AddPlanWeek, AddReminder, AddTask, ChangeSet, LinkSource, MoveBlock, Violation
 
 RULE_GOAL_EXISTS = "goal_exists"
 RULE_BLOCK_EXISTS = "block_exists"
@@ -87,8 +87,13 @@ def validate(cs: ChangeSet, ctx: Context) -> list[Violation]:
         if isinstance(c, AddGoal):
             goals.add(c.id)
         elif isinstance(c, AddTask):
-            if c.goal_id not in goals:
+            if c.goal_id is not None and c.goal_id not in goals:
                 fail(i, RULE_GOAL_EXISTS, f"task {c.id}: goal {c.goal_id} does not exist")
+        elif isinstance(c, AddBlocker):
+            if c.end_date < c.start_date:
+                fail(i, RULE_BLOCK_ORDER, f"{c.title}: it ends ({c.end_date}) before it starts ({c.start_date})")
+            elif ctx.today is not None and c.end_date < ctx.today:
+                fail(i, RULE_NOT_IN_PAST, f"{c.title}: {c.end_date} has already passed")
         elif isinstance(c, AddRecurring):
             if any(not 0 <= d <= 6 for d in c.weekdays):
                 fail(i, RULE_RECURRING, f"{c.title}: weekdays must be Monday to Sunday")
@@ -111,6 +116,9 @@ def validate(cs: ChangeSet, ctx: Context) -> list[Violation]:
         elif isinstance(c, AddMilestone):
             if c.goal_id not in goals:
                 fail(i, RULE_GOAL_EXISTS, f"milestone {c.id}: goal {c.goal_id} does not exist")
+        elif isinstance(c, AddPlanMonth):
+            if c.goal_id not in goals:
+                fail(i, RULE_GOAL_EXISTS, f"plan month {c.id}: goal {c.goal_id} does not exist")
         elif isinstance(c, AddPlanWeek):
             if c.goal_id not in goals:
                 fail(i, RULE_GOAL_EXISTS, f"plan week {c.id}: goal {c.goal_id} does not exist")

@@ -2,14 +2,15 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from ..config import DAY_WINDOW_WEEKS, FIX_MAX_LOOPS, PROGRESS_REVIEW, PROGRESS_WEEK, PROGRESS_WEEKS
+from ..config import DAY_WINDOW_WEEKS, FIX_MAX_LOOPS, PLAN_PARALLEL_WEEKS, PROGRESS_REVIEW, PROGRESS_WEEK, PROGRESS_WEEKS
 
 Progress = Callable[[str], None]
-from ..contracts import AddPlanWeek, Change, ChangeSet, Origin
+from ..contracts import AddPlanMonth, AddPlanWeek, Change, ChangeSet, Origin
 from ..contracts.planner import GoalSpec
 from ..core.context import Context
 from ..core.ids import new_id
@@ -53,12 +54,25 @@ def plan_goal(chat, goal: GoalSpec, ctx: Context, now: datetime, progress: Progr
     if wk.shortfall > 0:
         notes.append(f"only {goal.total_hours - wk.shortfall:g} of {goal.total_hours:g}h fit before the deadline")
     changes: list[Change] = []
-    running = ctx
+
+    # Every planned week is taken down to days. Weeks cover different days, so each is planned from the
+    # same calendar snapshot, in parallel; the results are put back in week order.
+    def plan_one(w):
+        week_notes: list[str] = []
+        day_changes, _ctx_after, how = plan_week_with_critic(chat, goal, w, ctx, now, week_notes, progress)
+        return day_changes, how, week_notes
+
+    detailed = wk.allocs[:DAY_WINDOW_WEEKS]
+    with ThreadPoolExecutor(max_workers=max(1, min(PLAN_PARALLEL_WEEKS, len(detailed) or 1))) as pool:
+        planned = list(pool.map(plan_one, detailed))
+    for m in wk.months:
+        changes.append(AddPlanMonth(id=new_id("pm"), goal_id=goal.id, month_start=m.month, focus=m.focus, hours=m.hours, why=m.why))
     for i, w in enumerate(wk.allocs):
-        changes.append(AddPlanWeek(id=new_id("pw"), goal_id=goal.id, week_start=w.week, focus=w.focus, hours=w.hours))
-        if i < DAY_WINDOW_WEEKS:
-            day_changes, running, how = plan_week_with_critic(chat, goal, w, running, now, notes, progress)
+        changes.append(AddPlanWeek(id=new_id("pw"), goal_id=goal.id, week_start=w.week, focus=w.focus, hours=w.hours, why=w.why))
+        if i < len(planned):
+            day_changes, how, week_notes = planned[i]
             changes += day_changes
+            notes += week_notes
             notes.append(f"{w.week:%d %b}: day plan via {how}")
     return GoalPlan(goal, changes, notes)
 
