@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
 from ..db import get_session
-from ..deps import CurrentUser, _dev_login_enabled, load_user, require_user, resolve_user
+from ..deps import CurrentUser, _dev_login_enabled, forget_identity, load_user, require_user, resolve_user
 from ..ids import new_guest_user_id
 from ..models import User, UserSession
 from ..registry import DEFAULT_PROVIDER
@@ -226,6 +226,7 @@ async def logout(
     stolen cookie stops working at logout instead of at expiry.
     """
     token = request.cookies.get(settings.session_cookie)
+    forget_identity(session_token=token)
     if token:
         row = (
             await session.execute(

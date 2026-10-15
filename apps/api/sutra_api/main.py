@@ -46,6 +46,7 @@ from .api import (
     ops,
     plan_items,
     preferences,
+    reminders,
     scratch,
     sources,
     state,
@@ -59,6 +60,17 @@ from .security import MUTATING_METHODS, origin_is_same_site
 
 #: Request headers a browser on another origin may send. `X-Timezone` is the user's own zone, sent on every call.
 CORS_ALLOWED_HEADERS = ["Content-Type", "Authorization", "Cookie", "X-Requested-With", "X-Timezone", "Accept"]
+
+#: Sent on every API response. The API serves JSON and files, never a page, so the policy is the strictest one.
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+}
+#: Everything here is per-user. `public` let a shared cache (or the browser's heuristic cache) hand one
+#: user's board to the next request, and stale after a write; `private, no-store` forbids both.
+PER_USER_CACHE_CONTROL = "private, no-store"
 
 TITLE = "GoalCoach API"
 VERSION = "2.0.0"
@@ -123,6 +135,16 @@ def create_app() -> FastAPI:
         blocked = _origin_guard(request)
         return blocked if blocked is not None else await call_next(request)
 
+    @app.middleware("http")
+    async def _headers(request: Request, call_next):
+        response = await call_next(request)
+        for name, value in SECURITY_HEADERS.items():
+            response.headers.setdefault(name, value)
+        # Routes that set their own policy (the .ics feed, file downloads) keep it.
+        if "cache-control" not in response.headers:
+            response.headers["Cache-Control"] = PER_USER_CACHE_CONTROL
+        return response
+
     if settings.cors_allowed_origins:
         # Added *before* the CSRF middleware so CSRF runs first — see the module
         # docstring on ordering.
@@ -157,6 +179,7 @@ def create_app() -> FastAPI:
         chat,
         plan_routes,
         scratch,
+        reminders,
         calendar,
         cron,
     ):

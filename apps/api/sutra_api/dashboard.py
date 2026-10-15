@@ -17,7 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .core.over_commitment import compute_over_commitment
 from .core.replan_suggestions import compute_replan_suggestions
-from .models import User
+from sqlalchemy import select
+
+from .models import Reminder, User
 from .store import drift as drift_store
 from .store import repo
 from .wire import (
@@ -38,6 +40,7 @@ BLOCKER_LIMIT = 500
 SOURCE_LIMIT = 500
 PLAN_ITEM_LIMIT = 2000
 BLOCK_LIMIT = 1000
+REMINDER_LIMIT = 500
 AUDIT_RECENT = 10
 
 
@@ -63,6 +66,7 @@ async def assemble_state(session: AsyncSession, *, user_id: str) -> dict:
     sources = await repo.list_sources(session, user_id=user_id, limit=SOURCE_LIMIT)
     recent = await repo.recent_audit(session, user_id=user_id, limit=AUDIT_RECENT)
 
+    reminders = list((await session.execute(select(Reminder).where(Reminder.user_id == user_id).limit(REMINDER_LIMIT))).scalars())
     user_row = await session.get(User, user_id)
     available_weekly_hours = user_row.available_weekly_hours if user_row else None
 
@@ -134,4 +138,6 @@ async def assemble_state(session: AsyncSession, *, user_id: str) -> dict:
         # read" resolves to *add*, since the read is real and shipped.
         "timetableBlocks": block_payload,
         "timetable_blocks": block_payload,
+        # Each reminder is its whole schedule: the days it falls on and the times of day on each of them.
+        "reminders": [{"id": r.id, "title": r.title, "goal_id": r.goal_id, "days": list(r.days or []), "times": list(r.times or [])} for r in reminders],
     }

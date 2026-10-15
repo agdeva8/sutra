@@ -9,6 +9,7 @@ import asyncio
 import base64
 
 from agentv2 import default_chat
+from agentv2.llm import reply_text
 
 from .core.extract import TEXT_EXCERPT_MAX
 
@@ -25,7 +26,7 @@ IMAGE_UNREADABLE = "[image could not be read]"
 def _describe(data: bytes, content_type: str) -> str:
     url = f"data:{content_type or 'image/png'};base64,{base64.b64encode(data).decode()}"
     message = [{"type": "text", "text": IMAGE_PROMPT}, {"type": "image_url", "image_url": {"url": url}}]
-    return str(default_chat().invoke([("user", message)]).content).strip()
+    return reply_text(default_chat().invoke([("user", message)]).content).strip()
 
 
 async def describe_image(data: bytes, content_type: str) -> str:

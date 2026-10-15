@@ -140,7 +140,8 @@ async def create_blocker(
         summary=f"Blocker '{row.title}'",
     )
     await session.commit()
-    await run_after(background, replan_conflicts_for, user.user_id, request.headers.get("x-timezone"))
+    # No replan here: it ran inside the request (BACKGROUND_INLINE) and added seconds to every write. The
+    # client follows up with `POST /timetable/replan-conflicts`.
     return blocker(row)
 
 
@@ -189,7 +190,8 @@ async def update_blocker(
         summary=f"Updated blocker '{row.title}'",
     )
     await session.commit()
-    await run_after(background, replan_conflicts_for, user.user_id, request.headers.get("x-timezone"))
+    # No replan here: it ran inside the request (BACKGROUND_INLINE) and added seconds to every write. The
+    # client follows up with `POST /timetable/replan-conflicts`.
     return {"blocker": blocker(row)}
 
 

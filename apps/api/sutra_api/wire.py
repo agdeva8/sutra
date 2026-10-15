@@ -199,6 +199,11 @@ def plan_item(item: Any, *, with_created_at: bool = True) -> dict:
         "phase": item.phase,
         "title": item.title,
         "note": item.note,
+        # The session's own sentence on what it involves. `None` for rows written before the column
+        # existed, which the client treats as "no description" rather than as an empty one.
+        "description": getattr(item, "description", None),
+        "why": getattr(item, "why", None),
+        "done_hours": getattr(item, "done_hours", None),
         "start_date": iso_date(item.start_date),
         "end_date": iso_date(item.end_date),
         "due_date": iso_date(item.due_date),
@@ -272,6 +277,7 @@ def time_block(row: Any) -> dict:
         "goal_id": row.goal_id,
         "goal_title": row.goal_title,
         "note": row.note,
+        "why": getattr(row, "why", None),
         "created_at": iso_dt(row.created_at),
     }
 

@@ -27,6 +27,12 @@ _WIRE_MODEL = "deepseek-flash"
 #:   gemini → "gemini-3-flash-preview" · claude → "claude-sonnet-4-5" · openai → "gpt-5.4"
 
 
+#: Shown under every option. All three currently resolve to `_WIRE_MODEL`, so naming a model version here
+#: (it used to say "Sonnet 4.5") told the user something untrue. Restore the real names when the rows
+#: are wired to their own models.
+HINT_PREVIEW = "Preview: answered by the shared assistant model"
+
+
 class ModelEntry(TypedDict):
     id: str
     label: str
@@ -39,21 +45,21 @@ MODEL_REGISTRY: dict[str, ModelEntry] = {
     "gemini": {
         "id": "gemini",
         "label": "Gemini",
-        "hint": "3 Flash",
+        "hint": HINT_PREVIEW,
         "provider": "gemini",
         "model": _WIRE_MODEL,
     },
     "claude": {
         "id": "claude",
         "label": "Claude",
-        "hint": "Sonnet 4.5",
+        "hint": HINT_PREVIEW,
         "provider": "anthropic",
         "model": _WIRE_MODEL,
     },
     "openai": {
         "id": "openai",
         "label": "OpenAI",
-        "hint": "GPT-5.4",
+        "hint": HINT_PREVIEW,
         "provider": "openai",
         "model": _WIRE_MODEL,
     },

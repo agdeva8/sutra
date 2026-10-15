@@ -23,6 +23,7 @@ a write instead of a 401 at the door.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
@@ -63,6 +64,42 @@ class CurrentUser:
         return self.name or self.email or ("Guest" if self.is_guest else self.user_id)
 
 
+#: How long a resolved identity is reused before the database is asked again. Every API call used to
+#: cost two round trips (session row, then user row) before doing any work; on a serverless host with a
+#: remote database that was most of the ~1.4s floor. Short, because a revoked session or a changed
+#: profile should show up quickly, and `forget_identity` drops an entry the moment we know it changed.
+IDENTITY_CACHE_TTL_S = 30.0
+#: A hard bound so the dict cannot grow without limit in a long-lived process.
+IDENTITY_CACHE_MAX = 2000
+
+_identity_cache: dict[str, tuple[float, "CurrentUser"]] = {}
+
+
+def _cache_get(key: str) -> "CurrentUser | None":
+    hit = _identity_cache.get(key)
+    if hit is None:
+        return None
+    if hit[0] <= time.monotonic():
+        _identity_cache.pop(key, None)
+        return None
+    return hit[1]
+
+
+def _cache_put(key: str, user: "CurrentUser") -> None:
+    if len(_identity_cache) >= IDENTITY_CACHE_MAX:
+        _identity_cache.clear()
+    _identity_cache[key] = (time.monotonic() + IDENTITY_CACHE_TTL_S, user)
+
+
+def forget_identity(*, user_id: str | None = None, session_token: str | None = None) -> None:
+    """Drop cached identities after a logout or a change to the user row."""
+    if session_token:
+        _identity_cache.pop(f"s:{session_token}", None)
+    if user_id:
+        for key in [k for k, (_, u) in _identity_cache.items() if u.user_id == user_id]:
+            _identity_cache.pop(key, None)
+
+
 def _dev_login_enabled() -> bool:
     return settings.allow_dev_login or settings.env == "test"
 
@@ -77,20 +114,29 @@ async def _from_session_cookie(
     token = request.cookies.get(settings.session_cookie)
     if not token:
         return None
-    row = (
+    cached = _cache_get(f"s:{token}")
+    if cached is not None:
+        return cached
+    # One round trip: the session row and its user together.
+    found = (
         await session.execute(
-            select(UserSession).where(UserSession.session_token == token).limit(1)
+            select(UserSession, User)
+            .join(User, User.id == UserSession.user_id)
+            .where(UserSession.session_token == token)
+            .limit(1)
         )
-    ).scalar_one_or_none()
+    ).first()
     # No row, or an expired one: the cookie is stale. Fall *through* rather than
     # 401 — v1's rule, and it is what lets an expired session degrade into the
     # guest they already are instead of a dead page.
-    if row is None or row.expires_at <= datetime.now(UTC):
+    if found is None:
         return None
-    user = await load_user(session, row.user_id)
-    if user is None:
+    row, user = found
+    if row.expires_at <= datetime.now(UTC):
         return None
-    return _of(user, "session")
+    resolved = _of(user, "session")
+    _cache_put(f"s:{token}", resolved)
+    return resolved
 
 
 async def _from_guest_cookie(
@@ -99,13 +145,18 @@ async def _from_guest_cookie(
     user_id = verify_guest_token(request.cookies.get(settings.guest_cookie))
     if not user_id:
         return None
+    cached = _cache_get(f"g:{user_id}")
+    if cached is not None:
+        return cached
     user = await load_user(session, user_id)
     # A signed claim for a row that no longer exists is not a user. v1 would
     # return the bare id and let a write fail on the FK; refusing here is the
     # same outcome with a better error.
     if user is None:
         return None
-    return _of(user, "guest")
+    resolved = _of(user, "guest")
+    _cache_put(f"g:{user_id}", resolved)
+    return resolved
 
 
 async def _from_dev_bearer(

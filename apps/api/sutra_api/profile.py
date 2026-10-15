@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 
 from agentv2.config import PROFILE_WEEKDAY_KEYS
+from agentv2.core.profile import UserProfile, waking_conflict
 
 #: "HH:MM", 24-hour.
 CLOCK_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -55,6 +56,10 @@ def clean_profile(raw: dict) -> dict:
         if isinstance(hours, bool) or not isinstance(hours, (int, float)) or not 0 < hours <= MAX_WEEKLY_GOAL_HOURS:
             raise ProfileError(f"{PROFILE_WEEKLY_HOURS} must be between 0 and {MAX_WEEKLY_GOAL_HOURS}")
         out[PROFILE_WEEKLY_HOURS] = hours
+    # The same check a person would make by eye: refuse a profile that contradicts itself, with the reason.
+    conflict = waking_conflict(UserProfile.from_json(out))
+    if conflict:
+        raise ProfileError(conflict)
     return out
 
 

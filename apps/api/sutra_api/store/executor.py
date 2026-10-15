@@ -20,6 +20,7 @@ with three properties:
 from __future__ import annotations
 
 import re
+from difflib import SequenceMatcher
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
@@ -56,6 +57,28 @@ class ExecResult:
     result: str
 
 
+#: Spoken date spellings tried after ISO. Day-first because the default time zone is IST.
+DATE_FALLBACK_FORMATS = ("%d %B %Y", "%d %b %Y", "%B %d %Y", "%b %d %Y", "%d/%m/%Y", "%d-%m-%Y")
+
+#: Titles at least this alike (difflib ratio, case and punctuation ignored) are the same goal.
+DUPLICATE_TITLE_RATIO = 0.86
+
+
+def _norm_title(title: str) -> str:
+    return re.sub(r"[^a-z0-9 ]+", "", title.lower()).strip()
+
+
+async def _find_duplicate_goal(session: AsyncSession, *, user_id: str, title: str):
+    """An active goal whose title is (nearly) the one being created, or None."""
+    wanted = _norm_title(title)
+    for goal in await repo.list_goals(session, user_id=user_id, limit=200):
+        if goal.status != "active":
+            continue
+        if SequenceMatcher(None, wanted, _norm_title(goal.title)).ratio() >= DUPLICATE_TITLE_RATIO:
+            return goal
+    return None
+
+
 def _fail(msg: str) -> ExecResult:
     return ExecResult(False, msg)
 
@@ -69,10 +92,20 @@ def _as_date(v: object) -> date | None:
         return None
     if isinstance(v, date):
         return v
+    text = str(v).strip()
     try:
-        return date.fromisoformat(str(v)[:10])
+        return date.fromisoformat(text[:10])
     except ValueError:
-        return None
+        pass
+    # The model sometimes echoes the user's own wording ("14 March 2027") instead of ISO. Dropping
+    # that silently left goals undated, so accept the common spoken forms.
+    cleaned = re.sub(r"(?<=\d)(st|nd|rd|th)\b", "", text, flags=re.IGNORECASE).replace(",", "")
+    for fmt in DATE_FALLBACK_FORMATS:
+        try:
+            return datetime.strptime(cleaned, fmt).date()
+        except ValueError:
+            continue
+    return None
 
 
 def _as_hours(v: object) -> int | None:
@@ -164,6 +197,11 @@ async def _create_goal(session: AsyncSession, *, user_id: str, args: dict) -> Ex
 
     raw_horizon = str(args.get("horizon") or "").strip()
     horizon = raw_horizon if raw_horizon in GOAL_HORIZONS else "medium"
+
+    if not args.get("allow_duplicate"):
+        existing = await _find_duplicate_goal(session, user_id=user_id, title=title)
+        if existing is not None:
+            return _fail(f"You already have a goal called '{existing.title}'. Open it instead of adding a second one.")
 
     goal = await repo.create_goal(
         session,

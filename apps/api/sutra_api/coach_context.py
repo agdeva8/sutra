@@ -43,6 +43,7 @@ HEADER_PROFILE = "ABOUT THE USER (they told us this once; do not ask it again):"
 HEADER_PROFILE_EMPTY = "ABOUT THE USER: not given. Do not assume their hours; ask about time only if the plan depends on it."
 HEADER_HOURS = "TIME AVAILABLE FOR GOALS (by week, from their calendar and profile):"
 HEADER_COMMITMENTS = f"FIXED COMMITMENTS, next {CONTEXT_WEEKS_AHEAD} weeks (never plan over these):"
+HEADER_TODAY = "TODAY'S TIMETABLE (already on the calendar; keep it, plan around it):"
 HEADER_RECURRING = "RECURRING COMMITMENTS:"
 HEADER_GOALS = "ACTIVE GOALS:"
 HEADER_OVERDUE = "OVERDUE MILESTONES:"
@@ -75,6 +76,8 @@ class CoachFacts:
     profile: dict = field(default_factory=dict)
     weeks: list[WeekHours] = field(default_factory=list)
     commitments: list[tuple[date, time, time, str]] = field(default_factory=list)
+    #: Everything on today's calendar, planner-placed prep sessions included (`commitments` leaves those out).
+    today_blocks: list[tuple[time, time, str]] = field(default_factory=list)
     recurring: list[tuple[str, list[int], time, time]] = field(default_factory=list)
     goals: list[str] = field(default_factory=list)
     overdue: list[str] = field(default_factory=list)
@@ -114,6 +117,9 @@ def render(f: CoachFacts) -> str:
             f"{w.planned:.0f}h already planned, about {w.left:.0f}h left for a new goal"
             for w in f.weeks
         ]
+    if f.today_blocks:
+        lines += ["", HEADER_TODAY]
+        lines += [f"- {s:%H:%M}-{e:%H:%M} {label}" for s, e, label in f.today_blocks[:MAX_COMMITMENT_LINES]]
     if f.recurring:
         lines += ["", HEADER_RECURRING]
         lines += [f"- {t}: {', '.join(DAY_NAMES[d] for d in days if 0 <= d < 7)} {s:%H:%M}-{e:%H:%M}"
@@ -153,6 +159,10 @@ async def build_coach_context(session: AsyncSession, *, user_id: str, now: datet
             TimetableBlock.source != SOURCE_RECURRING,
         ).order_by(TimetableBlock.block_date, TimetableBlock.start_time)
     )).scalars().all()
+    today_rows = (await session.execute(
+        select(TimetableBlock).where(TimetableBlock.user_id == user_id, TimetableBlock.block_date == today)
+        .order_by(TimetableBlock.start_time)
+    )).scalars().all()
     rules = (await session.execute(select(RecurringBlock).where(
         RecurringBlock.user_id == user_id,
         (RecurringBlock.end_date.is_(None)) | (RecurringBlock.end_date >= today)))).scalars().all()
@@ -168,6 +178,7 @@ async def build_coach_context(session: AsyncSession, *, user_id: str, now: datet
         profile=dict(user.profile or {}) if user else {},
         weeks=week_hours(ctx, now),
         commitments=[(b.block_date, b.start_time, b.end_time, b.label) for b in fixed],
+        today_blocks=[(b.start_time, b.end_time, b.label) for b in today_rows],
         recurring=[(r.title, list(r.weekdays or []), r.start_time, r.end_time) for r in rules],
         goals=[
             f"- {g.title} ({g.horizon})"

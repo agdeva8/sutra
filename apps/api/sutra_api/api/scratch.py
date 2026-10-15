@@ -29,8 +29,8 @@ BODY_MAX_CHARS = 4000
 WAITING = ("pending", "processing", "needs_input", "failed")
 
 
-def _row(e: ScratchEntry) -> dict:
-    return {
+def _row(e: ScratchEntry, *, undoable: bool | None = None) -> dict:
+    row = {
         "id": e.id,
         "kind": e.kind,
         "body": e.body,
@@ -42,6 +42,11 @@ def _row(e: ScratchEntry) -> dict:
         "created_at": iso_dt(e.created_at),
         "handled_at": iso_dt(e.handled_at),
     }
+    if undoable is not None:
+        # Only handled entries the agent actually wrote something for (an audit row exists) can be undone;
+        # a NOISE entry changed nothing, so the client must not offer Undo on it.
+        row["undoable"] = undoable
+    return row
 
 
 @router.post("/scratch", status_code=201, dependencies=[Depends(llm_rate_limit)])
@@ -120,9 +125,19 @@ async def list_entries(
         select(ScratchEntry).where(ScratchEntry.user_id == user.user_id)
         .order_by(ScratchEntry.created_at.desc()).limit(PANE_LIMIT * 2)
     )).scalars().all()
+    handled = sorted((e for e in rows if e.status == "handled"),
+                     key=lambda e: e.handled_at or e.created_at, reverse=True)[:PANE_LIMIT]
+    audited: set[str] = set()
+    if handled:
+        refs = (await session.execute(
+            select(AuditEntry.payload["origin"]["ref"].astext).where(
+                AuditEntry.user_id == user.user_id, AuditEntry.type == AUDIT_APPLY,
+                AuditEntry.payload["origin"]["ref"].astext.in_([e.id for e in handled]))
+        )).scalars().all()
+        audited = set(refs)
     return {
         "waiting": [_row(e) for e in rows if e.status in WAITING][:PANE_LIMIT],
-        "handled": [_row(e) for e in rows if e.status == "handled"][:PANE_LIMIT],
+        "handled": [_row(e, undoable=e.id in audited) for e in handled],
     }
 
 
@@ -140,7 +155,7 @@ async def retry_entry(
         raise HTTPException(status_code=409, detail="Only a failed or waiting entry can be retried")
     entry.status, entry.error, entry.question = "pending", None, None
     await session.commit()
-    await run_after(background, process, entry.id)
+    # Filed by the client via `/process` (streamed), not inline: see `chat_entry`.
     await session.refresh(entry)
     return _row(entry)
 
@@ -181,7 +196,9 @@ async def chat_entry(
         entry.result = {**result, "clarification": step.resolved}
         entry.status, entry.question = "pending", None
         await session.commit()
-        await run_after(background, process, entry.id)
+        # Not filed here: filing runs the whole triage (often 10-20s), which used to hold this reply
+        # (and the user's spinner) hostage. The client files it next with `POST /scratch/{id}/process`,
+        # which streams progress; an entry nobody files is picked up by the recovery job.
         await session.refresh(entry)
     else:
         entry.result = result
@@ -218,6 +235,27 @@ async def undo_entry(
     entry.status = "undone"
     await session.commit()
     return {"reverted": res.reverted, "not_restored": res.not_restored}
+
+
+#: Terminal status for a handled entry whose proposal the user turned down. Neither pane lists it.
+STATUS_DISMISSED = "dismissed"
+
+
+@router.post("/scratch/{entry_id}/dismiss")
+async def dismiss_entry(
+    entry_id: str,
+    session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(require_user),
+) -> dict:
+    """Turn down what the agent only proposed for a handled entry. It changed nothing, so there is nothing to undo."""
+    entry = await session.get(ScratchEntry, entry_id)
+    if entry is None or entry.user_id != user.user_id:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    if entry.status != "handled" or not (entry.result or {}).get("proposed"):
+        raise HTTPException(status_code=409, detail="Only a handled entry with a proposal can be dismissed")
+    entry.status = STATUS_DISMISSED
+    await session.commit()
+    return {"ok": True}
 
 
 @router.delete("/scratch/{entry_id}")

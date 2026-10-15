@@ -32,6 +32,10 @@ ReplanTrigger = Literal[
 CAPACITY_WINDOW_DAYS = 7
 #: Cap, so the banner stays readable.
 MAX_SUGGESTIONS = 5
+#: A blocker that covers no more than this share of a goal's remaining window is absorbed by the agent's own
+#: re-plan (it already runs whenever a blocker or appointment is added), so it is not worth asking about. Past this,
+#: the trip really changes what the goal can do, and the person is asked.
+AUTO_ABSORB_MAX_SHARE = 0.15
 
 #: Every trigger resolves through the same intent — there is one planner door.
 REPLAN_INTENT: dict[str, str] = {
@@ -237,6 +241,12 @@ def compute_replan_suggestions(inp: dict) -> list[ReplanSuggestion]:
             # on/after the goal starts.
             if not (b_start <= g_end and b_end >= g_start):
                 continue
+            # Only the goal's remaining window counts, and a small bite out of it is the agent's to absorb.
+            window_start = max(g_start, today)
+            window_days = max(1.0, _days_between(window_start, g_end) + 1)
+            blocked_days = _days_between(max(b_start, window_start), min(b_end, g_end)) + 1
+            if blocked_days / window_days <= AUTO_ABSORB_MAX_SHARE:
+                continue
             b_title = b.get("title", "")
             g_title = g.get("title", "")
             window = f"{b_start}-{b_end}" if b_end != b_start else b_start
@@ -290,7 +300,10 @@ def compute_replan_suggestions(inp: dict) -> list[ReplanSuggestion]:
             if start and end and start <= block_date <= end:
                 colliding = b
                 break
-        if colliding:
+        # A session the agent planned itself that lands on a blocker is the agent's to move (it re-plans on every
+        # calendar change), not a question for the person. Their own fixed appointments are never moved silently.
+        agent_owned = block.get("kind") == "tentative"
+        if colliding and not agent_owned:
             reasons.append(f'It overlaps blocker "{colliding.get("title")}".')
         if not reasons:
             continue

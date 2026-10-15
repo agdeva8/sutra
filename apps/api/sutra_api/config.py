@@ -83,6 +83,9 @@ class Settings(BaseSettings):
     supabase_bucket: str = Field(default="goalcoach", alias="SUPABASE_BUCKET")
     local_storage_dir: str = Field(default=".data/sources", alias="LOCAL_STORAGE_DIR")
 
+    #: Vercel sets `VERCEL=1` in every function. Disk is per-instance and ephemeral there.
+    vercel: str = Field(default="", alias="VERCEL")
+
     #: When true, `/ready` fails without a real provider key. Off by default,
     #: because the agent's offline stub is a supported mode and failing
     #: readiness there would make the service undeployable with no keys.
@@ -99,6 +102,9 @@ class Settings(BaseSettings):
     # ── chat ───────────────────────────────────────────────────────────────
     chat_history_limit: int = 200
     source_max_bytes: int = 20 * 1024 * 1024
+    #: Files one request may attach. The Scratch composer is the batch surface, and the client mirrors
+    #: this in `constants/limits.js` so the person is told before spending an upload on it.
+    source_max_files_per_upload: int = 10
     text_excerpt_max: int = 8000
     link_fetch_timeout_ms: int = 12_000
     link_fetch_max_bytes: int = 256 * 1024
@@ -154,6 +160,10 @@ class Settings(BaseSettings):
     @property
     def is_prod(self) -> bool:
         return self.env == "production"
+
+    @property
+    def is_serverless(self) -> bool:
+        return bool(self.vercel)
 
     @property
     def ddl_url(self) -> str:

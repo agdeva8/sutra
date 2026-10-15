@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..agent_store import SqlStore
 from ..db import get_session
+from ..progress import progress_payload
 from ..rate_limit import llm_rate_limit
 from ..deps import CurrentUser, require_user
 
@@ -114,12 +115,24 @@ async def progress(
     session: AsyncSession = Depends(get_session),
     user: CurrentUser = Depends(require_user),
 ) -> dict:
-    """Per goal: hours needed, done, still to do, and still planned. The agent plans again when planned
-    and still-to-do drift apart (a missed week, or work finished early)."""
-    from agentv2 import goal_progress
-
+    """Per active goal: the numbers (computed by code, always fresh) and the model's verdict on them when
+    one is current. `stale: true` means the numbers moved since the verdict; `POST /agent/progress/judge`
+    makes it fresh."""
     now = local_now(_tz(request))
-    return {"goals": await goal_progress(SqlStore(session, user.user_id, today=now.date()), now=now)}
+    return {"goals": await progress_payload(session, user.user_id, now.date(), judge=False)}
+
+
+@router.post("/agent/progress/judge", dependencies=[Depends(llm_rate_limit)])
+async def judge_progress(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(require_user),
+) -> dict:
+    """Ask the model to judge every goal whose verdict is stale, then return the same payload."""
+    now = local_now(_tz(request))
+    goals = await progress_payload(session, user.user_id, now.date(), judge=True)
+    await session.commit()
+    return {"goals": goals}
 
 
 @router.get("/recurring")

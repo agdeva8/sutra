@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..core.blast_radius import radius_for
 from ..agent_background import replan_conflicts_for
 from ..db import get_session
+from ..rate_limit import llm_rate_limit
 from ..background import run_after
 from ..deps import CurrentUser, require_user
 from ..ids import new_id
@@ -118,6 +119,19 @@ async def list_timetable(
     return {"blocks": [time_block(b) for b in rows] + _reminder_blocks(reminders)}
 
 
+@router.post("/timetable/replan-conflicts", dependencies=[Depends(llm_rate_limit)])
+async def replan_conflicts_now(
+    request: Request,
+    user: CurrentUser = Depends(require_user),
+) -> dict:
+    """Plan goals again around calendar changes the user just made.
+
+    The follow-up the client sends after adding, editing or removing a block or an away period. It is its own
+    request so the write itself returns at once; it does nothing when nothing conflicts."""
+    await replan_conflicts_for(user.user_id, request.headers.get("x-timezone"))
+    return {"ok": True}
+
+
 @router.post("/timetable", status_code=201)
 async def create_block(
     request: Request,
@@ -194,7 +208,8 @@ async def create_block(
             summary=f"Added '{label}'",
         )
     await session.commit()
-    await run_after(background, replan_conflicts_for, user.user_id, request.headers.get("x-timezone"))
+    # No replan here: it ran inside the request (BACKGROUND_INLINE) and added seconds to every write. The
+    # client follows up with `POST /timetable/replan-conflicts`.
     return time_block(row)
 
 
@@ -258,7 +273,8 @@ async def update_block(
             summary=f"Updated block '{label}'",
         )
     await session.commit()
-    await run_after(background, replan_conflicts_for, user.user_id, request.headers.get("x-timezone"))
+    # No replan here: it ran inside the request (BACKGROUND_INLINE) and added seconds to every write. The
+    # client follows up with `POST /timetable/replan-conflicts`.
     return {"block": time_block(row)}
 
 

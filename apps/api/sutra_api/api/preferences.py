@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
-from ..deps import require_user
+from ..deps import forget_identity, require_user
 from ..models import User
 from ..profile import ProfileError, clean_profile
 from ..registry import DEFAULT_PROVIDER, MODEL_OPTIONS, echo_provider, resolve_provider_id
@@ -61,6 +61,7 @@ async def update_preferences(
     else:
         row.model_provider = resolved
     await session.commit()
+    forget_identity(user_id=user.user_id)
 
     return {"model_provider": echo_provider(raw if isinstance(raw, str) else "", resolved)}
 
@@ -96,3 +97,56 @@ async def put_profile(
     row.profile = profile
     await session.commit()
     return {"profile": profile}
+
+
+#: Display preferences kept on the account. Optional keys; nothing here is ever required.
+THEMES = ("light", "dark")
+FONT_SIZE_MIN_PX = 12
+FONT_SIZE_MAX_PX = 24
+
+
+def clean_display(raw: object) -> dict:
+    """Keep only valid keys. Raises ValueError on a bad value, so the route can answer 400."""
+    if not isinstance(raw, dict):
+        raise ValueError("body must be an object")
+    out: dict = {}
+    if "theme" in raw:
+        if raw["theme"] not in THEMES:
+            raise ValueError(f"theme must be one of {', '.join(THEMES)}")
+        out["theme"] = raw["theme"]
+    if "font_size" in raw:
+        size = raw["font_size"]
+        if isinstance(size, bool) or not isinstance(size, int) or not FONT_SIZE_MIN_PX <= size <= FONT_SIZE_MAX_PX:
+            raise ValueError(f"font_size must be a whole number from {FONT_SIZE_MIN_PX} to {FONT_SIZE_MAX_PX}")
+        out["font_size"] = size
+    return out
+
+
+@router.get("/preferences/display")
+async def get_display(session: AsyncSession = Depends(get_session), user=Depends(require_user)) -> dict:
+    """`{}` until something was saved; the client then offers its local values (see `PUT`)."""
+    row = await session.get(User, user.user_id)
+    return {"display": dict(row.preferences or {}) if row else {}}
+
+
+@router.put("/preferences/display")
+async def put_display(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    user=Depends(require_user),
+) -> dict:
+    """Merge valid keys into the saved display preferences."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    try:
+        patch = clean_display(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    row = await session.get(User, user.user_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    row.preferences = {**(row.preferences or {}), **patch}
+    await session.commit()
+    return {"display": row.preferences}

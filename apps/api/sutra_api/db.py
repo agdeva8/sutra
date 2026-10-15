@@ -60,6 +60,10 @@ _engine: AsyncEngine | None = None
 _sessionmaker: async_sessionmaker[AsyncSession] | None = None
 
 
+#: Kept connections older than this are replaced at checkout, below Supabase's idle-connection cut-off.
+POOL_RECYCLE_S = 300
+
+
 def create_engine(url: str | None = None) -> AsyncEngine:
     """Build the engine.
 
@@ -72,7 +76,11 @@ def create_engine(url: str | None = None) -> AsyncEngine:
     return create_async_engine(
         url or settings.database_url,
         echo=False,
-        pool_pre_ping=True,
+        # A pre-ping is an extra round trip on EVERY checkout. On a serverless host the pooler (pgbouncer)
+        # already owns connection health and the instance is short-lived, so it is pure latency there.
+        # `pool_recycle` bounds the age of a kept connection instead.
+        pool_pre_ping=not settings.is_serverless,
+        pool_recycle=POOL_RECYCLE_S,
         pool_size=5,
         max_overflow=5,
         connect_args={"statement_cache_size": 0},

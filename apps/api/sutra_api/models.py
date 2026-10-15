@@ -122,6 +122,9 @@ class User(Timestamped, Base):
     #: weekly hours for goals, rest days, and `asked` (true once shown, even if every field was skipped).
     #: Shape and meaning: `sutra_api/profile.py`.
     profile: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb"))
+    #: Display preferences that follow the account across devices: theme and text size. Optional keys only
+    #: (`sutra_api/api/preferences.py` lists them); an empty object means "never saved", not "defaults".
+    preferences: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb"))
 
     __table_args__ = (
         # Partial unique. A plain unique index would reject the second
@@ -244,6 +247,14 @@ class PlanItem(Base):
     phase: Mapped[str] = mapped_column(String, nullable=False, default="")
     title: Mapped[str] = mapped_column(String, nullable=False)
     note: Mapped[str] = mapped_column(String, nullable=False, default="")
+    #: The session's own sentence on what it involves. Nullable: rows written before this column
+    #: existed have none, and an older plan is still a valid plan.
+    description: Mapped[str | None] = mapped_column(String)
+    #: Why the planner put this here, in one sentence the user reads when they open the item. Nullable
+    #: for the same reason as `description`: older rows have none, and nothing invents one.
+    why: Mapped[str | None] = mapped_column(String)
+    #: Hours of this row that are finished when it is only part done; null when nothing was ticked partially.
+    done_hours: Mapped[float | None] = mapped_column(Float)
     start_date: Mapped[date | None] = mapped_column(Date)
     end_date: Mapped[date | None] = mapped_column(Date)
     due_date: Mapped[date | None] = mapped_column(Date)
@@ -317,6 +328,8 @@ class TimetableBlock(Timestamped, Base):
     )
     goal_title: Mapped[str] = mapped_column(String, nullable=False, default="")
     note: Mapped[str] = mapped_column(String, nullable=False, default="")
+    #: Why the planner chose this time, shown when the block is opened. Nullable: manual blocks have none.
+    why: Mapped[str | None] = mapped_column(String)
 
     __table_args__ = (
         Index("timetable_blocks_user_date_idx", "user_id", "block_date", "start_time"),
@@ -1005,3 +1018,21 @@ class DailyLog(Timestamped, Base):
     commitments: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     #: `[{blocker_id, skipped, note}]`
     blockers: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+
+
+class GoalProgress(Base):
+    """The progress judge's latest verdict for a goal, kept so a page view does not call the model.
+
+    `digest` is a hash of the facts the verdict was made from (and of the day), so it is reused only
+    while it is still true: ticking a task or the day turning over changes the digest and makes it stale.
+    """
+
+    __tablename__ = "goal_progress"
+
+    goal_id: Mapped[str] = mapped_column(ForeignKey("goals.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    digest: Mapped[str] = mapped_column(String, nullable=False)
+    verdict: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (Index("goal_progress_user_idx", "user_id"),)

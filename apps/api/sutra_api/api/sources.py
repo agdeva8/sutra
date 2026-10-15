@@ -22,6 +22,7 @@ body was simply too big, and the client shows the difference.
 """
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 
 from ..vision import describe_image
@@ -38,13 +39,15 @@ from ..deps import CurrentUser, require_user
 from ..ids import new_id
 from ..llm import get_complete, provider_status
 from ..models import Source
-from ..storage import delete as storage_delete, object_key, put
+from ..storage import GENERIC_CONTENT_TYPE, delete as storage_delete, get as storage_get, object_key, put, signed_upload_url
 from ..store import repo, staleness
 from ..stream import delta, done, error, frame, sse_response
 from ..wire import source_list_row, source_row, source_upload_row
 
 #: What an upload may be for. A memory photo is kept out of the Sources list.
 SOURCE_PURPOSES = ("source", "memory")
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["sources"])
 
@@ -107,6 +110,65 @@ async def _record_source_change(
     )
 
 
+def _check_upload_limits(*, filename: str, size: int) -> None:
+    """The size and type gate both upload paths share, so the two cannot drift apart."""
+    if size > settings.source_max_bytes:
+        limit_mb = settings.source_max_bytes // (1024 * 1024)
+        raise HTTPException(status_code=413, detail=f"File too large (max {limit_mb}MB)")
+    ext = extract_mod.extension_of(filename)
+    if ext not in extract_mod.ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type: .{ext}")
+
+
+async def _record_source_row(
+    session: AsyncSession,
+    *,
+    user_id: str,
+    filename: str,
+    content_type: str,
+    data: bytes,
+    key: str,
+    goal_id: str | None,
+    temporary: bool,
+    purpose: str,
+) -> dict:
+    """Read the bytes into text and write the `sources` row.
+
+    Shared by the proxied upload and the direct-upload completion. Both arrive with the bytes in hand —
+    only the route the bytes took differs, so everything after that point is one implementation.
+    """
+    resolved_goal_id, goal_title = await _goal_or_404(session, user_id=user_id, goal_id=goal_id)
+
+    excerpt, pending = extract_mod.extract_text(
+        filename=filename, content_type=content_type, data=data
+    )
+    if pending and extract_mod.is_image(filename, content_type):
+        # Read the image now, while the bytes are in hand; the text is what chat and planning use.
+        excerpt = await describe_image(data, content_type)
+        pending = False
+
+    row = Source(
+        id=new_id("src"),
+        user_id=user_id,
+        goal_id=resolved_goal_id,
+        goal_title=goal_title,
+        kind="file",
+        purpose=purpose,
+        storage_path=key,
+        original_filename=filename,
+        content_type=content_type,
+        size=len(data),
+        url="",
+        text_excerpt=excerpt or None,
+        is_deleted=False,
+        expires_at=_expires_at(temporary=temporary, goal_id=resolved_goal_id),
+    )
+    session.add(row)
+    await session.flush()
+    await session.commit()
+    return source_upload_row(row, text_pending=pending)
+
+
 @router.get("/sources")
 async def list_sources(
     session: AsyncSession = Depends(get_session),
@@ -130,25 +192,19 @@ async def upload_source(
     temporary: str = Form(default=""),
     purpose: str = Form(default="source"),
 ) -> dict:
-    """Upload a file. **200**, and the row carries `text_pending`."""
+    """Upload a file. **200**, and the row carries `text_pending`.
+
+    The proxied path: the bytes come through here. Where an object store is configured the browser
+    sends them to the store instead (`/sources/upload-url`), because a serverless host caps the request
+    body far below `source_max_bytes`. This stays for the fallback and for clients with no store reach.
+    """
     if not file or not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
 
     data = await file.read()
-    if len(data) > settings.source_max_bytes:
-        raise HTTPException(status_code=413, detail="File too large (max 20MB)")
-
+    _check_upload_limits(filename=file.filename, size=len(data))
     if purpose not in SOURCE_PURPOSES:
         raise HTTPException(status_code=400, detail=f"purpose must be one of {', '.join(SOURCE_PURPOSES)}")
-    ext = extract_mod.extension_of(file.filename)
-    if ext not in extract_mod.ALLOWED_EXTENSIONS:
-        raise HTTPException(
-            status_code=400, detail=f"Unsupported file type: .{ext}"
-        )
-
-    resolved_goal_id, goal_title = await _goal_or_404(
-        session, user_id=user.user_id, goal_id=goal_id or None
-    )
 
     content_type = file.content_type or "application/octet-stream"
     key = object_key(user_id=user.user_id, filename=file.filename)
@@ -159,34 +215,97 @@ async def upload_source(
         # what chat and planning use, so the upload still succeeds; only the original bytes are not kept.
         key = ""
 
-    excerpt, pending = extract_mod.extract_text(
-        filename=file.filename, content_type=content_type, data=data
-    )
-    if pending and extract_mod.is_image(file.filename, content_type):
-        # Read the image now, while the bytes are in hand; the text is what chat and planning use.
-        excerpt = await describe_image(data, content_type)
-        pending = False
-
-    row = Source(
-        id=new_id("src"),
+    return await _record_source_row(
+        session,
         user_id=user.user_id,
-        goal_id=resolved_goal_id,
-        goal_title=goal_title,
-        kind="file",
-        purpose=purpose,
-        storage_path=key,
-        original_filename=file.filename,
+        filename=file.filename,
         content_type=content_type,
-        size=len(data),
-        url="",
-        text_excerpt=excerpt or None,
-        is_deleted=False,
-        expires_at=_expires_at(temporary=temporary == "true", goal_id=resolved_goal_id),
+        data=data,
+        key=key,
+        goal_id=goal_id or None,
+        temporary=temporary == "true",
+        purpose=purpose,
     )
-    session.add(row)
-    await session.flush()
-    await session.commit()
-    return source_upload_row(row, text_pending=pending)
+
+
+class UploadUrlIn(BaseModel):
+    """What the client knows before any byte moves, so the limits are checked before one is spent."""
+
+    filename: str = Field(min_length=1)
+    content_type: str = ""
+    size: int = 0
+    goal_id: str = ""
+    temporary: bool = False
+    purpose: str = "source"
+
+
+@router.post("/sources/upload-url")
+async def request_upload_url(
+    body: UploadUrlIn,
+    session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(require_user),
+) -> dict:
+    """Where the browser should send the bytes, and the limits it has to respect.
+
+    `direct: true` — `PUT` to `upload_url`, then `POST /sources/upload/complete`.
+    `direct: false` — no object store to sign for; post to `/sources/upload` instead.
+    """
+    _check_upload_limits(filename=body.filename, size=body.size)
+    if body.purpose not in SOURCE_PURPOSES:
+        raise HTTPException(status_code=400, detail=f"purpose must be one of {', '.join(SOURCE_PURPOSES)}")
+    await _goal_or_404(session, user_id=user.user_id, goal_id=body.goal_id or None)
+
+    key = object_key(user_id=user.user_id, filename=body.filename)
+    url = await signed_upload_url(key)
+    return {
+        "direct": bool(url),
+        "key": key if url else "",
+        "upload_url": url or "",
+        "max_bytes": settings.source_max_bytes,
+        "max_files": settings.source_max_files_per_upload,
+    }
+
+
+class UploadCompleteIn(UploadUrlIn):
+    """The same facts, plus the key the bytes actually landed on."""
+
+    key: str = Field(min_length=1)
+
+
+@router.post("/sources/upload/complete")
+async def complete_upload(
+    body: UploadCompleteIn,
+    session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(require_user),
+) -> dict:
+    """Record the row for bytes the browser wrote straight to the store.
+
+    The bytes are read back rather than trusted: the size on the row is the store's, not the client's,
+    and the extraction needs them in hand anyway.
+    """
+    if body.purpose not in SOURCE_PURPOSES:
+        raise HTTPException(status_code=400, detail=f"purpose must be one of {', '.join(SOURCE_PURPOSES)}")
+    # The key must be one this user's own upload could have produced, so a crafted key can neither
+    # claim nor read another user's object.
+    if body.key != object_key(user_id=user.user_id, filename=body.filename):
+        raise HTTPException(status_code=400, detail="key does not match the filename")
+
+    obj = await storage_get(body.key)
+    if obj is None:
+        raise HTTPException(status_code=409, detail="Upload did not reach storage")
+    _check_upload_limits(filename=body.filename, size=len(obj.data))
+
+    return await _record_source_row(
+        session,
+        user_id=user.user_id,
+        filename=body.filename,
+        content_type=body.content_type or obj.content_type,
+        data=obj.data,
+        key=body.key,
+        goal_id=body.goal_id or None,
+        temporary=body.temporary,
+        purpose=body.purpose,
+    )
 
 
 @router.post("/sources/link")
@@ -455,16 +574,30 @@ async def download_source(
 
     from ..storage import get as storage_get
 
-    obj = await storage_get(row.storage_path)
+    try:
+        obj = await storage_get(row.storage_path)
+    except Exception as exc:  # noqa: BLE001 - storage outage is not "missing file"
+        logger.warning("source download: storage read failed for %s: %s", id, exc)
+        # 503, not 500: the file exists but the store could not be reached, so the client may retry.
+        raise HTTPException(status_code=503, detail="File storage is unavailable, try again shortly") from exc
     if obj is None:
         raise HTTPException(status_code=404, detail="File not found")
 
+    # The store's type wins where it knows one — but local disk cannot record what it received and
+    # answers `application/octet-stream` for everything, which makes the browser download a photo
+    # instead of showing it. So a generic type falls back to the row, which is what was uploaded.
+    stored_type = (obj.content_type or "").strip()
+    media_type = stored_type if stored_type and stored_type != GENERIC_CONTENT_TYPE else (row.content_type or GENERIC_CONTENT_TYPE)
     return Response(
         content=obj.data,
-        media_type=obj.content_type or row.content_type,
+        media_type=media_type,
         # `inline`, not `attachment` — the client renders images and PDFs in
         # place, and the filename still travels for a save.
-        headers={"Content-Disposition": f'inline; filename="{row.original_filename}"'},
+        headers={
+            "Content-Disposition": f'inline; filename="{row.original_filename}"',
+            # Per-user bytes: private, but safe to reuse briefly so a re-opened viewer does not re-download.
+            "Cache-Control": "private, max-age=300",
+        },
     )
 
 

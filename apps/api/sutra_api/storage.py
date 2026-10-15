@@ -37,6 +37,11 @@ _MAX_NAME = 200
 #: The prefix every key shares, so a bucket can hold other things later.
 PREFIX = "sources"
 
+#: What a store answers when it has no type of its own — local disk cannot record what it received, so
+#: it says this for everything. Callers that need to *render* an object must treat it as "unknown" and
+#: fall back to the type recorded on the row; serving it verbatim makes a browser download a photo.
+GENERIC_CONTENT_TYPE = "application/octet-stream"
+
 
 def sanitize_filename(name: str) -> str:
     """`../../etc/passwd` → `.._.._etc_passwd`. Never returns an empty string."""
@@ -68,6 +73,16 @@ def _supabase_configured() -> bool:
     return bool(settings.supabase_url and settings.supabase_service_key)
 
 
+def _use_local_disk() -> bool:
+    """Local disk is only durable on a long-lived host.
+
+    On a serverless host (Vercel sets `VERCEL`) a write to `/tmp` succeeds but lives on one function
+    instance, so the same download 404s, then 200s, then 500s depending on which instance answers. There
+    the bytes go to the database blob table instead, unless Supabase Storage is configured.
+    """
+    return not settings.is_serverless
+
+
 def _object_url(key: str) -> str:
     base = settings.supabase_url.rstrip("/")
     return f"{base}/storage/v1/object/{settings.supabase_bucket}/{key}"
@@ -78,6 +93,38 @@ def _headers() -> dict[str, str]:
         "Authorization": f"Bearer {settings.supabase_service_key}",
         "apikey": settings.supabase_service_key,
     }
+
+
+def direct_upload_available() -> bool:
+    """Whether the browser can write to the store itself instead of posting bytes here.
+
+    Only Supabase can do this: local disk and the blob table are reachable from this process alone, so
+    those keep the proxy path.
+    """
+    return _supabase_configured()
+
+
+async def signed_upload_url(key: str) -> str | None:
+    """A URL the browser `PUT`s the bytes to, or `None` when there is no object store to sign for.
+
+    Uploading through this function caps a file at the host's request-body limit (Vercel: ~4.5 MB),
+    which is far below `source_max_bytes` — so a 20 MB photo could never arrive. Signing a path moves
+    the bytes browser-to-store and leaves the API to record the row.
+    """
+    if not _supabase_configured():
+        return None
+    base = settings.supabase_url.rstrip("/")
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{base}/storage/v1/object/upload/sign/{settings.supabase_bucket}/{key}",
+            headers=_headers(),
+        )
+        resp.raise_for_status()
+        signed = (resp.json() or {}).get("url") or ""
+    if not signed:
+        return None
+    # Supabase answers with a path (`/object/upload/sign/...?token=…`); the client needs it absolute.
+    return signed if signed.startswith("http") else f"{base}/storage/v1{signed}"
 
 
 def _local_path(key: str) -> Path:
@@ -113,13 +160,16 @@ async def put(*, key: str, data: bytes, content_type: str) -> str:
             resp.raise_for_status()
         return key
 
-    try:
-        path = _local_path(key)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
-    except OSError:
-        # No writable disk (a serverless host): keep the bytes in the database instead.
-        await _db_put(key, data, content_type)
+    if _use_local_disk():
+        try:
+            path = _local_path(key)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+            return key
+        except OSError:
+            pass
+    # No durable disk (a serverless host): keep the bytes in the database instead.
+    await _db_put(key, data, content_type)
     return key
 
 
@@ -136,12 +186,13 @@ async def get(key: str) -> Object | None:
             content_type=resp.headers.get("content-type", "application/octet-stream"),
         )
 
-    try:
-        path = _local_path(key)
-        if path.is_file():
-            return Object(data=path.read_bytes(), content_type="application/octet-stream")
-    except (ValueError, OSError):
-        pass
+    if _use_local_disk():
+        try:
+            path = _local_path(key)
+            if path.is_file():
+                return Object(data=path.read_bytes(), content_type=GENERIC_CONTENT_TYPE)
+        except (ValueError, OSError):
+            pass
     return await _db_get(key)
 
 
@@ -158,7 +209,8 @@ async def delete(key: str) -> None:
             async with httpx.AsyncClient(timeout=30) as client:
                 await client.delete(_object_url(key), headers=_headers())
         else:
-            _local_path(key).unlink(missing_ok=True)
+            if _use_local_disk():
+                _local_path(key).unlink(missing_ok=True)
             await _db_delete(key)
     except (httpx.HTTPError, ValueError, OSError):
         pass

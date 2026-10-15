@@ -37,6 +37,7 @@ from agentv2.coach.tools_block import parse_proposals, split_prose_and_tools
 from agentv2.coach.turn import stream_turn
 
 from agentv2 import chat_turn, default_chat, local_now
+from agentv2.llm import reply_text
 
 from ..agent_store import SqlStore
 from ..coach_context import build_coach_context
@@ -76,6 +77,7 @@ CONTEXT_TURNS_SCOPED = 12
 #: Roles a stored turn may carry into the model call.
 CHAT_ROLES = frozenset({"user", "assistant"})
 KIND_ADD_GOAL = "add_goal"
+KIND_PLAN_DAY = "plan_day"
 INTENTS = frozenset(
     {"add_goal", "plan_day", "review_progress", "edit_goal", "drop_goal"}
 )
@@ -97,6 +99,8 @@ STATUS_SOURCES = "Going through what you attached ({n})…"
 STATUS_HISTORY = "Going back over what we've talked about…"
 STATUS_INTERVIEW = "Working out what would change your plan the most…"
 STATUS_PROPOSE = "Putting your goal and first steps together…"
+STATUS_DAY_TIMETABLE = "Looking at what's already on your day…"
+STATUS_DAY_SLOTS = "Fitting your tasks into the free time…"
 
 
 def _status_lines(scoped_kind: str, *, n_sources: int, has_history: bool, interview: bool) -> list[str]:
@@ -106,6 +110,10 @@ def _status_lines(scoped_kind: str, *, n_sources: int, has_history: bool, interv
         lines.append(STATUS_SOURCES.format(n=n_sources))
     if has_history:
         lines.append(STATUS_HISTORY)
+    if scoped_kind == KIND_PLAN_DAY:
+        # Day planning is not goal planning: say what it is actually doing.
+        lines += [STATUS_DAY_TIMETABLE, STATUS_DAY_SLOTS]
+        return lines
     lines.append(STATUS_INTERVIEW if scoped_kind == KIND_ADD_GOAL and interview else STATUS_PROPOSE)
     return lines
 
@@ -438,7 +446,7 @@ async def _text_complete(
     messages += [(t["role"], t["content"]) for t in turns if t.get("role") in CHAT_ROLES]
     messages.append(("user", user_text))
     reply = await asyncio.to_thread(chat.invoke, messages)
-    return str(reply.content)
+    return reply_text(reply.content)  # Claude can answer in content blocks; only the text blocks are the reply
 
 
 # ---------------------------------------------------------------------------

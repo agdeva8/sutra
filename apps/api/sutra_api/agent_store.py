@@ -8,6 +8,7 @@ reminders):
 
   AddGoal      -> goals
   AddMilestone -> milestones
+  AddPlanMonth -> plan_items, horizon "monthly" (hours in `note`, like a task)
   AddPlanWeek  -> plan_items, horizon "weekly" (hours rounded to the column's integer)
   AddTask      -> plan_items, undated (horizon "daily", effort kept in `note`)
   AddBlock     -> timetable_blocks; `kind` carries committed vs tentative
@@ -20,13 +21,15 @@ reminders):
 """
 from __future__ import annotations
 
+import re
+
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
 
 from agentv2.config import BLOCK_COMMITTED, BLOCK_TENTATIVE
 from agentv2.contracts import (
-    AddBlock, AddRecurring, StopRecurring, ClearGoalPlan, CompleteItem, AddGoal, AddMilestone, AddPlanWeek, AddReminder, AddTask, Change, ChangeSet, LinkSource, MoveBlock, Origin, Proposal,
+    AddBlock, AddBlocker, AddRecurring, StopRecurring, ClearGoalPlan, CompleteItem, AddGoal, AddMilestone, AddPlanMonth, AddPlanWeek, AddReminder, AddTask, Change, ChangeSet, LinkSource, MoveBlock, Origin, Proposal,
 )
 from agentv2.contracts import ChangeSet as _ChangeSet
 from agentv2.core.calendar import week_start
@@ -58,6 +61,7 @@ CONTEXT_DAYS_AHEAD = 120
 OPEN_ITEMS_LIMIT = 200
 STATUS_OPEN = "open"
 STATUS_DONE = "done"
+STATUS_SKIPPED = "skipped"
 
 #: A planned week runs Monday to Sunday: its end date is six days after its start.
 WEEK_LAST_DAY_OFFSET = 6
@@ -92,6 +96,12 @@ def _effort(note: str | None) -> float:
 
 def _status(kind: str) -> str:
     return BLOCK_TENTATIVE if kind == KIND_TENTATIVE else BLOCK_COMMITTED
+
+
+def _note_hours(note: str | None) -> float:
+    """Hours held in a plan row's `note` ("1.5h"), or 0 when it holds none."""
+    m = re.match(r"^\s*([\d.]+)\s*h\s*$", note or "")
+    return float(m.group(1)) if m else 0.0
 
 
 class SqlStore:
@@ -209,6 +219,16 @@ class SqlStore:
             await s.execute(delete(PlanItem).where(
                 PlanItem.user_id == self.user_id, PlanItem.goal_id == change.goal_id, PlanItem.horizon == "weekly",
                 PlanItem.status == STATUS_OPEN, PlanItem.start_date >= week_start(change.from_date)))
+            await s.execute(delete(PlanItem).where(
+                PlanItem.user_id == self.user_id, PlanItem.goal_id == change.goal_id, PlanItem.horizon == "monthly",
+                PlanItem.status == STATUS_OPEN, PlanItem.start_date >= change.from_date.replace(day=1)))
+        elif isinstance(change, CompleteItem) and change.outcome != "full":
+            row = await s.get(PlanItem, change.item_id)
+            if row is not None and row.user_id == self.user_id:
+                if change.outcome == "skip":
+                    row.status = STATUS_SKIPPED
+                else:  # part done: the row stays open, with how much of its hours is finished
+                    row.done_hours = round((change.fraction or 0) * _note_hours(row.note), 2)
         elif isinstance(change, CompleteItem):
             # Ids are prefixed by table, so one id names exactly one row.
             await s.execute(update(PlanItem).where(PlanItem.id == change.item_id, PlanItem.user_id == self.user_id).values(status=STATUS_DONE))
@@ -217,17 +237,28 @@ class SqlStore:
             await s.execute(delete(TimetableBlock).where(
                 TimetableBlock.user_id == self.user_id, TimetableBlock.source_id == change.item_id,
                 TimetableBlock.kind == KIND_TENTATIVE, TimetableBlock.block_date >= self.today))
+        elif isinstance(change, AddBlocker):
+            s.add(Blocker(id=change.id, user_id=self.user_id, title=change.title, start_date=change.start_date, end_date=change.end_date))
         elif isinstance(change, AddMilestone):
             goal = await s.get(Goal, change.goal_id)
             s.add(Milestone(id=change.id, user_id=self.user_id, goal_id=change.goal_id,
                             goal_title=goal.title if goal else "", title=change.title, target_date=change.target_date))
+        elif isinstance(change, AddPlanMonth):
+            last = (change.month_start.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+            s.add(PlanItem(id=change.id, user_id=self.user_id, goal_id=change.goal_id, horizon="monthly", title=change.focus,
+                           note=f"{change.hours:g}h", start_date=change.month_start, end_date=last, due_date=last,
+                           why=change.why or None))
         elif isinstance(change, AddPlanWeek):
             s.add(PlanItem(id=change.id, user_id=self.user_id, goal_id=change.goal_id, horizon="weekly", title=change.focus,
                            start_date=change.week_start, end_date=change.week_start + timedelta(days=WEEK_LAST_DAY_OFFSET),
-                           weekly_hours=round(change.hours)))
+                           weekly_hours=round(change.hours), why=change.why or None))
         elif isinstance(change, AddTask):
+            # `note` keeps the effort (the UI reads it as "3h"); `day` is what puts the task on a
+            # calendar, and `description` is the session's own sentence, not the goal's.
             s.add(PlanItem(id=change.id, user_id=self.user_id, goal_id=change.goal_id, horizon="daily",
-                           title=change.title, note=f"{change.effort_hours:g}h"))
+                           title=change.title, note=f"{change.effort_hours:g}h" if change.effort_hours else "",
+                           start_date=change.day, due_date=change.day,
+                           description=change.description or None, why=change.why or None))
         elif isinstance(change, AddReminder):
             s.add(Reminder(id=change.id, user_id=self.user_id, goal_id=change.goal_id, title=change.title,
                            days=[d.isoformat() for d in change.days],
@@ -239,7 +270,8 @@ class SqlStore:
                 id=change.id, user_id=self.user_id, block_date=change.day, start_time=change.start,
                 end_time=change.end, label=change.title, source=SOURCE_AGENT,
                 source_id=change.task_id, goal_id=change.goal_id, goal_title=goal.title if goal else "",
-                kind=KIND_COMMITTED if change.status == BLOCK_COMMITTED else KIND_TENTATIVE))
+                kind=KIND_COMMITTED if change.status == BLOCK_COMMITTED else KIND_TENTATIVE,
+                why=change.why or None))
         elif isinstance(change, LinkSource):
             goal = await s.get(Goal, change.goal_id) if change.goal_id else None
             src = await s.get(Source, change.source_id)
@@ -296,7 +328,7 @@ class SqlStore:
     async def revert(self, change: Change) -> None:
         s, uid = self.session, self.user_id
         if isinstance(change, CompleteItem):
-            await s.execute(update(PlanItem).where(PlanItem.id == change.item_id, PlanItem.user_id == uid).values(status=STATUS_OPEN))
+            await s.execute(update(PlanItem).where(PlanItem.id == change.item_id, PlanItem.user_id == uid).values(status=STATUS_OPEN, done_hours=None))
             await s.execute(update(Milestone).where(Milestone.id == change.item_id, Milestone.user_id == uid).values(status=STATUS_OPEN))
         elif isinstance(change, AddRecurring):
             await s.execute(delete(TimetableBlock).where(TimetableBlock.user_id == uid, TimetableBlock.source_id == change.id))
@@ -309,8 +341,10 @@ class SqlStore:
             await s.execute(delete(PlanItem).where(PlanItem.id == change.id, PlanItem.user_id == uid))
         elif isinstance(change, (AddBlock,)):
             await s.execute(delete(TimetableBlock).where(TimetableBlock.id == change.id, TimetableBlock.user_id == uid))
-        elif isinstance(change, AddPlanWeek):
+        elif isinstance(change, (AddPlanWeek, AddPlanMonth)):
             await s.execute(delete(PlanItem).where(PlanItem.id == change.id, PlanItem.user_id == uid))
+        elif isinstance(change, AddBlocker):
+            await s.execute(delete(Blocker).where(Blocker.id == change.id, Blocker.user_id == uid))
         elif isinstance(change, AddMilestone):
             await s.execute(delete(Milestone).where(Milestone.id == change.id, Milestone.user_id == uid))
         elif isinstance(change, AddReminder):
