@@ -14,13 +14,13 @@ On an **existing** deployed database, look before changing anything:
 cd apps/api
 export DATABASE_URL=postgresql+asyncpg://...      # the deployed one
 alembic current          # what is applied
-alembic heads            # what this code expects: 20261014_1400_recurring_hours
+alembic heads            # what this code expects: 20261015_1600_done_hours
 alembic upgrade head --sql > /tmp/upgrade.sql     # read what it will run
 ```
 
 If `alembic current` prints nothing on a database that already has tables, stamp it first (`alembic stamp 20261010_1700_add_plan_threads`), otherwise the first migration tries to create a table that exists. Take a backup before `alembic upgrade head`.
 
-New in this release (all additive, nothing dropped or renamed): `reminders`, `scratch_entries`, `calendar_feeds`, `recurring_blocks`, plus columns `scratch_entries.tz`, `goals.total_hours`, and `proposals.message_id` / `conversation_id` now nullable.
+New in this release (all additive, nothing dropped or renamed): `reminders`, `scratch_entries`, `calendar_feeds`, `recurring_blocks`, `goal_progress` (the progress judge's cached verdict per goal), plus columns `scratch_entries.tz`, `goals.total_hours`, `plan_items.description`, `plan_items.why`, `plan_items.done_hours`, `timetable_blocks.why`, and `proposals.message_id` / `conversation_id` now nullable. Migrations from `20261015_1400_plan_why` on are new since the last deploy.
 
 ## 2. API container
 
@@ -38,6 +38,7 @@ Environment (no `.env` file is baked into the image):
 | `DATABASE_URL` | yes | `postgresql+asyncpg://user:pass@host:5432/db` |
 | `AUTH_SECRET` | yes | 32+ random characters: `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
 | `DEEPSEEK_API_KEY` | yes | without it the agent routes return 503 "assistant isn't available" |
+| `LLM_PROVIDER` | no | `deepseek` (default) or `anthropic`. With `anthropic`, `CLAUDE_API_KEY` is required and `CLAUDE_MODEL` (default `claude-sonnet-5-5`) picks the model |
 | `DEEPSEEK_MODEL` | no | defaults to `deepseek-v4-flash`, the model that reads images |
 | `APP_ENV` | yes | `production` |
 | `CORS_ALLOWED_ORIGINS` | yes | the web app's origin(s) |
@@ -77,7 +78,8 @@ apps/api/scripts/smoke.sh https://<api-host>
 
 ## Known limits at launch
 
-- Reminders are shown in Today but nothing notifies the user (no push, no email).
+- Reminders are shown in Today and on the Timeline but nothing notifies the user (no push, no email).
+- A model provider that queues requests (DeepSeek under load) makes Scratch and planning hang for minutes: the per-call timeout is a read timeout that keep-alive bytes can reset. A hard per-call deadline is not built yet.
 - Every user is treated as being in IST (`USE_CLIENT_TIMEZONE = False` in `apps/agentv2/config.py`).
 - The per-user model rate limit is per process.
 - Scratch voice input depends on the browser's speech recognition (Chrome and Safari).

@@ -166,7 +166,7 @@ Planning a goal and filing a Scratch entry can take a minute or more. `sutra_api
 - **Time zone:** `USE_CLIENT_TIMEZONE=False`, so every user is on `DEFAULT_TIMEZONE` (IST) until that is flipped.
 - **Uploads:** storage is Supabase Storage when configured, then local disk, then the `source_blobs` table (a serverless host has no writable disk). `sources.purpose` keeps Memories photos (`memory`) out of the Sources list (`source`).
 - **Guests can use the app but not calendar sync.** Each linked calendar is a `calendar_subscriptions` row with its own secret `.ics` URL; unlinking with "delete events" serves an empty feed for 30 days so the calendar app drops Sutra's events, and unlinking without it stops the feed.
-- **First-run guide:** a user with no goals is held on the Goal screen with a non-dismissible Add Goal dialog; then the timeline step; then Scratch. Other prompts (install sheet, greeting) wait for it (`lib/guideActive.js`).
+- **First-run guide:** a user with no goals is held on the Goal screen and the Add Goal dialog opens itself. It is closable like any other dialog — a guest has to be able to reach sign-in — and the empty state's "Add your first goal" opens it again; then the timeline step; then Scratch. Other prompts (install sheet, greeting) wait for it (`lib/guideActive.js`).
 - **Backward compatibility is a release constraint** for anything persisted: add columns and keys as optional, never rename or tighten.
 - **Pinch zoom stays on.** The document never scrolls (`index.css`); each screen scrolls inside its own container, so the top bar and bottom nav stay put.
 
