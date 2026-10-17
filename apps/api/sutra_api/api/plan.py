@@ -17,7 +17,7 @@ question is needed), `no_change` (nothing for the planner to do; use the ordinar
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from agentv2 import chat_turn, local_now, replan_goal
@@ -133,6 +133,28 @@ async def plan_confirm() -> dict:
     )
 
 
+#: How long a `planning` status is trusted as a build that is still running. It must match the web
+#: app's `PLAN_LEASE_MS` (`apps/web/src/constants/goalActivity.js:29`): the goal list applies the same
+#: window to decide whether to poll a live build or treat a stuck one as dead, and the two disagreeing
+#: would let the client start a build the server no longer considers guarded. The server's own request
+#: limit is 300 s, so this is deliberately generous — a live run must never be mistaken for a dead one.
+PLAN_LEASE = timedelta(minutes=10)
+
+
+def build_in_flight(status: str | None, started_at: datetime | None, now: datetime) -> bool:
+    """Whether a schedule build for the goal is still running, and a second one must not start.
+
+    Only `planning` counts: `ready` and `failed` are finished states, and anything else means no build
+    ever started. A `planning` with no start time (written before `plan_started_at` existed) proves
+    nothing about when it began, so it is not trusted as live; one older than `PLAN_LEASE` is a run
+    that died mid-request, and the goal may be built again rather than staying stuck forever.
+    """
+    if status != PLAN_PLANNING or started_at is None:
+        return False
+    started = started_at if started_at.tzinfo else started_at.replace(tzinfo=timezone.utc)
+    return now - started < PLAN_LEASE
+
+
 async def _set_plan_status(session: AsyncSession, goal, status: str) -> None:
     """Record where building the goal's schedule stands, committed at once so a poller sees it."""
     goal.plan_status = status
@@ -157,6 +179,10 @@ async def plan_change(
     silently behind a toaster; `escalate` changes are recorded and re-planned only when the caller sends
     `confirmed: true`, which is the confirm modal's "yes". A re-plan bumps the plan generation, so the
     "N changes" badge clears only when the plan really was rebuilt.
+
+    Only one build per goal runs at a time. If the goal is already being built (see
+    `build_in_flight`), the change is still recorded, but no second planner run starts: the response is
+    the ordinary one with `replanned: false` and `already_planning: true`.
     """
     body = await _read_body(request)
 
@@ -181,25 +207,32 @@ async def plan_change(
         adjustments = build_adjustments([recorded])
 
         replanned = False
+        already_planning = False
         if verdict.tier == "slim" or body.get("confirmed"):
             now = local_now(request.headers.get("x-timezone"))
-            # Say the schedule is being built before the work starts, in its own commit, so the goal list
-            # (another tab, or this one after a reload) shows the coach working instead of "no schedule".
-            await _set_plan_status(session, goal, PLAN_PLANNING)
-            try:
-                out = await replan_goal(SqlStore(session, user.user_id, today=now.date()), goal_id, now=now, progress=say)
-            except Exception:
-                await session.rollback()
-                await _set_plan_status(session, goal, PLAN_FAILED)
-                raise
-            if out.status != "applied":
-                await session.rollback()
-                await _set_plan_status(session, goal, PLAN_FAILED)
-                raise HTTPException(status_code=422, detail="Couldn't re-plan this goal safely.")
-            goal.plan_status = PLAN_READY
-            replanned = True
-            if verdict.tier != "slim":
-                await staleness.mark_planned(session, user_id=user.user_id, goal_id=goal_id)
+            # One build per goal: another request (a second tab, a duplicate client call, a stream that
+            # was cut off and retried) may already be planning this goal. Its own commit is what puts
+            # `planning` where this read can see it. Starting anyway would race two writers over the same
+            # rows, and the loser's rollback is what leaves a written plan stuck at `planning`.
+            already_planning = build_in_flight(goal.plan_status, goal.plan_started_at, now)
+            if not already_planning:
+                # Say the schedule is being built before the work starts, in its own commit, so the goal list
+                # (another tab, or this one after a reload) shows the coach working instead of "no schedule".
+                await _set_plan_status(session, goal, PLAN_PLANNING)
+                try:
+                    out = await replan_goal(SqlStore(session, user.user_id, today=now.date()), goal_id, now=now, progress=say)
+                except Exception:
+                    await session.rollback()
+                    await _set_plan_status(session, goal, PLAN_FAILED)
+                    raise
+                if out.status != "applied":
+                    await session.rollback()
+                    await _set_plan_status(session, goal, PLAN_FAILED)
+                    raise HTTPException(status_code=422, detail="Couldn't re-plan this goal safely.")
+                goal.plan_status = PLAN_READY
+                replanned = True
+                if verdict.tier != "slim":
+                    await staleness.mark_planned(session, user_id=user.user_id, goal_id=goal_id)
         await session.commit()
 
         return {
@@ -207,6 +240,7 @@ async def plan_change(
             "reason": verdict.reason,
             "adjustments": adjustments,
             "replanned": replanned,
+            "already_planning": already_planning,
             "plan_items": [],
         }
 
