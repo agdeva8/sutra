@@ -8,33 +8,22 @@
  * the day it was ticked.
  */
 import { localDateKey } from "./utils";
-import { EVENT_KIND, awayEvents, blockEvent, isTodo, milestoneEvent, planItemEvent, reminderEvents } from "./events";
+import { EVENT_KIND, awayEvents, blockEvent, blockEvents, blockHours, isTodo, milestoneEvent, planItemEvent, reminderEvents } from "./events";
 
 const DAY_MS = 86400000;
-const MINUTES_PER_HOUR = 60;
 const HORIZON_DAILY = "daily";
+const STATUS_DONE = "done";
 
 /** Order inside a day, after done-ness: all-day kinds first in this order, then timed ones by clock. */
 const ALL_DAY_ORDER = { away: 0, milestone: 1, todo: 2, task: 3 };
 const UNRANKED = 9;
 
 const parseKey = (k) => new Date(`${String(k).slice(0, 10)}T00:00:00`);
-const toMin = (t) => {
-  const [h, m] = String(t || "").slice(0, 5).split(":").map(Number);
-  return (h || 0) * MINUTES_PER_HOUR + (m || 0);
-};
 
 /** Day keys from `from` for `count` days. */
 export function dayKeys(from, count) {
   const start = parseKey(localDateKey(from));
   return Array.from({ length: count }, (_, i) => localDateKey(new Date(start.getTime() + i * DAY_MS)));
-}
-
-/** Hours a timetable block spans (a block past midnight wraps). */
-export function blockHours(b) {
-  let mins = toMin(b.end_time) - toMin(b.start_time);
-  if (mins <= 0) mins += 24 * MINUTES_PER_HOUR;
-  return mins / MINUTES_PER_HOUR;
 }
 
 /** Open before done; then all-day before timed; then clock time; overdue open work first. */
@@ -60,17 +49,42 @@ export function buildAgenda(state, keys, today = new Date()) {
   const title = (goalId) => goals.get(goalId)?.title || "";
   const planItems = state?.plan_items || [];
   const taskById = new Map(planItems.map((p) => [p.id, p]));
-
+  // The 4-kind board. Its task blocks are what `plan_items` used to carry, so a plan row whose id
+  // matches a block (the backfill copied a task's first session with the task's own id) is not listed
+  // twice — the block stands for it, and the row's tick marks the block done.
+  const blocks = Array.isArray(state?.blocks) ? state.blocks : null;
+  const blockTaskIds = new Set(
+    (blocks || []).filter((b) => b.block_kind === "task").map((b) => b.id),
+  );
   // A task already drawn as a timed session is not listed again as a loose task on the same day.
   const inSession = new Set();
-  (state?.timetable_blocks || state?.timetableBlocks || []).forEach((b) => {
-    if (!live(b.goal_id)) return;
-    const e = blockEvent(b, { taskById, goalTitle: title(b.goal_id) });
-    if (e.task) inSession.add(`${e.day}:${e.task.id}`);
-    push(e);
-  });
-  (state?.reminders || []).forEach((r) => reminderEvents(r, title(r.goal_id)).forEach(push));
+
+  if (blocks) {
+    blocks.forEach((b) => {
+      if (b.goal_id && !live(b.goal_id)) return;
+      const twinDone = taskById.get(b.id)?.status === STATUS_DONE;
+      blockEvents(b, keys, { goalTitle: title(b.goal_id), todayKey }).forEach((e) => {
+        if (twinDone && !e.done) {
+          e.done = true;
+          if (e.task) e.task = { ...e.task, status: STATUS_DONE };
+        }
+        push(e);
+      });
+    });
+  } else {
+    // A board older than `blocks`: read the legacy sources as before.
+    (state?.timetable_blocks || state?.timetableBlocks || []).forEach((b) => {
+      if (!live(b.goal_id)) return;
+      const e = blockEvent(b, { taskById, goalTitle: title(b.goal_id) });
+      if (e.task) inSession.add(`${e.day}:${e.task.id}`);
+      push(e);
+    });
+    (state?.reminders || []).forEach((r) => reminderEvents(r, title(r.goal_id)).forEach(push));
+    (state?.milestones || []).forEach((m) => live(m.goal_id) && push(milestoneEvent(m, title(m.goal_id))));
+    (state?.blockers || []).forEach((b) => awayEvents(b, keys).forEach(push));
+  }
   planItems.forEach((p) => {
+    if (blockTaskIds.has(p.id)) return;
     if (p.horizon !== HORIZON_DAILY || !live(p.goal_id)) return;
     const e = planItemEvent(p, title(p.goal_id));
     if (!e.day && e.done && isTodo(p)) e.day = p.done_at ? localDateKey(new Date(p.done_at)) : todayKey;
@@ -82,8 +96,6 @@ export function buildAgenda(state, keys, today = new Date()) {
     if (!e.day || inSession.has(`${e.day}:${p.id}`)) return;
     push(e);
   });
-  (state?.milestones || []).forEach((m) => live(m.goal_id) && push(milestoneEvent(m, title(m.goal_id))));
-  (state?.blockers || []).forEach((b) => awayEvents(b, keys).forEach(push));
 
   for (const k of keys) byDay[k].sort(compareEvents);
   return byDay;

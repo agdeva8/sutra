@@ -9,12 +9,26 @@ import { TODO_PRIORITY_BY_KEY, TODO_PRIORITY_NORMAL } from "../constants/calenda
 const STATUS_DONE = "done";
 const STATUS_OPEN = "open";
 
+/** True for a `calendar_blocks` row: it ticks through `/blocks`, not through `plan_items`. */
+const isBlock = (item) => !!item?.block_kind;
+
 /**
- * Tick a plan item done or open, and patch the board in place so the row stays where it is, struck
- * through. A to-do goes through `PATCH /todos/:id` (the gateway); a goal's task through `/plan-items`.
+ * Tick a plan item or a calendar block done or open, and patch the board in place so the row stays
+ * where it is, struck through. A to-do goes through `PATCH /todos/:id` (the gateway); a goal's task
+ * through `/plan-items`; a 4-kind task block through `PATCH /blocks/:id`.
  */
 export async function toggleDone(item, onChange) {
-  const next = item.status === STATUS_DONE ? STATUS_OPEN : STATUS_DONE;
+  const next = item.state === STATUS_DONE || item.status === STATUS_DONE ? STATUS_OPEN : STATUS_DONE;
+  if (isBlock(item)) {
+    await api.blocks.update(item.id, { done: next === STATUS_DONE, state: next });
+    onChange?.((prev) => ({
+      ...prev,
+      blocks: (prev.blocks || []).map((b) =>
+        b.id === item.id ? { ...b, done: next === STATUS_DONE, state: next } : b,
+      ),
+    }));
+    return;
+  }
   if (isTodo(item)) await api.editTodo(item.id, { done: next === STATUS_DONE });
   else await api.updatePlanItem(item.id, { status: next });
   onChange?.((prev) => ({

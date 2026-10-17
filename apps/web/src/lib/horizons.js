@@ -7,7 +7,7 @@
  * pure: they read `/state` and never fetch, and they follow `agenda.js` on dropped goals (a dropped
  * goal's plan is not rendered).
  */
-import { isTodo } from "./events";
+import { blockDone, blockHours, isTodo } from "./events";
 import { localDateKey } from "./utils";
 
 const HORIZON_MONTHLY = "monthly";
@@ -53,21 +53,71 @@ export const weekTargetsFor = (state, date) => targetsAt(state, date, HORIZON_WE
 /** This month's targets: the same for monthly items. */
 export const monthTargetsFor = (state, date) => targetsAt(state, date, HORIZON_MONTHLY);
 
+/** A task block as the plan row the target views draw, with its hours in `note` (see `itemHours`). */
+function blockTaskRow(b) {
+  const hours = blockHours(b);
+  return {
+    id: b.id,
+    goal_id: b.goal_id,
+    horizon: HORIZON_DAILY,
+    title: b.title,
+    description: b.description || "",
+    status: blockDone(b) ? STATUS_DONE : "open",
+    due_date: dayKey(b.day),
+    note: hours ? `${hours}h` : "",
+    state: b.state,
+    done_fraction: b.done_fraction,
+    // A part-done task is still open, but the fraction of its hours counts as done.
+    done_hours: b.state === "partial" ? hours * (b.done_fraction || 0) : undefined,
+  };
+}
+
 /**
  * The goal's daily tasks inside `item`'s dates, earliest first. To-dos are the user's own lists, not
  * the plan's work, so they are left out (the calendar still draws them beside the plan).
+ *
+ * The board now carries this work as `calendar_blocks` task rows too: a task the planner placed, or a
+ * timed one under the goal. A block that mirrors a daily plan row (the backfill gave a task's first
+ * session the task's own id) is counted once — the row is kept, and either side being done marks it
+ * done.
  */
 export function tasksInTarget(state, item) {
   const start = dayKey(item?.start_date);
   const end = dayKey(item?.end_date) || start;
   if (!start || !item?.goal_id) return [];
-  return (state?.plan_items || [])
+  const inside = (day) => !!day && day >= start && day <= end;
+  const rows = (state?.plan_items || [])
     .filter((p) => {
       if (p.horizon !== HORIZON_DAILY || p.goal_id !== item.goal_id || isTodo(p)) return false;
-      const day = dayKey(p.due_date || p.start_date);
-      return !!day && day >= start && day <= end;
+      return inside(dayKey(p.due_date || p.start_date));
     })
-    .sort((a, b) => dayKey(a.due_date || a.start_date).localeCompare(dayKey(b.due_date || b.start_date)));
+    .slice();
+  const byId = new Map(rows.map((p) => [p.id, p]));
+  (state?.blocks || [])
+    .filter(
+      (b) =>
+        b.block_kind === "task" &&
+        b.goal_id === item.goal_id &&
+        inside(dayKey(b.day)) &&
+        (b.placed_by === "planner" || (b.start && b.end)),
+    )
+    .forEach((b) => {
+      const twin = byId.get(b.id);
+      if (twin) {
+        const i = rows.indexOf(twin);
+        if (blockDone(b) && twin.status !== STATUS_DONE) {
+          // The block's own hours win when it has them; otherwise the plan row keeps its `note` hours.
+          const hours = blockHours(b);
+          rows[i] = { ...twin, status: STATUS_DONE, ...(hours ? { done_hours: hours } : {}) };
+          byId.set(b.id, rows[i]);
+        }
+        return;
+      }
+      const row = blockTaskRow(b);
+      rows.push(row);
+      byId.set(b.id, row);
+    });
+  return rows.sort((a, b) => dayKey(a.due_date || a.start_date).localeCompare(dayKey(b.due_date || b.start_date)));
 }
 
 /**
@@ -82,9 +132,13 @@ export function targetProgress(state, item) {
   tasks.forEach((p) => {
     const hours = itemHours(p);
     plannedHours += hours;
-    if (p.status !== STATUS_DONE) return;
-    done += 1;
-    doneHours += typeof p.done_hours === "number" ? p.done_hours : hours;
+    if (p.status === STATUS_DONE) {
+      done += 1;
+      doneHours += typeof p.done_hours === "number" ? p.done_hours : hours;
+      return;
+    }
+    // A part-done task counts its `done_fraction` of the hours, but not as a finished task.
+    if (p.state === "partial") doneHours += hours * (p.done_fraction || 0);
   });
   return { done, total: tasks.length, doneHours, plannedHours, hasHours: plannedHours > 0 };
 }

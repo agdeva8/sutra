@@ -70,6 +70,50 @@ describe("which target covers a date", () => {
   });
 });
 
+describe("progress toward a target from the 4-kind board", () => {
+  const block = (id, over = {}) => ({ id, block_kind: "task", goal_id: "g", title: id, day: "2026-10-14", placed_by: "planner", ...over });
+  const state = {
+    goals: [goal("g")],
+    plan_items: [daily("twin", { due_date: "2026-10-15", note: "1h", status: "open" })],
+    blocks: [
+      block("planned", { title: "Planned", effort_hours: 2, done: true }),
+      block("timed", { title: "Timed", day: "2026-10-15", start: "09:00", end: "10:30", placed_by: "user" }),
+      // The user's own untimed item is a list entry, not planned work.
+      block("loose", { title: "Loose", day: "2026-10-15", placed_by: "user" }),
+      block("other", { title: "Other", goal_id: "x" }),
+      block("outside", { title: "Outside", day: "2026-10-19" }),
+      block("twin", { title: "Twin", day: "2026-10-15", state: "done" }),
+    ],
+  };
+
+  test("a goal's planner-placed and timed task blocks count, mapped to the plan-row shape", () => {
+    const rows = tasksInTarget(state, weekly("w1"));
+    expect(rows.map((p) => p.id)).toEqual(["planned", "twin", "timed"]);
+    expect(rows.find((p) => p.id === "timed")).toMatchObject({ status: "open", due_date: "2026-10-15", note: "1.5h" });
+  });
+
+  test("the hours and the done count come from the blocks too", () => {
+    expect(targetProgress(state, weekly("w1"))).toEqual({
+      done: 2,
+      total: 3,
+      doneHours: 3,
+      plannedHours: 4.5,
+      hasHours: true,
+    });
+  });
+
+  test("a part-done block counts its fraction of the hours, not as a finished task", () => {
+    const partial = { ...state, plan_items: [], blocks: [block("p", { effort_hours: 2, state: "partial", done_fraction: 0.5 })] };
+    expect(targetProgress(partial, weekly("w1"))).toMatchObject({ done: 0, total: 1, doneHours: 1, plannedHours: 2 });
+  });
+
+  test("a block twin of a daily plan row is counted once, and either side being done marks it done", () => {
+    const rows = tasksInTarget(state, weekly("w1")).filter((p) => p.id === "twin");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("done");
+  });
+});
+
 describe("progress toward a target", () => {
   test("counts its daily tasks done and total, and hours from the notes", () => {
     const state = {

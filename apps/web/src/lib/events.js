@@ -40,9 +40,17 @@ export const EVENT_KIND = {
 /** The calendarKinds key that draws each event kind. */
 const STYLE_KEY = { commitment: "fixed", away: "blocker" };
 const STATUS_DONE = "done";
+const STATUS_OPEN = "open";
+const MINUTES_PER_HOUR = 60;
+const MINUTES_PER_DAY = 24 * MINUTES_PER_HOUR;
+const WEEKDAYS_PER_WEEK = 7;
 
 const hhmm = (t) => (t ? String(t).slice(0, 5) : "");
 const dayOf = (v) => (v ? String(v).slice(0, 10) : null);
+const toMin = (t) => {
+  const [h, m] = String(t || "").slice(0, 5).split(":").map(Number);
+  return (h || 0) * MINUTES_PER_HOUR + (m || 0);
+};
 
 function base(kind, color, fields) {
   const k = KIND_STYLE[STYLE_KEY[kind] || kind];
@@ -76,8 +84,82 @@ export function taskEvent(p, goalTitle = "") {
 /** A plan item as whichever event it is. */
 export const planItemEvent = (p, goalTitle) => (isTodo(p) ? todoEvent(p, goalTitle) : taskEvent(p, goalTitle));
 
+/** True for a `calendar_blocks` row (the 4-kind model), false for an old timetable / plan row. */
+export const isFourKindBlock = (b) => !!b?.block_kind;
+
+/** A 4-kind task is ticked when `done` is set or its richer `state` says done. */
+export const blockDone = (b) => b?.done === true || b?.state === STATUS_DONE;
+
+/** Hours a block covers: `effort_hours` when it carries one, else the span of its times, else none. */
+export function blockHours(b) {
+  if (typeof b?.effort_hours === "number") return b.effort_hours;
+  const start = b?.start ?? b?.start_time;
+  const end = b?.end ?? b?.end_time;
+  if (!start || !end) return 0;
+  let mins = toMin(end) - toMin(start);
+  if (mins <= 0) mins += MINUTES_PER_DAY;
+  return mins / MINUTES_PER_HOUR;
+}
+
+/** Monday = 0, matching the contract's `Repeat.weekdays`. */
+const weekdayOf = (key) => (new Date(`${key}T00:00:00`).getDay() + WEEKDAYS_PER_WEEK - 1) % WEEKDAYS_PER_WEEK;
+
+/** The block's own day, for kinds that have no `day` field (a milestone's target date). */
+const blockDay = (b) => dayOf(b?.day ?? b?.target_date);
+
+/** Day keys in `keys` the block falls on. Without a repeat that is its own day. */
+export function repeatDays(b, keys) {
+  const first = blockDay(b);
+  if (!b?.repeat) return first ? [first] : [];
+  const until = dayOf(b.repeat.until);
+  const weekdays = b.repeat.weekdays || [];
+  return keys.filter((k) => (!until || k <= until) && (!first || k >= first) && weekdays.includes(weekdayOf(k)));
+}
+
+/**
+ * One occurrence of a 4-kind block, as the Event the screens already consume. The four kinds map onto
+ * today's event kinds: an Event is a commitment (a repeat draws as a series), a Task is a goal session
+ * when it is timed under a goal and a commitment when it is the user's own time, and a Task with an
+ * `at` is a reminder.
+ */
+function blockEventOn(b, day, goalTitle) {
+  const common = { id: `block-${b.id}-${day}`, title: b.title, day, raw: b, goalId: b.goal_id, goalTitle };
+  if (b.block_kind === "event") {
+    const fields = { ...common, time: hhmm(b.start), start: hhmm(b.start), end: hhmm(b.end) };
+    const color = b.goal_id ? goalColor(b.goal_id) : KIND_STYLE.fixed.color;
+    return base(b.repeat ? EVENT_KIND.recurring : EVENT_KIND.commitment, color, fields);
+  }
+  if (b.block_kind === "task") {
+    const done = blockDone(b);
+    const task = { ...b, status: done ? STATUS_DONE : STATUS_OPEN };
+    if (b.at) {
+      return base(EVENT_KIND.reminder, reminderColor(b.id), { ...common, time: hhmm(b.at), task, done });
+    }
+    const timed = !!(b.start && b.end);
+    const span = { time: hhmm(b.start), start: hhmm(b.start), end: hhmm(b.end) };
+    if (timed && b.goal_id) return base(EVENT_KIND.session, goalColor(b.goal_id), { ...common, ...span, task, done });
+    if (timed || !b.goal_id) return base(EVENT_KIND.commitment, KIND_STYLE.fixed.color, { ...common, ...span, task, done });
+    return base(EVENT_KIND.task, goalColor(b.goal_id), { ...common, task, done });
+  }
+  return null;
+}
+
+/**
+ * Every occurrence of a 4-kind block inside the agenda's range, as Events. `todayKey` catches a task
+ * with no day: it is a list item, and Today lists it on today.
+ */
+export function blockEvents(b, keys, { goalTitle = "", todayKey = null } = {}) {
+  if (b?.block_kind === "away") return awayEvents(b, keys);
+  if (b?.block_kind === "milestone") return [milestoneEvent(b, goalTitle)];
+  const days = repeatDays(b, keys);
+  if (!days.length && b?.block_kind === "task" && !b.day && todayKey) days.push(todayKey);
+  return days.map((day) => blockEventOn(b, day, goalTitle)).filter(Boolean);
+}
+
 /** A timetable block: a repeating commitment's occurrence, a fixed commitment, or a goal session. */
 export function blockEvent(b, { taskById = new Map(), goalTitle = "" } = {}) {
+  // The dashboard's `timetableBlocks` are 4-kind event rows now; draw them as such.
+  if (isFourKindBlock(b)) return blockEventOn(b, blockDay(b), goalTitle);
   const common = { id: `block-${b.id}`, title: b.label, day: dayOf(b.block_date), time: hhmm(b.start_time), start: hhmm(b.start_time), end: hhmm(b.end_time), raw: b };
   if (b.kind === BLOCK_KIND_REMINDER) return base(EVENT_KIND.reminder, reminderColor(b.source_id || b.label), { ...common, goalId: b.goal_id });
   if (b.source === SOURCE_RECURRING) return base(EVENT_KIND.recurring, recurringColor(b.source_id || b.label), { ...common, seriesId: b.source_id });
@@ -89,8 +171,12 @@ export function blockEvent(b, { taskById = new Map(), goalTitle = "" } = {}) {
   });
 }
 
-/** Every occurrence of a reminder (each day x each time). */
+/** Every occurrence of a reminder (each day x each time), or a single 4-kind task with an `at`. */
 export function reminderEvents(r, goalTitle = "") {
+  if (isFourKindBlock(r)) {
+    const e = blockEventOn(r, blockDay(r), goalTitle);
+    return e ? [e] : [];
+  }
   const out = [];
   (r.days || []).forEach((d) =>
     (r.times || []).forEach((t) =>
@@ -105,7 +191,8 @@ export function reminderEvents(r, goalTitle = "") {
 export function milestoneEvent(m, goalTitle = "") {
   return base(EVENT_KIND.milestone, goalColor(m.goal_id), {
     id: `ms-${m.id}`, title: m.title, day: dayOf(m.target_date), goalId: m.goal_id, goalTitle: m.goal_title || goalTitle,
-    done: m.status === STATUS_DONE, raw: m,
+    // A 4-kind milestone says `reached`; an old row says `status`.
+    done: m.reached === true || m.status === STATUS_DONE, raw: m,
   });
 }
 
