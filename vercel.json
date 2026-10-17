@@ -5,6 +5,7 @@
       "develop_v2": false
     }
   },
+  "regions": ["hnd1"],
   "functions": {
     "api/index.py": {
       "maxDuration": 300,

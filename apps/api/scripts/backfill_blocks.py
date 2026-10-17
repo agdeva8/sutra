@@ -32,7 +32,7 @@ import asyncio
 import sys
 from datetime import date, time, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from sutra_api.db import create_engine
@@ -255,6 +255,12 @@ def _build_tasks_from_reminder(r: Reminder) -> list[TaskBlock]:
 
 async def _count_existing(session_maker) -> dict:
     async with session_maker() as session:
+        # A dry run can come before the migration that creates the table (the deploy workflow's
+        # check mode does exactly that), so a missing table counts as empty rather than failing.
+        exists = await session.scalar(text("SELECT to_regclass('public.calendar_blocks') IS NOT NULL"))
+        if not exists:
+            print("calendar_blocks does not exist yet; the migration creates it.")
+            return {"event": 0, "task": 0, "away": 0, "milestone": 0}
         result = await session.execute(
             select(CalendarBlock.id, CalendarBlock.block_kind)
         )
