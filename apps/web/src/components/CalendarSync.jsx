@@ -12,7 +12,7 @@ import { api } from "../lib/api";
  * the events Sutra created in it (the feed goes empty, so the calendar app drops them on its next refresh).
  *
  *   useCalendarFeed     — the envelope + link / unlink / dismiss
- *   CalendarSyncDialog  — the ask (first open), the linked calendars, and unlinking
+ *   CalendarSyncDialog  — one screen: a row per provider, linked or not
  *   CalendarSyncButton  — the always-there entry point on Timeline
  *   CalendarSyncPrompt  — mounts the dialog once, iff the account was never asked
  */
@@ -135,22 +135,28 @@ function AddLinks({ cal }) {
   );
 }
 
-/** One linked calendar: its provider, its state, how to add it, and a way to unlink it (alone). */
-function CalendarRow({ cal, state }) {
-  const [showAdd, setShowAdd] = useState(false);
+/** One link to one calendar: its state, how to add it, and a way to unlink it (alone). The provider's
+ *  name is the row above; this is the line that says what that row is actually linked to. */
+function CalendarRow({ cal, state, startExpanded }) {
+  const [showAdd, setShowAdd] = useState(startExpanded);
   const [unlinking, setUnlinking] = useState(false);
   const [deleteEvents, setDeleteEvents] = useState(true);
+  // A subscription created from this screen arrives after the click, so its row can mount before the
+  // dialog knows it should be open. Follow the flag rather than only reading it at mount.
+  useEffect(() => {
+    if (startExpanded) setShowAdd(true);
+  }, [startExpanded]);
   const provider = providerLabel(cal.provider);
   // The server names a calendar after its provider unless the user renamed it; when they did, both are
   // worth showing — the provider says what it is, the name says which one.
   const renamed = cal.name && cal.name !== provider;
 
   return (
-    <li data-testid={`calendar-row-${cal.id}`} className="rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] p-3">
+    <div data-testid={`calendar-row-${cal.id}`} className="rounded-lg bg-[var(--bg-primary)] p-3">
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
           <p className="flex items-center gap-1.5 text-sm font-medium text-[var(--text-primary)]">
-            <span className="truncate">{provider}</span>
+            {renamed && <span className="truncate">{cal.name}</span>}
             <span
               data-testid={`calendar-linked-${cal.id}`}
               className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[color-mix(in_srgb,var(--accent)_14%,transparent)] px-2 py-0.5 text-[11px] font-medium text-[var(--accent)]"
@@ -159,7 +165,6 @@ function CalendarRow({ cal, state }) {
             </span>
           </p>
           <p className="truncate text-[12px] text-[var(--text-muted)]">
-            {renamed && <span className="text-[var(--text-secondary)]">{cal.name} · </span>}
             {cal.last_fetched_at ? `Last synced ${when(cal.last_fetched_at)}` : "Waiting for the calendar's first sync"}
           </p>
         </div>
@@ -178,7 +183,7 @@ function CalendarRow({ cal, state }) {
           type="button"
           onClick={() => setShowAdd((v) => !v)}
           aria-expanded={showAdd}
-          className="mt-1 inline-flex min-h-9 items-center gap-1 text-[13px] text-[var(--accent)]"
+          className="mt-1 inline-flex min-h-11 items-center gap-1 text-[13px] text-[var(--accent)]"
         >
           How to add it <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showAdd ? "rotate-180" : ""}`} aria-hidden="true" />
         </button>
@@ -186,7 +191,7 @@ function CalendarRow({ cal, state }) {
       {showAdd && !unlinking && <AddLinks cal={cal} />}
 
       {unlinking && (
-        <div className="mt-2 space-y-3 rounded-lg bg-[var(--bg-primary)] p-3" data-testid={`calendar-unlink-panel-${cal.id}`}>
+        <div className="mt-2 space-y-3 rounded-lg bg-[var(--bg-secondary)] p-3" data-testid={`calendar-unlink-panel-${cal.id}`}>
           <p className="text-[13px] text-[var(--text-primary)]">Stop syncing “{provider}”? Your other calendars are not affected.</p>
           <label className="flex items-start gap-2.5 text-[13px] text-[var(--text-secondary)]">
             <input type="checkbox" checked={deleteEvents} onChange={(e) => setDeleteEvents(e.target.checked)} className="mt-0.5 h-4 w-4" data-testid="calendar-delete-events" />
@@ -216,113 +221,120 @@ function CalendarRow({ cal, state }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** The row's Link action — the same add call the old picker made, now sitting on the provider it adds. */
+function LinkButton({ provider, linking, disabled, onLink }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onLink(provider)}
+      disabled={disabled}
+      data-testid={`calendar-link-${provider}`}
+      className="min-h-11 shrink-0 inline-flex items-center gap-1.5 px-2 text-[13px] font-medium text-[var(--accent)] disabled:opacity-50"
+    >
+      {linking ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" /> : <CalendarPlus className="w-4 h-4" aria-hidden="true" />}
+      Link
+    </button>
+  );
+}
+
+/**
+ * One provider, on the one screen. Its active links are listed underneath it — each with its own Unlink —
+ * and a Link button appears when nothing is linked to it. "Another calendar" is the one row that keeps
+ * Link while linked, because a second copy of it is a second, unrelated calendar.
+ */
+function ProviderRow({ provider, calendars, state, linking, onLink, expandedId }) {
+  const canLink = calendars.length === 0 || provider.key === "other";
+  return (
+    <li data-testid={`calendar-provider-row-${provider.key}`} className="rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] p-3">
+      <div className={`flex items-center justify-between gap-2 ${canLink ? "min-h-11" : ""}`}>
+        <p className="text-sm font-medium text-[var(--text-primary)]">{provider.label}</p>
+        {canLink && <LinkButton provider={provider.key} linking={linking} disabled={state.busy} onLink={onLink} />}
+      </div>
+      {calendars.length > 0 && (
+        <div className="mt-2 space-y-2">
+          {calendars.map((cal) => (
+            <CalendarRow key={cal.id} cal={cal} state={state} startExpanded={cal.id === expandedId} />
+          ))}
+        </div>
+      )}
     </li>
   );
 }
 
 /**
- * The dialog. Nothing linked → the ask ("See your plan in your calendar?"). Otherwise the linked calendars,
- * each with its own add and unlink controls, and a way to link another.
+ * The dialog — one screen. Every provider is a row: linked ones list their links with Unlink, unlinked
+ * ones offer Link, and the add steps open inline under the row they belong to. Nothing navigates away.
  */
 export function CalendarSyncDialog({ open, onClose, state }) {
-  const { feed, busy, error, link, dismiss } = state;
+  const { feed, error, link, dismiss } = state;
   // Only the live subscriptions are listed. An unlinked one keeps serving an empty feed for a month so
   // the user's calendar app drops Sutra's events — the server's job, and nothing to act on here.
   const linked = (feed?.calendars || []).filter(isLinked);
   const hasAny = linked.length > 0;
-  // Providers already linked: the picker is for adding one you do not have.
-  const linkedProviders = new Set(linked.map((c) => c.provider));
-  const [adding, setAdding] = useState(false);
+  // Providers are the rows, so an unknown key would otherwise vanish; it belongs to "Another calendar",
+  // which is also what `providerLabel` calls it.
+  const byProvider = PROVIDERS.reduce((acc, p) => ({ ...acc, [p.key]: [] }), {});
+  linked.forEach((c) => (byProvider[c.provider] || byProvider.other).push(c));
+  // The link whose add steps open by itself: the one this screen just created.
+  const [expandedId, setExpandedId] = useState(null);
+  const [linking, setLinking] = useState("");
 
-  const notNow = async () => {
+  // Closing is the only decline now, so it still records that the account was asked — otherwise the
+  // first-open prompt (CalendarSyncPrompt) would come back on every visit.
+  const finish = async () => {
     if (!feed?.prompted) await dismiss();
     onClose();
   };
 
-  const linkProvider = async (provider) => {
-    await link(provider);
-    setAdding(false);
+  const linkProvider = async (key) => {
+    const known = new Set(linked.map((c) => c.id));
+    setLinking(key);
+    const next = await link(key);
+    setLinking("");
+    // The feed the call returned tells us which subscription is new, so only that one opens its steps.
+    const created = (next?.calendars || []).find((c) => c.provider === key && !known.has(c.id) && isLinked(c));
+    if (created) setExpandedId(created.id);
   };
 
-  const providerPicker = (
-    <div className="grid grid-cols-1 gap-2" data-testid="calendar-provider-picker">
-      {PROVIDERS.map((p) => {
-        const already = linkedProviders.has(p.key);
-        return (
-          <button
-            key={p.key}
-            type="button"
-            disabled={busy || already}
-            onClick={() => linkProvider(p.key)}
-            data-testid={`calendar-provider-option-${p.key}`}
-            className="flex min-h-11 items-center justify-between rounded-lg border border-[var(--border)] px-4 text-sm text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
-          >
-            {p.label}
-            {already ? (
-              <span className="inline-flex items-center gap-1 text-[12px] font-medium text-[var(--accent)]">
-                <Check className="w-3.5 h-3.5" aria-hidden="true" /> Linked
-              </span>
-            ) : busy ? (
-              <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
-            ) : (
-              <CalendarPlus className="w-4 h-4 text-[var(--text-muted)]" aria-hidden="true" />
-            )}
-          </button>
-        );
-      })}
-    </div>
-  );
-
-  const footer = hasAny ? (
-    <div className="flex items-center justify-between w-full">
-      <button type="button" onClick={() => setAdding((v) => !v)} className="min-h-11 text-sm text-[var(--accent)]" data-testid="calendar-link-another">
-        {adding ? "Cancel" : "Link another calendar"}
-      </button>
-      <button type="button" onClick={onClose} className="min-h-11 rounded-full bg-[var(--text-primary)] px-5 text-sm text-[var(--bg-primary)]">
-        Done
-      </button>
-    </div>
-  ) : (
-    <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 w-full">
-      <button type="button" onClick={notNow} disabled={busy} className="min-h-11 px-4 text-sm text-[var(--text-secondary)] disabled:opacity-50">
-        Not now
-      </button>
-      <button type="button" onClick={() => setAdding(true)} disabled={busy} className="min-h-11 rounded-full bg-[var(--text-primary)] px-5 text-sm font-medium text-[var(--bg-primary)] disabled:opacity-50">
-        Add to my calendar
-      </button>
-    </div>
+  const footer = (
+    <button type="button" onClick={finish} className="min-h-11 rounded-full bg-[var(--text-primary)] px-5 text-sm text-[var(--bg-primary)]">
+      Done
+    </button>
   );
 
   return (
     <CenteredDialog
       open={open}
-      onClose={hasAny ? onClose : notNow}
+      onClose={finish}
       testId="calendar-sync-dialog"
-      title={hasAny ? "Your calendars" : "See your plan in your calendar?"}
-      icon={hasAny ? CalendarCheck : CalendarPlus}
+      title="Your calendars"
+      icon={CalendarCheck}
       maxWidth="max-w-md"
       footer={footer}
     >
-      {hasAny && !adding && (
-        <ul className="space-y-2.5" data-testid="calendar-list">
-          {linked.map((c) => (
-            <CalendarRow key={c.id} cal={c} state={state} />
-          ))}
-        </ul>
-      )}
-      {adding && (
-        <div className="space-y-3">
-          <p className="text-sm text-[var(--text-secondary)]">Which calendar are you adding?</p>
-          {providerPicker}
-        </div>
-      )}
-      {!hasAny && !adding && (
-        <p className="text-sm leading-relaxed text-[var(--text-secondary)]">
+      {!hasAny && (
+        <p className="mb-3 text-sm leading-relaxed text-[var(--text-secondary)]">
           Everything in your plan — sessions, fixed and repeating commitments, reminders, milestones and time away — shows up in Google,
-          Apple or Outlook Calendar and stays in step when your plan changes. Link as many calendars as you like, and unlink any of them
-          whenever you want.
+          Apple or Outlook Calendar and stays in step when your plan changes.
         </p>
       )}
+      <ul className="space-y-2.5" data-testid="calendar-list">
+        {PROVIDERS.map((p) => (
+          <ProviderRow
+            key={p.key}
+            provider={p}
+            calendars={byProvider[p.key]}
+            state={state}
+            linking={linking === p.key}
+            onLink={linkProvider}
+            expandedId={expandedId}
+          />
+        ))}
+      </ul>
       {error && (
         <p role="alert" className="mt-3 text-xs text-[var(--danger,#c0392b)]">
           {error}
