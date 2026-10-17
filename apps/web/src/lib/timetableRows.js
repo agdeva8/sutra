@@ -86,6 +86,33 @@ function taskRow(b, day) {
   };
 }
 
+/**
+ * One untimed task the planner placed on a day — a quota or a multi-day item. It has no clock
+ * times, so it draws as an all-day row; a quota says its per-day count in the label.
+ */
+function allDayTaskRow(b, day) {
+  return {
+    id: b.id,
+    block_date: day,
+    start_time: null,
+    end_time: null,
+    label: b.quota ? `${b.title} · ${b.quota}/day` : b.title,
+    kind: b.placed_by === PLACED_BY_PLANNER ? "tentative" : "committed",
+    source_id: b.id,
+    goal_id: b.goal_id ?? null,
+    why: b.why ?? "",
+  };
+}
+
+/** An untimed task the planner placed on a day (a quota or a multi-day item), never an `at` reminder. */
+const isUntimedPlannerTask = (b) =>
+  b.block_kind === BLOCK_KIND_TASK &&
+  !b.at &&
+  !b.start &&
+  !b.end &&
+  !!dayKey(b.day) &&
+  b.placed_by === PLACED_BY_PLANNER;
+
 /** Every occurrence of a repeating row, each carrying its own id and the series it came from. */
 function rowsFor(b, keys, rowFor) {
   return occurrenceDays(b, keys).map((day) => {
@@ -121,8 +148,9 @@ export function toTimetableRows(blocks, { from, to } = {}) {
       rows.push(...rowsFor(b, keys, eventRow));
       return;
     }
-    if (b.block_kind === BLOCK_KIND_TASK && !b.at && b.start && b.end) {
-      rows.push(...rowsFor(b, keys, taskRow));
+    if (b.block_kind === BLOCK_KIND_TASK && !b.at) {
+      if (b.start && b.end) rows.push(...rowsFor(b, keys, taskRow));
+      else if (isUntimedPlannerTask(b)) rows.push(...rowsFor(b, keys, allDayTaskRow));
     }
   });
   return rows;

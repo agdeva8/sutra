@@ -37,6 +37,35 @@ export async function toggleDone(item, onChange) {
   }));
 }
 
+const quotaCount = (block, day) => Number(block?.quota_done?.[day] || 0);
+
+/** The count `day` of a quota would hold after `delta`, kept between 0 and the quota. */
+export function quotaAfter(block, day, delta) {
+  const limit = typeof block?.quota === "number" ? block.quota : Infinity;
+  return Math.min(limit, Math.max(0, quotaCount(block, day) + delta));
+}
+
+/** The `quota_done` map with `day` stepped by `delta`, a key for every day already counted. */
+export function quotaDoneAfter(block, day, delta) {
+  return { ...(block?.quota_done || {}), [day]: quotaAfter(block, day, delta) };
+}
+
+/**
+ * Step one day of a quota by ±1 through `PATCH /blocks/:id`, and patch the board in place so the
+ * day's N/M moves at once. Days are counted separately: one day's +1 leaves every other day alone,
+ * and a day reads as done when its count reaches the quota.
+ */
+export async function adjustQuota(block, day, delta, onChange) {
+  if (!block?.id || !day) return;
+  const next = quotaDoneAfter(block, day, delta);
+  if (next[day] === quotaCount(block, day)) return; // already at 0 or at the quota
+  await api.blocks.update(block.id, { quota_done: next });
+  onChange?.((prev) => ({
+    ...prev,
+    blocks: (prev.blocks || []).map((b) => (b.id === block.id ? { ...b, quota_done: next } : b)),
+  }));
+}
+
 /** Put a saved row into the board in place (new rows first), so a save never waits on a re-read. */
 export const upsertPlanItem = (row) => (prev) => {
   const items = prev.plan_items || [];

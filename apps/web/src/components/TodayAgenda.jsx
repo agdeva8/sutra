@@ -3,7 +3,7 @@ import { CheckCircle2, ChevronDown, Circle, Loader2 } from "lucide-react";
 import { localDateKey } from "../lib/utils";
 import { summarize } from "../lib/agenda";
 import { EVENT_KIND } from "../lib/events";
-import { itemHours } from "../lib/horizons";
+import { itemHours, planOutcomes } from "../lib/horizons";
 import { BUILDING_PLAN_TEXT } from "../constants/goalActivity";
 import { cardSurface, goalColor, TODO_PRIORITY_BY_KEY, TODO_PRIORITY_NORMAL } from "../constants/calendarKinds";
 import { TODAY_RANGES } from "../constants/todayRanges";
@@ -42,8 +42,11 @@ export function RangeTabs({ value, onChange }) {
 }
 
 /** One thing on a day, in its calendar kind's look. Tasks (and sessions with a task) carry a tick. */
-export function AgendaRow({ entry, onToggle, saving, onCant, onBreakDown, compact = false }) {
-  const tickable = !!entry.task;
+export function AgendaRow({ entry, onToggle, onQuota, saving, onCant, onBreakDown, compact = false }) {
+  // A quota is stepped with ±1 per day, not ticked as a whole.
+  const quota = typeof entry.quota === "number" && entry.quota > 0 ? entry.quota : null;
+  const tickable = !!entry.task && !quota;
+  const quotaDone = typeof entry.quotaDone === "number" ? entry.quotaDone : 0;
   const label = entry.label || "";
   // A to-do says its priority when it is not the default one.
   const priority = entry.kind === EVENT_KIND.todo && entry.priority && entry.priority !== TODO_PRIORITY_NORMAL ? TODO_PRIORITY_BY_KEY[entry.priority]?.label : "";
@@ -74,6 +77,11 @@ export function AgendaRow({ entry, onToggle, saving, onCant, onBreakDown, compac
           {!compact && (
             <p className="mt-0.5 flex flex-wrap gap-x-2 text-[11px] text-[var(--text-muted)]">
               <span>{label}</span>
+              {quota && <span>· {quota}/day</span>}
+              {entry.anytime && <span>· Anytime</span>}
+              {entry.dayCount > 1 && entry.dayIndex > 0 && (
+                <span>· Day {entry.dayIndex} of {entry.dayCount}</span>
+              )}
               {priority && <span style={{ color: entry.color }}>· {priority} priority</span>}
               {entry.goalTitle && <span>· {entry.goalTitle}</span>}
               {entry.note && <span>· {entry.note}</span>}
@@ -82,6 +90,38 @@ export function AgendaRow({ entry, onToggle, saving, onCant, onBreakDown, compac
           )}
         </div>
       </div>
+      {quota && (
+        // One day at a time: the count is this day's, and reaching the quota marks only this day done.
+        <div className="mt-1 flex items-center gap-1.5 pl-7" data-testid={`quota-${entry.id}`}>
+          <button
+            type="button"
+            onClick={() => onQuota?.(entry, -1)}
+            disabled={saving || quotaDone <= 0}
+            aria-label={`Undo one "${entry.title}"`}
+            data-testid={`quota-minus-${entry.id}`}
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-[18px] leading-none text-[var(--text-muted)] hover:text-[var(--accent)] disabled:opacity-30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+          >
+            −
+          </button>
+          <span
+            className="min-w-12 text-center font-mono text-[13px] tabular-nums text-[var(--text-secondary)]"
+            data-testid={`quota-count-${entry.id}`}
+            aria-live="polite"
+          >
+            {quotaDone}/{quota}
+          </span>
+          <button
+            type="button"
+            onClick={() => onQuota?.(entry, 1)}
+            disabled={saving || quotaDone >= quota}
+            aria-label={`Add one "${entry.title}"`}
+            data-testid={`quota-plus-${entry.id}`}
+            className="min-h-11 min-w-11 shrink-0 rounded-full bg-[var(--accent)] px-3 text-[13px] font-semibold text-[var(--bg-primary)] hover:opacity-90 disabled:opacity-30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+          >
+            +1
+          </button>
+        </div>
+      )}
       {/* Goal actions belong to a goal's task only; a to-do is the user's own and has none. */}
       {!compact && entry.kind === EVENT_KIND.task && !entry.done && onCant && (
         <div className="mt-1 pl-9">
@@ -154,6 +194,8 @@ function TargetBar({ goalId, progress }) {
 function TargetCard({ goal, item, progress, entries = [], expandable = false, children, ...rowProps }) {
   const [open, setOpen] = useState(false);
   const hours = itemHours(item);
+  // The week's or month's outcomes, one per line on the plan row, as short bullets under the focus.
+  const outcomes = planOutcomes(item);
   const body = (
     <>
       <div className="flex items-baseline gap-2">
@@ -166,6 +208,16 @@ function TargetCard({ goal, item, progress, entries = [], expandable = false, ch
         )}
       </div>
       <p className="mt-1 text-[14px] font-medium leading-snug text-[var(--text-primary)]">{item.title}</p>
+      {outcomes.length > 0 && (
+        <ul className="mt-1 space-y-0.5" data-testid={`target-outcomes-${item.id}`}>
+          {outcomes.map((outcome, i) => (
+            <li key={`${i}-${outcome}`} className="flex gap-1 text-[12px] leading-snug text-[var(--text-secondary)]">
+              <span aria-hidden="true">·</span>
+              <span className="min-w-0">{outcome}</span>
+            </li>
+          ))}
+        </ul>
+      )}
       {item.why && <p className="mt-0.5 truncate text-[12px] text-[var(--text-secondary)]">{item.why}</p>}
       <p className="mt-1.5 text-[11px] text-[var(--text-muted)]">{progressLine(progress)}</p>
       <TargetBar goalId={goal.id} progress={progress} />
@@ -197,6 +249,16 @@ function TargetCard({ goal, item, progress, entries = [], expandable = false, ch
       {children}
       {expandable && open && (
         <div className="mt-2 border-t border-[var(--border)] pt-2">
+          {/* The whole `why`, untruncated: a shortfall sentence ("Only 6 of your 8h fit this week…")
+              lives at its end and would be cut off on the card face. */}
+          {item.why && (
+            <p
+              className="mb-2 whitespace-pre-line text-[12px] leading-snug text-[var(--text-secondary)]"
+              data-testid={`target-why-${item.id}`}
+            >
+              {item.why}
+            </p>
+          )}
           <AgendaDay entries={entries} empty="No tasks under this target yet." {...rowProps} />
         </div>
       )}

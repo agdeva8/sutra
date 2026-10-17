@@ -94,8 +94,39 @@ describe("toTimetableRows", () => {
     expect(toTimetableRows([task("r1", { start: null, end: null, at: "18:00" })], RANGE)).toEqual([]);
   });
 
-  test("a task with no time is a list item, not a timetable row", () => {
+  test("a user's task with no time is a list item, not a timetable row", () => {
     expect(toTimetableRows([task("t1", { start: null, end: null })], RANGE)).toEqual([]);
+  });
+
+  test("an untimed planner quota becomes one all-day row per occurrence, labelled with its count", () => {
+    const quota = task("q1", {
+      start: null,
+      end: null,
+      placed_by: "planner",
+      quota: 5,
+      quota_done: {},
+      repeat: { weekdays: [0, 2], until: "2026-10-21" },
+    });
+    const rows = toTimetableRows([quota], RANGE);
+    expect(rows.map((r) => r.block_date)).toEqual(["2026-10-19", "2026-10-21"]);
+    expect(rows.every((r) => r.start_time === null && r.end_time === null)).toBe(true);
+    expect(rows.every((r) => r.label === "q1 · 5/day")).toBe(true);
+    expect(rows.every((r) => r.kind === "tentative")).toBe(true);
+    expect(rows.every((r) => r.source === "recurring" && r.source_id === "q1")).toBe(true);
+  });
+
+  test("an untimed planner multi-day item becomes an all-day row on each of its days", () => {
+    const multi = task("m1", {
+      start: null,
+      end: null,
+      placed_by: "planner",
+      title: "Draft the report",
+      repeat: { weekdays: [0, 1, 2], until: "2026-10-21" },
+    });
+    const rows = toTimetableRows([multi], RANGE);
+    expect(rows.map((r) => r.block_date)).toEqual(["2026-10-19", "2026-10-20", "2026-10-21"]);
+    expect(rows.every((r) => r.start_time === null && r.end_time === null)).toBe(true);
+    expect(rows.every((r) => r.label === "Draft the report")).toBe(true);
   });
 
   test("away and milestone rows are not timetable rows", () => {

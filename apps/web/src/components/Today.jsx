@@ -2,7 +2,7 @@ import { useState, useRef, useLayoutEffect, useMemo } from "react";
 import { CalendarClock, CalendarDays, MessageSquare, Plus, Send, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { localDateKey } from "../lib/utils";
-import { toggleDone, upsertPlanItem } from "../lib/todos";
+import { adjustQuota, toggleDone, upsertPlanItem } from "../lib/todos";
 import { buildAgenda, dayKeys } from "../lib/agenda";
 import { planItemEvent } from "../lib/events";
 import { planningIsLive } from "../lib/goalPlanning";
@@ -115,12 +115,24 @@ export default function Today({ state, onChange, onOpenChat, onOpenTimeline }) {
       setSavingId(null);
     }
   };
+  // A quota steps one day at a time; the day is the occurrence's own day, not block.day.
+  const adjust = async (entry, delta) => {
+    if (!entry.task) return;
+    setSavingId(entry.task.id);
+    try {
+      await adjustQuota(entry.task, entry.day, delta, onChange);
+    } catch (err) {
+      toast.error(typeof err?.message === "string" ? err.message : "Couldn't update that.");
+    } finally {
+      setSavingId(null);
+    }
+  };
   // Both openers pass an empty prefill: the button already names the action and the task.
   const cantDo = (item) =>
     onOpenChat?.("", { scope: "plan", refId: item.id, kind: "plan_day", title: `Renegotiate "${item.title}"`, helperText: "What part feels off? Be specific — the coach will suggest a keep / shrink / drop." });
   const breakDown = (item) =>
     onOpenChat?.("", { scope: "plan", refId: item.id, kind: "plan_day", title: `Break down "${item.title}"`, helperText: "Describe the smallest concrete next step and the rough when." });
-  const rowProps = { onToggle: toggle, savingId, onCant: cantDo, onBreakDown: breakDown };
+  const rowProps = { onToggle: toggle, onQuota: adjust, savingId, onCant: cantDo, onBreakDown: breakDown };
 
   const handleSend = (e) => {
     e?.preventDefault?.();

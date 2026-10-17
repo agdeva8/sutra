@@ -9,6 +9,7 @@ import BlockFormDialog from "./BlockFormDialog";
 import BlockDetailSheet from "./BlockDetailSheet";
 import { api } from "../lib/api";
 import { blockColor } from "../constants/blockKinds";
+import { isMilestoneDone } from "../lib/timetableRows";
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
@@ -17,7 +18,7 @@ const fmtDate = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2
 const TODAY = (() => { const t = new Date(); t.setHours(0, 0, 0, 0); return t; })();
 
 const mileColor = (m) => {
-  if (m.status === "done") return "var(--success)";
+  if (isMilestoneDone(m)) return "var(--success)";
   const d = m.target_date ? new Date(m.target_date + "T00:00:00") : null;
   if (d && !isNaN(d.getTime()) && d < TODAY) return "var(--danger)";
   return "var(--warning)";
@@ -255,7 +256,7 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, e
             <div key={m.id} className="flex items-center gap-2 text-[13px] px-1">
               <Milestone className="w-4 h-4 shrink-0" style={{ color: mileColor(m) }} />
               <span className="text-[var(--text-secondary)] truncate flex-1">{m.title || "Milestone"}</span>
-              {m.status === "done" && <CheckCircle2 className="w-4 h-4 text-[var(--success)] shrink-0" />}
+              {isMilestoneDone(m) && <CheckCircle2 className="w-4 h-4 text-[var(--success)] shrink-0" />}
             </div>
           ))}
 

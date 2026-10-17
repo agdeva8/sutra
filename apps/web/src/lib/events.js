@@ -41,9 +41,11 @@ export const EVENT_KIND = {
 const STYLE_KEY = { commitment: "fixed", away: "blocker" };
 const STATUS_DONE = "done";
 const STATUS_OPEN = "open";
+const BLOCK_KIND_TASK = "task";
 const MINUTES_PER_HOUR = 60;
 const MINUTES_PER_DAY = 24 * MINUTES_PER_HOUR;
 const WEEKDAYS_PER_WEEK = 7;
+const DAY_MS = 86400000;
 
 const hhmm = (t) => (t ? String(t).slice(0, 5) : "");
 const dayOf = (v) => (v ? String(v).slice(0, 10) : null);
@@ -107,6 +109,10 @@ const weekdayOf = (key) => (new Date(`${key}T00:00:00`).getDay() + WEEKDAYS_PER_
 /** The block's own day, for kinds that have no `day` field (a milestone's target date). */
 const blockDay = (b) => dayOf(b?.day ?? b?.target_date);
 
+/** A Date as its local ISO day key ("YYYY-MM-DD"). */
+const isoDay = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
 /** Day keys in `keys` the block falls on. Without a repeat that is its own day. */
 export function repeatDays(b, keys) {
   const first = blockDay(b);
@@ -117,12 +123,41 @@ export function repeatDays(b, keys) {
 }
 
 /**
+ * Every day the block's repeat covers, from its own day to `until`, matching its weekdays. This is
+ * how a multi-day item knows its first and last day even when the screen only shows one of them.
+ * Without a repeat (or without an `until`) it is just its own day.
+ */
+export function occurrenceDays(b) {
+  const first = blockDay(b);
+  if (!first) return [];
+  const until = dayOf(b?.repeat?.until);
+  const weekdays = b?.repeat?.weekdays || [];
+  if (!until || until < first || !weekdays.length) return [first];
+  const days = [];
+  for (let d = new Date(`${first}T00:00:00`); isoDay(d) <= until; d = new Date(d.getTime() + DAY_MS)) {
+    const key = isoDay(d);
+    if (weekdays.includes(weekdayOf(key))) days.push(key);
+  }
+  return days;
+}
+
+/** A quota block: a task with a count per day (e.g. "send 5 applications"). */
+export const isQuotaBlock = (b) => b?.block_kind === BLOCK_KIND_TASK && typeof b?.quota === "number" && b.quota > 0;
+
+/** A multi-day item: an untimed, non-quota task whose repeat covers more than one day. */
+export const isMultiDayBlock = (b) =>
+  b?.block_kind === BLOCK_KIND_TASK && !b.at && !b.start && !b.end && !isQuotaBlock(b) && occurrenceDays(b).length > 1;
+
+/** The instances done on `day` of a quota, as the contract's `quota_done` holds them. */
+export const quotaDoneOn = (b, day) => Number(b?.quota_done?.[day] || 0);
+
+/**
  * One occurrence of a 4-kind block, as the Event the screens already consume. The four kinds map onto
  * today's event kinds: an Event is a commitment (a repeat draws as a series), a Task is a goal session
  * when it is timed under a goal and a commitment when it is the user's own time, and a Task with an
  * `at` is a reminder.
  */
-function blockEventOn(b, day, goalTitle) {
+function blockEventOn(b, day, goalTitle, meta = {}) {
   const common = { id: `block-${b.id}-${day}`, title: b.title, day, raw: b, goalId: b.goal_id, goalTitle };
   if (b.block_kind === "event") {
     const fields = { ...common, time: hhmm(b.start), start: hhmm(b.start), end: hhmm(b.end) };
@@ -130,16 +165,24 @@ function blockEventOn(b, day, goalTitle) {
     return base(b.repeat ? EVENT_KIND.recurring : EVENT_KIND.commitment, color, fields);
   }
   if (b.block_kind === "task") {
-    const done = blockDone(b);
+    const quota = isQuotaBlock(b) ? b.quota : null;
+    const quotaDone = quota ? quotaDoneOn(b, day) : 0;
+    // A quota is done per day, by its count; other tasks are done as a whole.
+    const done = quota ? quotaDone >= quota : blockDone(b);
     const task = { ...b, status: done ? STATUS_DONE : STATUS_OPEN };
+    // A multi-day item says where in its run this day is ("Day 1 of 2").
+    const span = meta.dayCount > 1 ? { dayIndex: meta.dayIndex, dayCount: meta.dayCount, anytime: true } : {};
     if (b.at) {
       return base(EVENT_KIND.reminder, reminderColor(b.id), { ...common, time: hhmm(b.at), task, done });
     }
     const timed = !!(b.start && b.end);
-    const span = { time: hhmm(b.start), start: hhmm(b.start), end: hhmm(b.end) };
-    if (timed && b.goal_id) return base(EVENT_KIND.session, goalColor(b.goal_id), { ...common, ...span, task, done });
-    if (timed || !b.goal_id) return base(EVENT_KIND.commitment, KIND_STYLE.fixed.color, { ...common, ...span, task, done });
-    return base(EVENT_KIND.task, goalColor(b.goal_id), { ...common, task, done });
+    const times = { time: hhmm(b.start), start: hhmm(b.start), end: hhmm(b.end) };
+    if (timed && b.goal_id) return base(EVENT_KIND.session, goalColor(b.goal_id), { ...common, ...times, task, done });
+    if (timed || !b.goal_id) return base(EVENT_KIND.commitment, KIND_STYLE.fixed.color, { ...common, ...times, task, done });
+    const color = b.goal_id ? goalColor(b.goal_id) : KIND_STYLE.fixed.color;
+    // A quota carries its count and the day's done count, so the row can draw "3/5" and step it.
+    if (quota) return base(EVENT_KIND.task, color, { ...common, task, done, quota, quotaDone, anytime: true, ...span });
+    return base(EVENT_KIND.task, color, { ...common, task, done, ...span });
   }
   return null;
 }
@@ -152,8 +195,16 @@ export function blockEvents(b, keys, { goalTitle = "", todayKey = null } = {}) {
   if (b?.block_kind === "away") return awayEvents(b, keys);
   if (b?.block_kind === "milestone") return [milestoneEvent(b, goalTitle)];
   const days = repeatDays(b, keys);
-  if (!days.length && b?.block_kind === "task" && !b.day && todayKey) days.push(todayKey);
-  return days.map((day) => blockEventOn(b, day, goalTitle)).filter(Boolean);
+  if (!days.length && b?.block_kind === BLOCK_KIND_TASK && !b.day && todayKey) days.push(todayKey);
+  // A multi-day item is one item across several days: number each occurrence so the row can say
+  // "Day 2 of 3" rather than pretending the days are separate tasks.
+  const span = isMultiDayBlock(b) ? occurrenceDays(b) : null;
+  return days
+    .map((day) => {
+      const index = span ? span.indexOf(day) : -1;
+      return blockEventOn(b, day, goalTitle, span ? { dayIndex: index + 1, dayCount: span.length } : {});
+    })
+    .filter(Boolean);
 }
 
 /** A timetable block: a repeating commitment's occurrence, a fixed commitment, or a goal session. */

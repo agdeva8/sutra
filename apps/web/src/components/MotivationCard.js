@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from "react";
 import { Sparkles, ExternalLink, Loader2, BookOpen, Headphones, Video, FileText } from "lucide-react";
 import { api } from "../lib/api";
 import { localDateKey } from "../lib/utils";
+import { isMilestoneDone } from "../lib/timetableRows";
 
 /**
  * MotivationCard — read-only. Surfaces 1-3 curated items fetched from
@@ -35,7 +36,7 @@ export default function MotivationCard({ state }) {
 
   const overdueCount = (state?.milestones || []).filter(
     (m) =>
-      (m.status || "open") !== "done" &&
+      !isMilestoneDone(m) &&
       m.target_date &&
       m.target_date < localDateKey(),
   ).length

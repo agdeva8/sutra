@@ -9,6 +9,11 @@ const ACTION_LABELS = {
   add_milestone: "Milestone",
   add_blocker: "Blocker",
   add_block: "Timetable block",
+  // agentv2 gateway proposals carry a 4-kind change (`add_item` / `edit_item` / `delete_item`)
+  // instead of the legacy `add_block`; their `block` is in `args.change.block`.
+  add_item: "Timetable block",
+  edit_item: "Timetable block",
+  delete_item: "Timetable block",
   drop_goal: "Goal",
   pause_goal: "Goal",
 };
@@ -29,6 +34,9 @@ const CONFIRM_LABELS = {
   add_milestone: "Add milestone",
   add_blocker: "Add blocker",
   add_block: "Add to timetable",
+  add_item: "Add to calendar",
+  edit_item: "Apply change",
+  delete_item: "Delete block",
 };
 
 /**
@@ -45,7 +53,40 @@ const SECTION_BY_ACTION = {
   add_milestone: "MILESTONE",
   add_blocker: "BLOCKER",
   add_block: "SCHEDULE",
+  add_item: "SCHEDULE",
+  edit_item: "SCHEDULE",
+  delete_item: "SCHEDULE",
 };
+
+/** The 4-kind block a gateway change is about (`null` for a legacy proposal). */
+const changeBlock = (d) => d?.change?.block || null;
+
+/** What a schedule card reads: the change's block, or the legacy flat fields. */
+const scheduleFields = (d) => changeBlock(d) || d;
+
+/** A block's date in one line: a day, a range of days, or a milestone's target. */
+function blockDate(b) {
+  if (b.day) return b.day;
+  if (b.target_date) return b.target_date;
+  if (b.start_date && b.end_date && b.start_date !== b.end_date) return `${b.start_date} – ${b.end_date}`;
+  return b.start_date || b.block_date || null;
+}
+
+/** A block's time in one line: a range, a start, or a due-by moment. */
+function blockTime(b) {
+  if (b.start && b.end) return `${b.start}–${b.end}`;
+  if (b.start) return `From ${b.start}`;
+  if (b.at) return `At ${b.at}`;
+  if (b.start_time && b.end_time) return `${b.start_time}–${b.end_time}`;
+  return null;
+}
+
+/** A milestone change is still a milestone card; everything else is a schedule change. */
+function sectionFor(proposal, d) {
+  const block = changeBlock(d);
+  if (block?.block_kind === "milestone") return "MILESTONE";
+  return SECTION_BY_ACTION[proposal.action] || "";
+}
 
 function SectionBadge({ section }) {
   if (!section) return null;
@@ -172,7 +213,9 @@ export default function ToolConfirmationPrompt({ proposal, onConfirm, onOpenRefi
   const status = proposal.status || "pending";
   const isDrop = proposal.action === "drop_goal" || proposal.action === "pause_goal";
   const d = flatProposal(proposal);
-  const section = SECTION_BY_ACTION[proposal.action] || "";
+  const block = changeBlock(d);
+  const b = scheduleFields(d);
+  const section = sectionFor(proposal, d);
   const actionLabel = ACTION_LABELS[proposal.action] || proposal.action || "Proposal";
   const confirmLabel = CONFIRM_LABELS[proposal.action] || "Confirm";
 
@@ -181,6 +224,7 @@ export default function ToolConfirmationPrompt({ proposal, onConfirm, onOpenRefi
   // title: MILESTONE/BLOCKER use their own title, GOAL uses
   // title/new_title/goal_title.
   const headlineTitle = (() => {
+    if (block) return block.title || "";
     if (section === "MILESTONE") return d.title || "";
     if (section === "BLOCKER") return d.title || d.text || "";
     if (section === "SCHEDULE") return d.label || "";
@@ -196,6 +240,7 @@ export default function ToolConfirmationPrompt({ proposal, onConfirm, onOpenRefi
   // a no-op the model occasionally emits — don't render an empty card.
   const hasAnything =
     headlineTitle ||
+    block ||
     d.why ||
     d.text ||
     d.first_action ||
@@ -265,13 +310,13 @@ export default function ToolConfirmationPrompt({ proposal, onConfirm, onOpenRefi
 
         {showMilestoneFields && (
           <div className="space-y-2">
-            <FieldRow icon={FileText} label="Description" value={d.description || d.desc || d.note} />
-            <FieldRow icon={FileText} label="Why" value={d.why} />
+            <FieldRow icon={FileText} label="Description" value={b.description || b.desc || b.note || d.note} />
+            <FieldRow icon={FileText} label="Why" value={b.why || d.why} />
             <FieldRow
               icon={Calendar}
               label="Deadline"
-              value={d.target_date}
-              accent={!!d.target_date}
+              value={b.target_date || d.target_date}
+              accent={!!(b.target_date || d.target_date)}
             />
           </div>
         )}
@@ -290,15 +335,11 @@ export default function ToolConfirmationPrompt({ proposal, onConfirm, onOpenRefi
 
         {showScheduleFields && (
           <div className="space-y-2">
-            <FieldRow icon={Calendar} label="Date" value={d.block_date} accent />
-            <FieldRow
-              icon={Clock}
-              label="Time"
-              value={d.start_time && d.end_time ? `${d.start_time}–${d.end_time}` : null}
-            />
-            <FieldRow icon={FileText} label="Type" value={d.kind} />
+            <FieldRow icon={Calendar} label="Date" value={blockDate(b)} accent />
+            <FieldRow icon={Clock} label="Time" value={blockTime(b)} />
+            <FieldRow icon={FileText} label="Type" value={b.block_kind || d.kind} />
             <FieldRow icon={Target} label="Goal" value={d.goal_title} />
-            <FieldRow icon={FileText} label="Note" value={d.note} />
+            <FieldRow icon={FileText} label="Note" value={b.note || d.note} />
           </div>
         )}
 

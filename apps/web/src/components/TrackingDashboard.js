@@ -41,6 +41,10 @@ export default function TrackingDashboard({
   registerCloser = null,
   autoOpenAddGoal = false,
   onAutoOpenAddGoalHandled = () => {},
+  // An Edit-goal request from any goal menu. The dialog lives here, so this screen resolves the goal
+  // (with its milestones) and opens it in edit mode; `onEditGoalHandled` clears the request.
+  editGoalId = null,
+  onEditGoalHandled = () => {},
   // Fires when the Add-goal dialog closes, however it closed (confirmed, stepped back, or dismissed).
   // The first-run tour waits on it: its "Your first goal" step is done either way, so whether a goal
   // was actually added is deliberately not part of this.
@@ -50,6 +54,8 @@ export default function TrackingDashboard({
 }) {
   const { user } = useAuth();
   const [addGoalOpen, setAddGoalOpen] = useState(false);
+  // The goal the dialog is editing, with its milestones — null for the Add-goal flow.
+  const [dialogGoal, setDialogGoal] = useState(null);
   // Latest step-back function from the AddGoalDialog. The dialog's
   // `onStepBack` prop overwrites this on every step change; the
   // closer we register calls THIS ref (not onClose directly), so a
@@ -73,6 +79,25 @@ export default function TrackingDashboard({
     setAddGoalOpen(true);
     onAutoOpenAddGoalHandled();
   }, [autoOpenAddGoal, onAutoOpenAddGoalHandled]);
+
+  // Edit-goal: open the same dialog in edit mode, starting from the goal and its milestones (done
+  // ones included — the dialog shows them as fixed and the server keeps them out of the replacement).
+  useEffect(() => {
+    if (!editGoalId) return;
+    const target = (state?.goals || []).find((item) => item.id === editGoalId);
+    if (!target) {
+      onEditGoalHandled();
+      return;
+    }
+    setDialogGoal({
+      ...target,
+      milestones: (state?.milestones || []).filter((m) => m.goal_id === editGoalId),
+    });
+    setAddGoalOpen(true);
+    onEditGoalHandled();
+    // The request object is the trigger; `state` is read once per request, not watched.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editGoalId]);
 
   // Register / deregister the AddGoalDialog's closer with Coach.js so
   // the global back button (mobile panel-back-arrow AND browser back)
@@ -117,9 +142,15 @@ export default function TrackingDashboard({
     );
   }
 
-  const openAddGoalDialog = () => setAddGoalOpen(true);
+  // "Add goal" always starts a new goal: clear any edit target first, or the dialog would reopen
+  // in edit mode from a stale request.
+  const openAddGoalDialog = () => {
+    setDialogGoal(null);
+    setAddGoalOpen(true);
+  };
   const closeAddGoalDialog = () => {
     setAddGoalOpen(false);
+    setDialogGoal(null);
     try { localStorage.setItem("gc_first_visit_v1", "done"); } catch { /* ignore */ }
     onAddGoalClosed();
   };
@@ -221,6 +252,8 @@ export default function TrackingDashboard({
       ) : (
         <AddGoalDialog
           open={addGoalOpen}
+          mode={dialogGoal ? "edit" : "add"}
+          goal={dialogGoal}
           onClose={closeAddGoalDialog}
           onStepBack={(fn) => { addGoalStepBackRef.current = fn; }}
           registerCloser={registerCloser}

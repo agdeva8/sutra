@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Loader2, Target } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "../lib/api";
@@ -25,6 +25,12 @@ export default function GoalIntakeDialog({ open, onClose, onCreated }) {
   const [options, setOptions] = useState([]);
   const [draft, setDraft] = useState(null);
   const [busy, setBusy] = useState(false);
+  // One id per draft, sent with its confirm: a retry reuses it, so the server can tell the second
+  // request from the first and return the goal it already made.
+  const confirmIdRef = useRef(null);
+  // Re-entrancy guard: state only disables the button on the next render, so a second tap in the
+  // same frame would otherwise send a second confirm.
+  const confirmingRef = useRef(false);
 
   const reset = () => {
     setPhase(PHASE.ASK);
@@ -33,6 +39,8 @@ export default function GoalIntakeDialog({ open, onClose, onCreated }) {
     setQuestion(null);
     setOptions([]);
     setDraft(null);
+    confirmIdRef.current = null;
+    confirmingRef.current = false;
   };
   const close = () => {
     reset();
@@ -48,6 +56,8 @@ export default function GoalIntakeDialog({ open, onClose, onCreated }) {
       setState(step.state);
       setText("");
       if (step.kind === "draft") {
+        // A new draft is a new proposal, so it gets its own confirm id.
+        confirmIdRef.current = crypto.randomUUID();
         setDraft(step.draft);
         setPhase(PHASE.DRAFT);
       } else {
@@ -62,15 +72,20 @@ export default function GoalIntakeDialog({ open, onClose, onCreated }) {
   };
 
   const create = async () => {
+    // A second tap does nothing: the first confirm owns the button until its reply lands.
+    if (confirmingRef.current) return;
+    confirmingRef.current = true;
     setPhase(PHASE.CREATING);
     try {
-      const res = await api.goalIntakeConfirm(draft);
+      const res = await api.goalIntakeConfirm(draft, confirmIdRef.current);
       toast.success("Goal created and planned");
       await onCreated?.(res);
       close();
     } catch (e) {
       toast.error(typeof e?.message === "string" ? e.message : "Couldn't create that goal. Try again.");
       setPhase(PHASE.DRAFT);
+    } finally {
+      confirmingRef.current = false;
     }
   };
 

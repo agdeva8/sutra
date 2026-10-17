@@ -4,6 +4,7 @@ import CenteredDialog from "./CenteredDialog";
 import TimeWheelInput from "./TimeWheelInput";
 import { api } from "../lib/api";
 import { localDateKey } from "../lib/utils";
+import { toTimetableRows } from "../lib/timetableRows";
 
 /**
  * AddToDayDialog — the ONE add flow for the calendar's scheduling/constraint
@@ -68,9 +69,10 @@ export default function AddToDayDialog({
   const valid = !invalidReason;
 
   // Existing blocks that overlap the new one (timed items only). Warns, never blocks: sometimes the
-  // overlap is intended, and the user can still add it.
+  // overlap is intended, and the user can still add it. The 4-kind rows are adapted at the door —
+  // the check below stays written against the old row shape either way.
   const overlaps = timed && valid
-    ? (state?.timetableBlocks || []).filter(
+    ? toTimetableRows(state?.blocks || state?.timetableBlocks || [], { from: startDate, to: startDate }).filter(
         (b) => b.block_date === startDate && String(b.start_time).slice(0, 5) < end && String(b.end_time).slice(0, 5) > start,
       )
     : [];

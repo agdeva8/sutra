@@ -18,6 +18,8 @@ import {
   searchForScreen,
 } from "../constants/screens";
 import { goalPlans } from "../lib/planNodes";
+import { istTodayKey, parseDateKey } from "../lib/istTime";
+import { toTimetableRows } from "../lib/timetableRows";
 import Header from "../components/Header";
 import MobileTabBar from "../components/MobileTabBar";
 import SoonPill from "../components/SoonPill";
@@ -106,6 +108,22 @@ const NAV_TARGETS = {
   motivation: { panel: "motivation" },
 };
 
+//: The calendar window behind the Plan route's context: the same two months back and six ahead the
+//: Timeline draws repeats over, so a weekly session appears on every date rather than only its own.
+const PLAN_BLOCKS_PAST_DAYS = 62;
+const PLAN_BLOCKS_AHEAD_DAYS = 186;
+
+/** An IST day range (Date objects) around today, for `toTimetableRows`. */
+function planBlocksRange() {
+  const base = parseDateKey(istTodayKey());
+  if (!base) return {};
+  const from = new Date(base);
+  from.setDate(from.getDate() - PLAN_BLOCKS_PAST_DAYS);
+  const to = new Date(base);
+  to.setDate(to.getDate() + PLAN_BLOCKS_AHEAD_DAYS);
+  return { from, to };
+}
+
 function buildPlanWorkspaceProps(state) {
   const goals = (state?.goals || []).filter((g) => g.status !== "dropped");
   const milestones = state?.milestones || [];
@@ -118,7 +136,9 @@ function buildPlanWorkspaceProps(state) {
     goals,
     milestones,
     blockers: (state?.blockers || []).map((b) => ({ id: b.id, title: b.title, start_date: b.start_date, end_date: b.end_date })),
-    blocks: (state?.timetableBlocks || []).map((b) => ({ id: b.id, label: b.label, block_date: b.block_date, start_time: b.start_time, end_time: b.end_time, kind: b.kind || "focus", goal_id: b.goal_id })),
+    // The chat context reads old-shape timetable rows, so the adapter at the door keeps that true
+    // whichever model the board sent. A board older than `blocks` falls back to its own rows.
+    blocks: toTimetableRows(state?.blocks || state?.timetableBlocks || [], planBlocksRange()),
   };
 }
 export default function Coach() {
@@ -184,6 +204,9 @@ export default function Coach() {
   // Add goal". Overview opens the Add Goal dialog on arrival and
   // calls `onAutoOpenAddGoalHandled` to clear it.
   const [pendingAddGoal, setPendingAddGoal] = useState(false);
+  // The goal the Edit-goal entry is refining. The Goal screen owns the Add-goal dialog, so this is
+  // only the signal; it clears once that screen has opened the dialog in edit mode.
+  const [editGoalId, setEditGoalId] = useState(null);
   // Bumped by the Goal screen when the Add-goal dialog closes, however it closed.
   const [, setAddGoalClosedAt] = useState(0);
   // The Add-goal dialog is the Goal screen's own state, so it is reported up rather than resolved here.
@@ -312,6 +335,14 @@ export default function Coach() {
   const openAction = (goal, type) => {
     if (type === "drop") {
       setDropConfirm({ id: goal?.id || null, title: goal?.title || "" });
+      return;
+    }
+    // Editing a goal re-plans everything it affects, so it runs the Add-goal conversation in edit mode
+    // (whole plan re-proposed, context kept). That dialog lives on the Goal screen, which owns it.
+    if (type === "edit") {
+      setActionModal(null);
+      setEditGoalId(goal?.id || null);
+      goPanel("state");
       return;
     }
     setActionModal({ goalId: goal?.id || null, goalTitle: goal?.title || "", type });
@@ -834,6 +865,8 @@ export default function Coach() {
                 registerCloser={pushCloser}
                 onAddGoalClosed={() => setAddGoalClosedAt((n) => n + 1)}
                 onAddGoalOpenChange={setAddGoalOpen}
+                editGoalId={editGoalId}
+                onEditGoalHandled={() => setEditGoalId(null)}
                 autoAnswer={autoAnswer}
                 grillMe={grillMe}
               />

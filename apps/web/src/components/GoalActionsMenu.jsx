@@ -42,7 +42,7 @@ import { api } from '../lib/api';
  * calls a goal mutation directly — which is why pause/drop can never fire
  * on a single tap.
  *
- *   edit        -> onAction(goal, 'edit')      // ActionPromptModal "Refine X"
+ *   edit        -> onAction(goal, 'edit')      // the Add-goal dialog in edit mode, on the Goal screen
  *   milestone   -> onAction(goal, 'add_step')  // ActionPromptModal "Add a step"
  *   pause       -> onAction(goal, 'pause')     // ActionPromptModal "Pause X?"
  *   drop        -> onAction(goal, 'drop')      // ActionPromptModal "Drop X?"

@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { Sun, Moon, Sunset, Coffee, Sparkles, Check, X } from "lucide-react";
 import { localDateKey } from "../lib/utils";
+import { isMilestoneDone } from "../lib/timetableRows";
 
 /**
  * WelcomeToast — a single, context-aware greeting that fires after the
@@ -51,7 +52,7 @@ export default function WelcomeToast({ user, state, signedIn, suppress = false }
       (g) => g.status === "active",
     );
     const dueToday = (state.milestones || []).filter(
-      (m) => m.target_date === today && (m.status || "open") !== "done",
+      (m) => m.target_date === today && !isMilestoneDone(m),
     );
     const name = user?.name?.split(" ")[0] || "";
     const personalised = name ? `${greeting.text}, ${name}` : greeting.text;

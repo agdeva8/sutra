@@ -180,6 +180,8 @@ export const api = {
     return req(`/chat/history${q ? `?${q}` : ""}`);
   },
   clearHistory: () => req("/chat/history", { method: "DELETE" }),
+  // The Add-goal conversation that produced a goal, so editing continues it (`{ref_id, messages}`).
+  goalThread: (goalId) => req(`/chat/goal-thread?goal_id=${encodeURIComponent(goalId)}`),
   audit: () => req("/audit"),
   confirm: (message_id, proposal_id) =>
     req("/tools/confirm", { method: "POST", body: JSON.stringify({ message_id, proposal_id }) }),
@@ -229,7 +231,10 @@ export const api = {
       title,
     ),
   goalIntake: (message, state) => req("/goals/intake", { method: "POST", body: JSON.stringify({ message, state }), timeout: 90000 }),
-  goalIntakeConfirm: (draft) => req("/goals/intake/confirm", { method: "POST", body: JSON.stringify({ draft }), timeout: 180000 }),
+  // `confirmId` is optional and generated once per proposal: a retried tap sends the same id, and the
+  // server returns the goal it already created instead of making a second one.
+  goalIntakeConfirm: (draft, confirmId) =>
+    req("/goals/intake/confirm", { method: "POST", body: JSON.stringify({ draft, confirm_id: confirmId }), timeout: 180000 }),
   // Dropping a goal, direct — no chat. `goalDropImpact` prices the drop so the
   // confirm dialog can name what goes and what comes back; the server computes
   // both from the same function the cascade uses, so the preview cannot disagree
@@ -266,7 +271,6 @@ export const api = {
     create: (b) => req("/blocks", { method: "POST", body: JSON.stringify(b) }).then(replanAfter),
     update: (id, b) => req(`/blocks/${id}`, { method: "PATCH", body: JSON.stringify(b) }).then(replanAfter),
     delete: (id) => req(`/blocks/${id}`, { method: "DELETE" }).then(replanAfter),
-    undo: (id) => req(`/blocks/${id}/undo`, { method: "POST" }).then(boardChanged),
   },
   stateVersion: () => req("/state/version"),
   // Plan items (multi-horizon execution lattice) — tick a task done/open, or

@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { localDateKey } from "../lib/utils";
+import { isMilestoneDone } from "../lib/timetableRows";
 import {
   CheckCircle2,
   Circle,
@@ -36,22 +37,22 @@ export default function TrackerCard({ state, onOpenChat, onOpenToday }) {
     const todayCommits = (state?.milestones || []).filter(
       (m) =>
         m.target_date === todayIso ||
-        (m.target_date && m.target_date < todayIso && (m.status || "open") !== "done"),
+        (m.target_date && m.target_date < todayIso && !isMilestoneDone(m)),
     )
     const overdue = todayCommits.filter(
-      (m) => m.target_date && m.target_date < todayIso && (m.status || "open") !== "done",
+      (m) => m.target_date && m.target_date < todayIso && !isMilestoneDone(m),
     )
     const upcomingToday = todayCommits.filter(
-      (m) => m.target_date === todayIso && (m.status || "open") !== "done",
+      (m) => m.target_date === todayIso && !isMilestoneDone(m),
     )
     const doneToday = (state?.milestones || []).filter(
-      (m) => (m.status || "") === "done" && m.target_date === todayIso,
+      (m) => isMilestoneDone(m) && m.target_date === todayIso,
     )
-    const allOpen = (state?.milestones || []).filter((m) => (m.status || "open") !== "done")
+    const allOpen = (state?.milestones || []).filter((m) => !isMilestoneDone(m))
     const goalsActive = (state?.goals || []).filter((g) => g.status === "active")
     const goalsPaused = (state?.goals || []).filter((g) => g.status === "paused")
     const milestonesThisWeek = (state?.milestones || []).filter((m) => {
-      if (m.status === "done") return false
+      if (isMilestoneDone(m)) return false
       const d = m.target_date
       if (!d) return false
       const target = new Date(d + "T00:00:00")

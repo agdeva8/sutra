@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Target, Flag, Check, Circle, ChevronRight, ChevronDown, ChevronLeft, Clock, Layers } from 'lucide-react';
 import { paletteFor, shadeFor, PLAN_INK } from './planColors';
 import NeedHelpActions from './NeedHelpActions';
+import { isMilestoneDone } from '../lib/timetableRows';
 
 /**
  * PlanHierarchy - the multi-horizon plan in the canonical vocabulary.
@@ -101,7 +102,7 @@ export function MilestoneOverlay({ milestones = [], defaultOpen, onItemClick }) 
     try { return window.matchMedia('(min-width: 640px)').matches; } catch (e) { return true; }
   });
   if (milestones.length === 0) return null;
-  const doneCount = milestones.filter((m) => m.status === 'done').length;
+  const doneCount = milestones.filter((m) => isMilestoneDone(m)).length;
   return (
     <div data-testid='milestone-overlay' className='rounded-lg border border-[var(--border-accent)] bg-[var(--bg-secondary)]'>
       <button type='button' aria-expanded={open} onClick={() => setOpen((v) => !v)} data-testid='milestone-toggle'
@@ -117,7 +118,7 @@ export function MilestoneOverlay({ milestones = [], defaultOpen, onItemClick }) 
           {milestones.map((m) => (
             <li key={m.id}>
               <button type='button' data-testid={'milestone-chip-' + m.id} onClick={() => onItemClick && onItemClick(m)}
-                className={cx('inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12px]', m.status === 'done' ? 'border-[var(--border)] text-[var(--text-muted)] line-through' : 'border-[var(--accent)] text-[var(--text-primary)] hover:brightness-105')}>
+                className={cx('inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12px]', isMilestoneDone(m) ? 'border-[var(--border)] text-[var(--text-muted)] line-through' : 'border-[var(--accent)] text-[var(--text-primary)] hover:brightness-105')}>
                 <Flag className='h-3 w-3 shrink-0 text-[var(--accent)]' aria-hidden='true' />
                 <span className='truncate'>{m.title}</span>
                 <span className='shrink-0 font-mono text-[12px] text-[var(--text-muted)]'>{fmt(m.target_date)}</span>

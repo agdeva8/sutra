@@ -26,6 +26,17 @@ export function itemHours(item) {
   return m ? Number(m[1]) : 0;
 }
 
+/**
+ * The outcomes a week or month plan row carries, one per line in its `description` column. Blank
+ * lines are noise the model sometimes leaves, so they are dropped rather than drawn as gaps.
+ */
+export function planOutcomes(item) {
+  return String(item?.description || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
 /** Whether `item`'s dates contain the day key. A row missing an end date covers its start day only. */
 const covers = (item, key) => {
   const start = dayKey(item?.start_date);

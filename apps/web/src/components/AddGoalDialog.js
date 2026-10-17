@@ -141,6 +141,15 @@ const CHANGE_REQUEST =
 /** A change set that only removes cards needs no re-plan — just drop them. */
 const REMOVE_ONLY_REQUEST = "Remove these and keep the rest of the plan as it is.";
 
+/**
+ * The first turn of an edit. The server is told this is an edit (`edit_goal`), so it revises the goal
+ * rather than proposing a second one; the message itself asks for the whole open plan again, because a
+ * refinement that changes one milestone usually moves the ones after it.
+ */
+const EDIT_OPEN_MESSAGE =
+  "I want to refine this goal. Re-propose the whole plan — the goal and every open milestone — starting from the current plan, and keep the milestones already done fixed.";
+
+
 /** The one message that asks the coach to take in sources attached after a plan exists. */
 const sourceUpdateMessage = (names) => {
   const quoted = names.map((name) => `"${name}"`).join(", ");
@@ -151,6 +160,11 @@ const sourceUpdateMessage = (names) => {
 export default function AddGoalDialog({
   open,
   onClose,
+  // "add" writes a new goal; "edit" revises `goal` in its own conversation (see the open effect).
+  mode = "add",
+  // The goal being edited, with its milestones (`{id, title, target_date, weekly_hours, milestones}`).
+  // Only read in edit mode.
+  goal = null,
   onStepBack = null,
   autoAnswer: initialAutoAnswer = true,
   grillMe: initialGrillMe = false,
@@ -168,6 +182,10 @@ export default function AddGoalDialog({
   const [pendingClarifications, setPendingClarifications] = useState(null);
   const [renegotiation, setRenegotiation] = useState(null);
   const [busyChoice, setBusyChoice] = useState(null);
+  // True from the tap until the confirm's reply lands. `sending` disables the button on the next
+  // render only, so a second tap in the same frame would still reach `confirm`; this ref closes that
+  // gap and makes the second tap a no-op.
+  const confirmingRef = useRef(false);
   const [showDraftPrompt, setShowDraftPrompt] = useState(false);
   const streamIdRef = useRef(0);
   // Operation-scoped context (spec §10) — the current conversation
@@ -175,6 +193,11 @@ export default function AddGoalDialog({
   // confirm (server pre-mints the next bucket) or when the server's
   // `done` event reports a defensive redirect off a closed bucket.
   const refIdRef = useRef(`new_goal_${crypto.randomUUID()}`);
+
+  const isEdit = mode === "edit" && !!goal?.id;
+  // The edit's opening turn is sent once per dialog open, after its thread has loaded — not on every
+  // re-render of the open effect (React StrictMode mounts effects twice).
+  const editSentRef = useRef(false);
 
   // UI state for the 2-step flow.
   const [activeCategory, setActiveCategory] = useState(null);
@@ -285,6 +308,43 @@ export default function AddGoalDialog({
     setRejectingProposal(null);
     setAutoAnswer(initialAutoAnswer);
     setGrillMe(initialGrillMe);
+    setShowDraftPrompt(false);
+    editSentRef.current = false;
+
+    if (isEdit) {
+      // Editing continues the goal's own Add-goal conversation, so the coach still holds the exchange
+      // that produced the plan being refined. It starts from the current goal and its milestones, not
+      // from a draft — the draft bucket belongs to a goal that has not been created yet.
+      setActiveCategory(goal?.life_area || null);
+      setStep("chat");
+      setHeldFirst(null);
+      setPlanConfirmed(false);
+      setFinalStatus("");
+      reusedDraftRef.current = false;
+      setMessages([]);
+      // `goal_thread` answers the conversation's real bucket ref, which is what keeps this edit in the
+      // same thread. With no thread it answers the goal id, which is the server's deterministic bucket.
+      refIdRef.current = goal.id;
+      api
+        .goalThread(goal.id)
+        .then((thread) => {
+          if (cancelled) return;
+          if (thread?.ref_id) refIdRef.current = thread.ref_id;
+          setMessages(thread?.messages || []);
+          if (!editSentRef.current) {
+            editSentRef.current = true;
+            sendRef.current?.(EDIT_OPEN_MESSAGE);
+          }
+        })
+        .catch(() => {
+          if (cancelled) return;
+          if (!editSentRef.current) {
+            editSentRef.current = true;
+            sendRef.current?.(EDIT_OPEN_MESSAGE);
+          }
+        });
+      return () => { cancelled = true; };
+    }
 
     const saved = readDraftBucket("add_goal");
     if (saved) {
@@ -333,7 +393,9 @@ export default function AddGoalDialog({
       writeDraftBucket("add_goal", refIdRef.current);
     }
     return () => { cancelled = true; };
-  }, [open, initialAutoAnswer, initialGrillMe]);
+    // `goal` is a fresh object on every parent render; its id is the identity that matters here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initialAutoAnswer, initialGrillMe, isEdit, goal?.id]);
 
   const applyPlan = useCallback((result, { streamId }) => {
     const finalize = (patch) =>
@@ -393,7 +455,9 @@ export default function AddGoalDialog({
     ]);
 
     try {
-      const handled = await tryPlan(trimmed, streamId);
+      // An edit always goes through the coach: the typed planner pipeline has no edit mode, and would
+      // propose a new goal from the same message. `edit_goal` tells the coach to revise this one.
+      const handled = isEdit ? false : await tryPlan(trimmed, streamId);
       if (handled) return;
       const resp = await fetch(`${API}/chat/stream`, {
         method: "POST",
@@ -409,6 +473,9 @@ export default function AddGoalDialog({
           scope: "goal",
           refId: refIdRef.current,
           kind: "add_goal",
+          // Prompt mode, not a bucket: the conversation stays `add_goal` (so it is the same thread),
+          // but the coach is told to revise this goal instead of proposing another.
+          edit_goal: isEdit || undefined,
           // Current-conversation attachments — server injects the stored
           // text excerpts into the prompt.
           sourceIds: sources.map((s) => s.id),
@@ -548,8 +615,9 @@ export default function AddGoalDialog({
   const handleSend = () => {
     const msg = buildMessage();
     if (!msg) return;
-    // The first message opens with "anything to attach?" so sources can shape the questions.
-    if (messages.length === 0 && sources.length === 0 && heldFirst === null) {
+    // The first message opens with "anything to attach?" so sources can shape the questions. An edit
+    // is about the plan that already exists, so it goes straight to the coach.
+    if (!isEdit && messages.length === 0 && sources.length === 0 && heldFirst === null) {
       setHeldFirst(msg);
       setInput("");
       return;
@@ -591,7 +659,8 @@ export default function AddGoalDialog({
   // handler always calls this — it doesn't need to know the current
   // step.
   const handleStepBack = () => {
-    if (step === "chat" && activeCategory) {
+    // An edit has no tiles step to retreat to: closing is the only layer behind the chat.
+    if (!isEdit && step === "chat" && activeCategory) {
       goBackToTiles();
     } else {
       onClose?.();
@@ -669,6 +738,9 @@ export default function AddGoalDialog({
   };
 
   const confirm = async (messageId, proposalId) => {
+    // One confirm at a time: the control is disabled from the tap until the reply arrives, and a
+    // second tap (same frame, or from the card while the pinned button is in flight) does nothing.
+    if (confirmingRef.current) return;
     const plan = messages.find((message) => message.id === messageId)?.proposals || [];
     const pending = plan.filter(
       (proposal) =>
@@ -677,6 +749,7 @@ export default function AddGoalDialog({
         proposal.action !== "navigate",
     );
     if (pending.length === 0) return;
+    confirmingRef.current = true;
 
     let freshState = null;
     const confirmedIds = [];
@@ -711,22 +784,27 @@ export default function AddGoalDialog({
       );
 
       const createdProposal = plan.find((proposal) => proposal.action === "create_goal");
-      const createdGoalTitle = createdProposal?.args?.title || "your new goal";
-      // By title first; if the server stored a different title, the newest active goal is the one just made.
-      const activeGoals = (freshState?.goals || []).filter((goal) => goal.status === "active");
-      const createdGoalId = (activeGoals.filter((goal) => goal.title === createdGoalTitle).at(-1) || activeGoals.at(-1))?.id;
-      // The goal exists now: show it on the board at once. Its card then says what the coach is doing (below)
-      // instead of the goal appearing only when everything is finished.
+      const createdGoalTitle = createdProposal?.args?.title || goal?.title || "your new goal";
+      let createdGoalId = goal?.id;
+      if (!isEdit) {
+        // By title first; if the server stored a different title, the newest active goal is the one just made.
+        const activeGoals = (freshState?.goals || []).filter((item) => item.status === "active");
+        createdGoalId = (activeGoals.filter((item) => item.title === createdGoalTitle).at(-1) || activeGoals.at(-1))?.id;
+      }
+      // The goal exists (or, for an edit, has changed): show it on the board at once. Its card then says
+      // what the coach is doing (below) instead of the goal appearing only when everything is finished.
       onGoalConfirmed?.(freshState);
       // Build the schedule in the background: it takes minutes, and the goal card shows the coach working on
       // it, so the dialog does not hold the user. The board is re-read when it ends (lib/goalPlanning).
-      if (createdGoalId) buildSchedule({ id: createdGoalId, title: createdGoalTitle });
+      // An edit is the exception: `/tools/confirm` re-plans the goal's sessions inside the confirm request,
+      // behind the build lease, so starting a second build here would be two writers over the same rows.
+      if (!isEdit && createdGoalId) buildSchedule({ id: createdGoalId, title: createdGoalTitle });
       setMessages((prev) => [
         ...prev,
         {
           id: `success_${Date.now()}`,
           role: "success",
-          content: `Created "${createdGoalTitle}" and confirmed ${confirmedIds.length} plan item${confirmedIds.length === 1 ? "" : "s"}`,
+          content: `${isEdit ? "Updated" : "Created"} "${createdGoalTitle}" and confirmed ${confirmedIds.length} plan item${confirmedIds.length === 1 ? "" : "s"}`,
           goalId: createdGoalId,
           goalTitle: createdGoalTitle,
           createdAt: new Date().toISOString(),
@@ -742,6 +820,7 @@ export default function AddGoalDialog({
     } finally {
       setSending(false);
       setBusyProposal(null);
+      confirmingRef.current = false;
     }
   };
 
@@ -971,7 +1050,9 @@ export default function AddGoalDialog({
         return {
           messageId: m.id,
           proposalId: null,
-          label: `Confirm remaining plan items (${pending.length})`,
+          label: isEdit
+            ? `Confirm the updated plan (${pending.length})`
+            : `Confirm remaining plan items (${pending.length})`,
           variant: "confirm_all",
         };
       }
@@ -1007,13 +1088,18 @@ export default function AddGoalDialog({
     }
     if (pinnedAction.variant === "redefine") {
       send(
-        "Scrap that plan. Re-propose this goal from scratch — one goal, then 3-4 milestones with target dates (smallest first step first). Same category, same voice.",
+        isEdit
+          ? "That plan needs reworking. Re-propose the whole plan for this goal — the goal and every open milestone, with target dates (smallest first step first). Keep the milestones already done fixed."
+          : "Scrap that plan. Re-propose this goal from scratch — one goal, then 3-4 milestones with target dates (smallest first step first). Same category, same voice.",
       );
       return;
     }
-    // Recreate — re-ask the coach to bundle milestones.
+    // Recreate — re-ask the coach to bundle milestones. An edit must include them: the batch is only
+    // treated as a milestone replacement when the update arrives with the re-proposed set.
     send(
-      "Your last proposal was a goal with no milestones. Re-propose the SAME goal but bundle at least 3 milestones (with target dates; smallest first step first). Same voice, same why, same first action.",
+      isEdit
+        ? "Your last proposal had no milestones. Re-propose the whole plan for this goal, with at least 3 milestones (target dates; smallest first step first). Keep the milestones already done fixed."
+        : "Your last proposal was a goal with no milestones. Re-propose the SAME goal but bundle at least 3 milestones (with target dates; smallest first step first). Same voice, same why, same first action.",
     );
   };
 
@@ -1038,9 +1124,17 @@ export default function AddGoalDialog({
       open={open}
       onClose={onClose}
       icon={Sparkles}
-      title={step === "chat" && activeCat ? `${activeCat.label} goal` : "Add a new goal"}
+      title={
+        isEdit
+          ? "Edit goal"
+          : step === "chat" && activeCat
+          ? `${activeCat.label} goal`
+          : "Add a new goal"
+      }
       subtitle={
-        profileNeeded
+        isEdit
+          ? `Refine "${goal?.title || "this goal"}" — say what should change and the coach re-proposes the whole plan.`
+          : profileNeeded
           ? "A few quick things about your week, then your goal."
           : step === "tiles"
           ? "Pick what area this goal is in. You can refine the details once we start talking."
@@ -1092,7 +1186,7 @@ export default function AddGoalDialog({
         </div>
       )}
 
-      {profileNeeded ? (
+      {profileNeeded && !isEdit ? (
         <AboutYouCard onSave={saveProfile} onSkip={saveProfile} />
       ) : step === "tiles" ? (
         <div
@@ -1156,7 +1250,7 @@ export default function AddGoalDialog({
         </div>
       ) : (
         <>
-          {activeCategory && (
+          {!isEdit && activeCategory && (
           <div className="flex items-center justify-between mb-2">
             <button
               type="button"
@@ -1175,6 +1269,47 @@ export default function AddGoalDialog({
               showSources={false} hides the attach / link buttons —
               sources don't apply to a goal-add chat, and the no-op
               stubs were surfacing as a confusing dead UI. */}
+          {/* The plan the edit starts from. Done milestones are shown but are not re-proposed: they
+              record work already achieved, and the replacement keeps them untouched. */}
+          {isEdit && (
+            <div
+              data-testid="edit-goal-plan"
+              className="mb-3 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2.5"
+            >
+              <p className="text-[12px] font-semibold text-[var(--text-primary)]">
+                {goal?.title}
+                {goal?.target_date && <span className="font-normal text-[var(--text-muted)]"> · by {goal.target_date}</span>}
+                {goal?.weekly_hours ? (
+                  <span className="font-normal text-[var(--text-muted)]"> · {goal.weekly_hours}h/week</span>
+                ) : null}
+              </p>
+              {(goal?.milestones || []).length > 0 && (
+                <ul className="mt-1.5 space-y-0.5">
+                  {(goal?.milestones || []).map((m) => {
+                    const done = m.status === "done";
+                    return (
+                      <li
+                        key={m.id}
+                        className="flex items-center gap-1.5 text-[12px] text-[var(--text-secondary)]"
+                      >
+                        {done ? (
+                          <Check className="w-3 h-3 shrink-0 text-[var(--success)]" aria-hidden="true" />
+                        ) : (
+                          <span className="w-3 shrink-0" aria-hidden="true" />
+                        )}
+                        <span className={done ? "line-through text-[var(--text-muted)]" : ""}>{m.title}</span>
+                        {m.target_date && (
+                          <span className="ml-auto font-mono text-[10px] text-[var(--text-muted)]">{m.target_date}</span>
+                        )}
+                        {done && <span className="text-[10px] uppercase tracking-wide text-[var(--success)]">done</span>}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          )}
+
           {heldFirst !== null && (
             <div className="mb-3">
               <p className="mb-3 rounded-lg bg-[var(--bg-tertiary)] px-3 py-2 text-sm text-[var(--text-primary)]">{heldFirst}</p>
@@ -1234,7 +1369,13 @@ export default function AddGoalDialog({
               readOnly={planConfirmed || !!finalStatus}
               readOnlyNote={finalStatus}
               focusOnMount={true}
-              goalContext={activeCategory ? `Adding a "${activeCategory}" goal` : "Adding a new goal"}
+              goalContext={
+                isEdit
+                  ? `Editing "${goal?.title || "this goal"}"`
+                  : activeCategory
+                  ? `Adding a "${activeCategory}" goal`
+                  : "Adding a new goal"
+              }
               // AddGoalDialog uses its own pinned Confirm button; suppress
               // the per-item Confirm so there aren't two confirm paths.
               showConfirm={false}
