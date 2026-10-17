@@ -100,7 +100,7 @@ export function advanceTour(from) {
   write({ step: from + 1, done: false });
 }
 
-/** Jump to a step by index — a nav step's Skip uses it to pass over the visit. */
+/** Jump to a step by index — a nav step's Skip passes over a visit with it, and so does a dot. */
 export function goToStep(index) {
   if (index > LAST_STEP) {
     endTour();
@@ -119,6 +119,41 @@ export function nextNavStep(from) {
     if (TOUR_STEPS[i].kind === "nav") return i;
   }
   return -1;
+}
+
+/** The nearest navigation step before `index`, or -1 when there is none. */
+function navStepBefore(index) {
+  for (let i = index - 1; i >= 0; i -= 1) {
+    if (TOUR_STEPS[i].kind === "nav") return i;
+  }
+  return -1;
+}
+
+/**
+ * Whether `panelView` — the screen the app is showing — is the one this step arrives at.
+ * A nav step names either one screen (`panel`) or any of several (`panels`).
+ */
+export function arrivesAt(def, panelView) {
+  return Boolean(
+    (def.panel && panelView === def.panel) || (def.panels && def.panels.includes(panelView))
+  );
+}
+
+/**
+ * The step a progress dot should land on.
+ *
+ * A nav step is shown as it is: it is the same step wherever the user is standing. A screen
+ * step only means anything on the screen it points at, so jumping to one from anywhere else
+ * lands on the navigation step that opens that screen instead — the user taps their way to
+ * the screen step from there, exactly as they would on the way through the tour. Jumping to
+ * one whose screen is already open lands on it directly.
+ */
+export function stepOnJump(index, panelView) {
+  const def = TOUR_STEPS[index];
+  if (!def || def.kind !== "screen") return index;
+  const nav = navStepBefore(index);
+  if (nav < 0) return index;
+  return arrivesAt(TOUR_STEPS[nav], panelView) ? index : nav;
 }
 
 /**

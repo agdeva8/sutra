@@ -138,6 +138,20 @@ describe("the first-run tour", () => {
       expect(tour.readTourState()).toEqual({ step: tour.LAST_STEP, done: true });
     });
 
+    test("arrivesAt reads one screen, or any of several", () => {
+      const { arrivesAt, TOUR_STEPS, MORE_PANELS } = load();
+      const stepFor = (key) => TOUR_STEPS.find((step) => step.key === key);
+
+      expect(arrivesAt(stepFor("goal_nav"), "state")).toBe(true);
+      expect(arrivesAt(stepFor("goal_nav"), "today")).toBe(false);
+      expect(arrivesAt(stepFor("goal_nav"), "")).toBe(false);
+
+      for (const panel of MORE_PANELS) {
+        expect(arrivesAt(stepFor("more_nav"), panel)).toBe(true);
+      }
+      expect(arrivesAt(stepFor("more_nav"), "state")).toBe(false);
+    });
+
     test("nextNavStep passes over the screen step that follows a nav step", () => {
       const tour = load();
       const indexOf = (key) => tour.TOUR_STEPS.findIndex((step) => step.key === key);
@@ -150,6 +164,52 @@ describe("the first-run tour", () => {
       expect(tour.nextNavStep(indexOf("scratch_nav"))).toBe(indexOf("more_nav"));
       // There is no nav step after the last one.
       expect(tour.nextNavStep(indexOf("more_nav"))).toBe(-1);
+    });
+  });
+
+  describe("jumping from a progress dot", () => {
+    /** The step indices a dot can reach, by key. */
+    const jump = (tour, key, panelView) =>
+      tour.stepOnJump(
+        tour.TOUR_STEPS.findIndex((step) => step.key === key),
+        panelView
+      );
+    const indexOf = (tour, key) => tour.TOUR_STEPS.findIndex((step) => step.key === key);
+
+    test("a step that is not a screen step is shown wherever the user is standing", () => {
+      const tour = load();
+      expect(jump(tour, "signin", "state")).toBe(indexOf(tour, "signin"));
+      expect(jump(tour, "goal_nav", "today")).toBe(indexOf(tour, "goal_nav"));
+      expect(jump(tour, "scratch_dialog", "state")).toBe(indexOf(tour, "scratch_dialog"));
+      expect(jump(tour, "more_nav", "timeline")).toBe(indexOf(tour, "more_nav"));
+    });
+
+    test("a screen step whose screen is open is shown directly", () => {
+      const tour = load();
+      expect(jump(tour, "goal_screen", "state")).toBe(indexOf(tour, "goal_screen"));
+      expect(jump(tour, "timeline_screen", "timeline")).toBe(indexOf(tour, "timeline_screen"));
+      expect(jump(tour, "today_screen", "today")).toBe(indexOf(tour, "today_screen"));
+      expect(jump(tour, "scratch_screen", "scratch")).toBe(indexOf(tour, "scratch_screen"));
+    });
+
+    test("a screen step whose screen is not open lands on the nav step that opens it", () => {
+      const tour = load();
+      expect(jump(tour, "goal_screen", "timeline")).toBe(indexOf(tour, "goal_nav"));
+      expect(jump(tour, "timeline_screen", "state")).toBe(indexOf(tour, "timeline_nav"));
+      expect(jump(tour, "today_screen", "")).toBe(indexOf(tour, "today_nav"));
+      // Scratch's composer is reached through its nav step too, dialog and all.
+      expect(jump(tour, "scratch_screen", "today")).toBe(indexOf(tour, "scratch_nav"));
+    });
+
+    test("a jump lands on a step the tour can show, never past the end", () => {
+      const tour = load();
+      for (let i = 0; i < tour.TOUR_STEPS.length; i += 1) {
+        for (const panel of ["", "state", "timeline", "today", "scratch", "todos"]) {
+          const landed = tour.stepOnJump(i, panel);
+          expect(landed).toBeGreaterThanOrEqual(0);
+          expect(landed).toBeLessThanOrEqual(tour.LAST_STEP);
+        }
+      }
     });
   });
 

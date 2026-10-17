@@ -6,6 +6,7 @@ import { hasOpenedScratch } from "../lib/scratchIntro";
 import {
   TOUR_STEPS,
   advanceTour,
+  arrivesAt,
   endTour,
   goToStep,
   nextNavStep,
@@ -13,6 +14,7 @@ import {
   readTourState,
   restartTour,
   shownStep,
+  stepOnJump,
 } from "../lib/firstRunTour";
 
 /**
@@ -44,6 +46,8 @@ const CARD_ESTIMATE_H_PX = 200;
 const ARROW_SPACE_PX = 36;
 /** The arrow glyph's box. */
 const ARROW_ICON_PX = 24;
+/** The label every step's way past itself carries, so no two steps word it differently. */
+const SKIP_STEP = "Skip this step";
 
 /**
  * What each step points at, wherever this width draws it. A nav step lists both the
@@ -67,6 +71,10 @@ const TARGETS = {
  * The card's words. `emphasis` names the one word the card bolds — usually the button
  * the user is about to tap. Nav and screen steps carry a caption only; the dialog and
  * the composer carry a title too.
+ *
+ * Every step but the sign-in offer carries `secondary: SKIP_STEP`, so a step the user
+ * does not want to act on is never a dead end. The sign-in offer is the exception
+ * because it already has one: "Continue as guest" declines it and moves on.
  */
 const COPY = {
   signin: {
@@ -75,28 +83,41 @@ const COPY = {
     primary: "Sign in",
     secondary: "Continue as guest",
   },
-  goal_nav: { body: "Tap Goal to set what you're working towards.", emphasis: "Goal", secondary: "Skip" },
-  goal_screen: { body: "Add a goal, or skip and come back later." },
-  timeline_nav: { body: "Here's Timeline: your plan laid out in time.", emphasis: "Timeline", secondary: "Skip" },
-  timeline_screen: { body: "Sync your plan to Google, Apple or Outlook calendar, on your phone too." },
-  today_nav: { body: "Tap Today for what's next.", emphasis: "Today", secondary: "Skip" },
-  today_screen: { body: "Today, this week, this month." },
-  scratch_nav: { body: "Tap Scratch: the fastest way to get anything in.", emphasis: "Scratch", secondary: "Skip" },
+  goal_nav: { body: "Tap Goal to set what you're working towards.", emphasis: "Goal", secondary: SKIP_STEP },
+  goal_screen: { body: "Add a goal, or skip and come back later.", secondary: SKIP_STEP },
+  timeline_nav: {
+    body: "Here's Timeline: your plan laid out in time.",
+    emphasis: "Timeline",
+    secondary: SKIP_STEP,
+  },
+  timeline_screen: {
+    body: "Sync your plan to Google, Apple or Outlook calendar, on your phone too.",
+    secondary: SKIP_STEP,
+  },
+  today_nav: { body: "Tap Today for what's next.", emphasis: "Today", secondary: SKIP_STEP },
+  today_screen: { body: "Today, this week, this month.", secondary: SKIP_STEP },
+  scratch_nav: {
+    body: "Tap Scratch: the fastest way to get anything in.",
+    emphasis: "Scratch",
+    secondary: SKIP_STEP,
+  },
   scratch_dialog: {
     title: "Meet Scratch",
     body: "A thought, a photo, a voice note. We work out what it is and file it.",
     primary: "Got it",
+    secondary: SKIP_STEP,
   },
   scratch_screen: {
     title: "Your Scratch pad",
     body: "Type or speak here. We work out what it is and file it.",
     primary: "Next",
+    secondary: SKIP_STEP,
   },
   more_nav: {
     body: "To-dos and everything else live under More.",
     emphasis: "More",
     primary: "Done",
-    secondary: "Skip",
+    secondary: SKIP_STEP,
   },
 };
 
@@ -118,9 +139,20 @@ const clamp = (n, lo, hi) => Math.min(Math.max(n, lo), hi);
 
 /**
  * The caption card. Its own way out always, one obvious action when the step has one,
- * and the progress dots underneath.
+ * and the progress dots underneath — each of which jumps straight to its step.
  */
-function TourCard({ copy, children, onPrimary, onSecondary, onSkipTour, index, total, maxHeight, cardRef }) {
+function TourCard({
+  copy,
+  children,
+  onPrimary,
+  onSecondary,
+  onSkipTour,
+  onGoTo,
+  index,
+  total,
+  maxHeight,
+  cardRef,
+}) {
   return (
     <div
       ref={cardRef}
@@ -171,16 +203,29 @@ function TourCard({ copy, children, onPrimary, onSecondary, onSkipTour, index, t
         </button>
       )}
       <p className="sr-only">{`Step ${index + 1} of ${total}`}</p>
-      <div aria-hidden="true" className="mt-3 flex justify-center gap-1.5">
+      {/* Each dot is a button onto its own step. The button is the tap area and the dot is
+          the mark inside it: 44px tall, and as wide as its share of the card, because one
+          full 44px target per step is wider than the card the dots sit in. */}
+      <div className="mt-3 flex">
         {Array.from({ length: total }, (_, i) => (
-          <span
+          <button
             key={i}
-            className={
-              i === index
-                ? "h-1.5 w-5 rounded-full bg-[var(--accent)]"
-                : "h-1.5 w-1.5 rounded-full bg-[var(--border-accent)]"
-            }
-          />
+            type="button"
+            onClick={() => onGoTo(i)}
+            aria-label={`Go to step ${i + 1} of ${total}`}
+            aria-current={i === index ? "step" : undefined}
+            data-testid="first-run-tour-dot"
+            className="flex h-11 flex-1 items-center justify-center rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+          >
+            <span
+              aria-hidden="true"
+              className={
+                i === index
+                  ? "h-1.5 w-5 rounded-full bg-[var(--accent)]"
+                  : "h-1.5 w-1.5 rounded-full bg-[var(--border-accent)]"
+              }
+            />
+          </button>
         ))}
       </div>
     </div>
@@ -245,9 +290,7 @@ export default function FirstRunTour({
   const passedNavRef = useRef(-1);
   useEffect(() => {
     if (!running || def?.kind !== "nav") return;
-    const reached =
-      (def.panel && panelView === def.panel) || (def.panels && def.panels.includes(panelView));
-    if (!reached || passedNavRef.current === step) return;
+    if (!arrivesAt(def, panelView) || passedNavRef.current === step) return;
     passedNavRef.current = step;
     advance();
   }, [running, def, panelView, step, advance]);
@@ -342,8 +385,9 @@ export default function FirstRunTour({
     advance();
   };
 
-  // Nav steps: Skip passes over this visit and the screen step after it, landing on the
-  // next navigation button. Screen steps have Next instead; the tour may still end here.
+  // Skip this step: on a nav step it passes over this visit and the screen step after it,
+  // landing on the next navigation button without the user going anywhere; on every other
+  // step it simply moves on one. Screen steps keep Next as their primary button.
   const onSecondary =
     def.kind === "nav"
       ? () => {
@@ -353,13 +397,22 @@ export default function FirstRunTour({
         }
       : advance;
 
+  // A progress dot jumps straight to its step. `passedNavRef` is cleared first: coming back
+  // to a nav step the user has already been through has to wait for its own tap again, or
+  // the step would pass straight over the screen the user just asked to see.
+  const onGoTo = (dot) => {
+    passedNavRef.current = -1;
+    goToStep(stepOnJump(dot + firstIndex, panelView));
+  };
+
   const card = (
     <TourCard
       copy={copy}
       cardRef={cardRef}
       onPrimary={onPrimary}
       onSecondary={copy.secondary ? onSecondary : undefined}
-      onSkipTour={def.kind === "dialog" ? undefined : endTour}
+      onSkipTour={endTour}
+      onGoTo={onGoTo}
       index={dotIndex}
       total={dotTotal}
       maxHeight={maxHeight}
@@ -376,9 +429,11 @@ export default function FirstRunTour({
       aria-modal="false"
       aria-label="How Sutra works"
       data-testid="first-run-tour"
-      className="fixed inset-0 z-[55]"
+      className="pointer-events-none fixed inset-0 z-[55]"
     >
-      {/* Four panels, no overlay in the hole: the highlighted button stays tappable. */}
+      {/* Four panels, no overlay in the hole, and nothing else here that takes a pointer: the
+          root is `pointer-events-none` precisely so the hole is a hole, and the panels and the
+          card — the only things marked `pointer-events-auto` — are what still swallow taps. */}
       <SpotlightVeil ring={ring} />
       {ring && <SpotlightRing ring={ring} />}
 

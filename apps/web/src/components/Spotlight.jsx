@@ -23,8 +23,14 @@ const LOOK_FOR_MS = 1000;
 /** How often to look again while it is missing — a panel may still be fetching its chunk. */
 const RELOOK_MS = 150;
 
-/** The veil's look, named once: a dark dim plus a light blur. */
-const VEIL_PANEL_CLASS = "absolute bg-black/40 backdrop-blur-[2px]";
+/**
+ * The veil's look, named once: a dark dim plus a light blur.
+ *
+ * `pointer-events-auto` is load-bearing, not decoration: a caller lays the veil out under a
+ * `pointer-events-none` root so that the hole shows the real control through it, and these
+ * panels are then the only thing left to stop taps reaching the app behind.
+ */
+const VEIL_PANEL_CLASS = "pointer-events-auto absolute bg-black/40 backdrop-blur-[2px]";
 
 /**
  * The visible box of the first selector that has one, or null. A hidden element —
