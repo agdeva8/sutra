@@ -18,6 +18,7 @@ path — so the sanitised form is what is stored, and the original is kept in th
 """
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from dataclasses import dataclass
@@ -26,6 +27,8 @@ from pathlib import Path
 import httpx
 
 from .config import settings
+
+logger = logging.getLogger(__name__)
 
 #: Everything outside this set becomes `_`. Deliberately conservative: the set
 #: of characters that are safe in a URL path segment *and* on every filesystem
@@ -119,16 +122,75 @@ def _use_local_disk() -> bool:
     return not settings.is_serverless
 
 
+#: The Storage API's two areas, relative to the project URL. Named because both are used to build paths,
+#: and because a bucket is not an object: the bucket endpoint creates, the object endpoint stores.
+_STORAGE_V1 = "storage/v1"
+_BUCKET_ENDPOINT = f"{_STORAGE_V1}/bucket"
+_OBJECT_ENDPOINT = f"{_STORAGE_V1}/object"
+
+
+def _client(timeout: float) -> httpx.AsyncClient:
+    """The HTTP client every Supabase call uses. A seam for tests, and one place a timeout is set."""
+    return httpx.AsyncClient(timeout=timeout)
+
+
+def _storage_url(path: str) -> str:
+    return f"{settings.supabase_url.rstrip('/')}/{path}"
+
+
 def _object_url(key: str) -> str:
-    base = settings.supabase_url.rstrip("/")
-    return f"{base}/storage/v1/object/{settings.supabase_bucket}/{key}"
+    return _storage_url(f"{_OBJECT_ENDPOINT}/{settings.supabase_bucket}/{key}")
+
+
+#: How a JWT starts (base64 of `{"`). A legacy service_role key is a JWT; a new `sb_secret_…` key is not.
+JWT_PREFIX = "eyJ"
 
 
 def _headers() -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {settings.supabase_service_key}",
-        "apikey": settings.supabase_service_key,
-    }
+    """Auth headers for Supabase Storage, for either kind of key.
+
+    A legacy service_role key is a JWT and goes as both `apikey` and the bearer token. A new secret key
+    (`sb_secret_…`) is not a JWT: Supabase's gateway accepts it in `apikey` and rejects it as a bearer
+    token, so it is sent there only.
+    """
+    key = settings.supabase_service_key
+    headers = {"apikey": key}
+    if key.startswith(JWT_PREFIX):
+        headers["Authorization"] = f"Bearer {key}"
+    return headers
+
+
+def _bucket_missing(resp: httpx.Response) -> bool:
+    """Whether this response is Supabase saying the bucket was never created.
+
+    Supabase reports it as `{"error": "Bucket not found"}` with a 400 or 404, and the status alone is not
+    enough: a 404 is also how a missing *object* answers. The message is the only reliable discriminator.
+    """
+    if resp.status_code not in (400, 404):
+        return False
+    return "bucket not found" in resp.text.lower()
+
+
+async def _ensure_bucket(client: httpx.AsyncClient) -> None:
+    """Create the configured bucket, private, once. Idempotent: "already exists" is success.
+
+    Called lazily from the first write instead of at boot — a deployment that boots before anyone has
+    created the bucket should still work, and a bucket is not worth failing `/ready` over.
+    """
+    name = settings.supabase_bucket
+    resp = await client.post(
+        _storage_url(_BUCKET_ENDPOINT),
+        headers=_headers(),
+        json={"id": name, "name": name, "public": False},
+    )
+    if resp.status_code in (200, 201):
+        logger.info("storage: created the '%s' bucket", name)
+        return
+    text = resp.text.lower()
+    if resp.status_code in (400, 409) and ("already exists" in text or "duplicate" in text):
+        # Another instance won the race, or it was created out of band. Either way it is there.
+        return
+    resp.raise_for_status()
 
 
 def direct_upload_available() -> bool:
@@ -146,20 +208,29 @@ async def signed_upload_url(key: str) -> str | None:
     Uploading through this function caps a file at the host's request-body limit (Vercel: ~4.5 MB),
     which is far below `source_max_bytes` — so a 20 MB photo could never arrive. Signing a path moves
     the bytes browser-to-store and leaves the API to record the row.
+
+    A signing failure returns `None` rather than raising: the caller then answers `direct: false` and
+    the browser posts the bytes through the API instead. Losing direct upload is a slower upload, not a
+    failed one, so it must never take the attachment down with it.
     """
     if not _supabase_configured():
         return None
-    base = settings.supabase_url.rstrip("/")
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            f"{base}/storage/v1/object/upload/sign/{settings.supabase_bucket}/{key}",
-            headers=_headers(),
-        )
-        resp.raise_for_status()
-        signed = (resp.json() or {}).get("url") or ""
+    try:
+        async with _client(timeout=30) as client:
+            sign_path = f"{_OBJECT_ENDPOINT}/upload/sign/{settings.supabase_bucket}/{key}"
+            resp = await client.post(_storage_url(sign_path), headers=_headers())
+            if _bucket_missing(resp):
+                await _ensure_bucket(client)
+                resp = await client.post(_storage_url(sign_path), headers=_headers())
+            resp.raise_for_status()
+            signed = (resp.json() or {}).get("url") or ""
+    except httpx.HTTPError as exc:
+        logger.warning("storage: could not sign an upload URL (%s); falling back to the API upload", exc)
+        return None
     if not signed:
         return None
     # Supabase answers with a path (`/object/upload/sign/...?token=…`); the client needs it absolute.
+    base = settings.supabase_url.rstrip("/")
     return signed if signed.startswith("http") else f"{base}/storage/v1{signed}"
 
 
@@ -179,22 +250,22 @@ def _local_path(key: str) -> Path:
 
 
 async def put(*, key: str, data: bytes, content_type: str) -> str:
-    """Store the bytes. Returns the key, which is what the row records."""
+    """Store the bytes. Returns the key, which is what the row records.
+
+    A Supabase failure is never the user's problem: the bytes go to the database blob table instead,
+    which `get` already reads, so the attachment still works and the outage is a log line.
+    """
     if _supabase_configured():
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(
-                _object_url(key),
-                content=data,
-                headers={
-                    **_headers(),
-                    "Content-Type": content_type or "application/octet-stream",
-                    # Overwrite rather than 409 — the key is derived from the
-                    # user and the filename, so a repeat upload is a retry.
-                    "x-upsert": "true",
-                },
+        try:
+            async with _client(timeout=120) as client:
+                await _supabase_put(client, key=key, data=data, content_type=content_type)
+            return key
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "storage: Supabase write failed for %s (%s); keeping the bytes in source_blobs", key, exc
             )
-            resp.raise_for_status()
-        return key
+            await _db_put(key, data, content_type)
+            return key
 
     if _use_local_disk():
         try:
@@ -209,47 +280,89 @@ async def put(*, key: str, data: bytes, content_type: str) -> str:
     return key
 
 
+async def _supabase_put(
+    client: httpx.AsyncClient, *, key: str, data: bytes, content_type: str
+) -> None:
+    """One object write, creating the bucket first if this is the deployment's first upload.
+
+    The retry is deliberately one: the only failure it recovers from is a bucket that did not exist
+    yet. Anything else is a real error and belongs to the caller's fallback.
+    """
+    headers = {
+        **_headers(),
+        "Content-Type": content_type or "application/octet-stream",
+        # Overwrite rather than 409 — the key is unique per upload, so a repeat PUT is a retry.
+        "x-upsert": "true",
+    }
+    resp = await client.post(_object_url(key), content=data, headers=headers)
+    if _bucket_missing(resp):
+        await _ensure_bucket(client)
+        resp = await client.post(_object_url(key), content=data, headers=headers)
+    resp.raise_for_status()
+
+
 async def get(key: str) -> Object | None:
-    """Read the bytes back, or `None` when the object is gone."""
+    """Read the bytes back, or `None` when the object is gone.
+
+    With Supabase configured the bucket is asked first, then `source_blobs`, then local disk: uploads
+    written before `SUPABASE_URL` was set live in the database, and they must stay downloadable. A read
+    error other than "not found" is re-raised, because the caller turns it into a retryable 503 — an
+    unreachable store is not the same thing as a deleted file.
+    """
     if _supabase_configured():
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with _client(timeout=60) as client:
             resp = await client.get(_object_url(key), headers=_headers())
-        if resp.status_code == 404:
-            return None
-        resp.raise_for_status()
-        return Object(
-            data=resp.content,
-            content_type=resp.headers.get("content-type", "application/octet-stream"),
-        )
+        if resp.status_code != 404:
+            resp.raise_for_status()
+            return Object(
+                data=resp.content,
+                content_type=resp.headers.get("content-type", GENERIC_CONTENT_TYPE),
+            )
+        # 404 — either the object predates the bucket or it is genuinely gone. Look where old files live.
+        return await _db_get(key) or _local_get(key)
 
     if _use_local_disk():
-        try:
-            path = _local_path(key)
-            if path.is_file():
-                return Object(data=path.read_bytes(), content_type=GENERIC_CONTENT_TYPE)
-        except (ValueError, OSError):
-            pass
+        local = _local_get(key)
+        if local is not None:
+            return local
     return await _db_get(key)
 
 
-async def delete(key: str) -> None:
-    """Best-effort. A missing object is a success, not an error.
+def _local_get(key: str) -> Object | None:
+    """The local-disk copy, if a long-lived host has one. Never raises for an unusable key."""
+    if not _use_local_disk():
+        return None
+    try:
+        path = _local_path(key)
+        if path.is_file():
+            return Object(data=path.read_bytes(), content_type=GENERIC_CONTENT_TYPE)
+    except (ValueError, OSError):
+        pass
+    return None
 
-    Storage is never the source of truth: the `sources` row is, and a soft delete
-    keeps even that. So a failed object delete must not fail the request.
+
+async def delete(key: str) -> None:
+    """Best-effort, and clears every place the bytes could be. A missing object is a success.
+
+    Both stores are attempted regardless of the other: an upload made during a Supabase outage sits in
+    `source_blobs` *and* may later have been copied to the bucket, so deleting one is not enough.
+    Storage is never the source of truth: the `sources` row is, and a soft delete keeps even that. So a
+    failed object delete must not fail the request.
     """
     if not key:
         return
-    try:
-        if _supabase_configured():
-            async with httpx.AsyncClient(timeout=30) as client:
+    if _supabase_configured():
+        try:
+            async with _client(timeout=30) as client:
                 await client.delete(_object_url(key), headers=_headers())
-        else:
-            if _use_local_disk():
-                _local_path(key).unlink(missing_ok=True)
-            await _db_delete(key)
-    except (httpx.HTTPError, ValueError, OSError):
-        pass
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("storage: Supabase delete failed for %s (%s); continuing", key, exc)
+    if _use_local_disk():
+        try:
+            _local_path(key).unlink(missing_ok=True)
+        except (ValueError, OSError):
+            pass
+    await _db_delete(key)
 
 
 # ---------------------------------------------------------------------------

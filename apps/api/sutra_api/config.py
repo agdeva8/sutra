@@ -11,7 +11,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -96,7 +96,11 @@ class Settings(BaseSettings):
     #: Supabase Storage. With no URL configured, `storage.py` falls back to a
     #: local directory, so the service runs without credentials.
     supabase_url: str = Field(default="", alias="SUPABASE_URL")
-    supabase_service_key: str = Field(default="", alias="SUPABASE_SERVICE_KEY")
+    #: The service_role key. `SUPABASE_SERVICE_ROLE_KEY` is the name the Supabase–Vercel integration sets,
+    #: so either way of configuring the project works; our own name wins when both are set.
+    supabase_service_key: str = Field(
+        default="", validation_alias=AliasChoices("SUPABASE_SERVICE_KEY", "SUPABASE_SERVICE_ROLE_KEY")
+    )
     supabase_bucket: str = Field(default="goalcoach", alias="SUPABASE_BUCKET")
     local_storage_dir: str = Field(default=".data/sources", alias="LOCAL_STORAGE_DIR")
 

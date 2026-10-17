@@ -116,6 +116,39 @@ Probes: `/health` (liveness, no dependencies) and `/ready` (database reachable).
 apps/api/scripts/smoke.sh https://sutra-api-neon.vercel.app
 ```
 
+## File storage
+
+Uploads live in Supabase Storage. Set these in the **API's** Vercel project:
+
+| Variable | Value |
+|---|---|
+| `SUPABASE_URL` | the project URL, `https://<project-ref>.supabase.co` — not the database connection string |
+| `SUPABASE_SERVICE_KEY` | the **service_role** key (Supabase → Project Settings → API). It bypasses row-level security, so it is set **only in Vercel** — never in the web app, never in a committed file |
+| `SUPABASE_BUCKET` | optional, defaults to `goalcoach` |
+
+**The bucket is created on first use.** The API calls `POST /storage/v1/bucket` the first time an upload finds it missing (private, no public URL), and treats "already exists" as success, so there is nothing to create by hand. The service_role key is what makes this possible; a restricted key leaves the bucket uncreated and every upload silently falls back to the database.
+
+With both variables set, the browser uploads straight to Storage through a signed URL; without them, uploads still work — the bytes go to local disk on a long-lived host or to `source_blobs` on Vercel. A Supabase outage also falls back to `source_blobs` rather than failing the upload. Reads try Storage first, then `source_blobs`, then disk, so files uploaded before the switch stay downloadable.
+
+To check it works, upload a file in the app, then:
+
+```bash
+# 1. The object is in the bucket, under the uploader's id.
+curl -s -X POST "$SUPABASE_URL/storage/v1/object/list/$SUPABASE_BUCKET" \
+  -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+  -H "apikey: $SUPABASE_SERVICE_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"prefix": "sources/", "limit": 5}'
+```
+
+```sql
+-- 2. The blob table did not grow. Run before and after a fresh upload: an unchanged count means the
+--    bytes went to Storage; a new row means it fell back, which is the symptom of a bad key or bucket.
+select count(*) from source_blobs;
+```
+
+Then download the file from the Sources screen — that proves the read path, not just the write.
+
 ## Background jobs and Supabase Cron
 
 Re-plans and goal builds run as rows in `agent_jobs` (`sutra_api/jobs.py`). The API drains them in three ways:

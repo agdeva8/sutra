@@ -300,7 +300,11 @@ async def complete_upload(
     if not is_minted_key(user_id=user.user_id, key=body.key):
         raise HTTPException(status_code=400, detail="Invalid upload key")
 
-    obj = await storage_get(body.key)
+    try:
+        obj = await storage_get(body.key)
+    except Exception as exc:  # noqa: BLE001 - a store outage means "not there yet", not a server fault
+        logger.warning("direct upload: storage read failed for %s: %s", body.key, exc)
+        raise HTTPException(status_code=409, detail="Upload did not reach storage") from exc
     if obj is None:
         raise HTTPException(status_code=409, detail="Upload did not reach storage")
     _check_upload_limits(filename=body.filename, size=len(obj.data))
