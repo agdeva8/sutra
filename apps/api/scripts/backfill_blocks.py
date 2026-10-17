@@ -33,6 +33,7 @@ import sys
 from datetime import date, time, timedelta
 
 from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from sutra_api.db import create_engine
@@ -57,6 +58,9 @@ from agentv2.contracts.blocks import (
 
 # The committed sources that map to Event (vs recurring-rule).
 COMMITTED_SOURCES = {"manual", "agent", "plan"}
+
+#: Rows per INSERT. Five bind parameters a row keeps a batch well under asyncpg's 32,767 limit.
+INSERT_BATCH_ROWS = 1000
 
 
 def _task_state(pi: PlanItem) -> str:
@@ -517,10 +521,26 @@ async def _run_backfill(session_maker, dry_run: bool = True):
                 )
                 new_blocks.append(row)
 
-        session.add_all(new_blocks)
+        # The id checks above miss some derived ids (a re-run against production hit
+        # calendar_blocks_pkey), so the database has the last word: an id that is already there is
+        # skipped, never written twice and never an error. Batched to stay under asyncpg's
+        # bind-parameter limit.
+        written = 0
+        for start in range(0, len(new_blocks), INSERT_BATCH_ROWS):
+            batch = new_blocks[start:start + INSERT_BATCH_ROWS]
+            stmt = (
+                pg_insert(CalendarBlock)
+                .values([
+                    {"id": b.id, "user_id": b.user_id, "block_kind": b.block_kind, "title": b.title, "data": b.data}
+                    for b in batch
+                ])
+                .on_conflict_do_nothing(index_elements=["id"])
+                .returning(CalendarBlock.id)
+            )
+            written += len((await session.execute(stmt)).scalars().all())
         await session.commit()
 
-        print(f"\nWrote {len(new_blocks)} new blocks. Skipped {skipped} existing.")
+        print(f"\nWrote {written} new blocks. Skipped {skipped + len(new_blocks) - written} existing.")
 
 
 def main():
