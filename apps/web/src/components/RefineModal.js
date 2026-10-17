@@ -45,6 +45,7 @@ const DEFAULT_REFINE_CHIPS = ["Try again from scratch", "Different framing", "Sm
  * Props:
  *   open, onClose, proposalTitle, proposalAction, proposalActionKey
  *   initialValue — the existing refinement (pre-fills; empty for a new one)
+ *   subtitle — what happens to the note; defaults to the auto-send wording
  *   onSubmit(thought) — stores the note on the proposal
  */
 export default function RefineModal({
@@ -54,6 +55,7 @@ export default function RefineModal({
   proposalAction = "change",
   proposalActionKey = "",
   initialValue = "",
+  subtitle = "",
   onSubmit,
   onClear,
 }) {
@@ -103,7 +105,7 @@ export default function RefineModal({
       onClose={onClose}
       icon={Pencil}
       title={proposalTitle ? `Refine "${proposalTitle}"` : "Refine this"}
-      subtitle={`What should change about this ${proposalAction}? I'll re-propose the plan with it right away.`}
+      subtitle={subtitle || `What should change about this ${proposalAction}? I'll re-propose the plan with it right away.`}
       maxWidth="max-w-xl"
       testId="refine-modal"
     >

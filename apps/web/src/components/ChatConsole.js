@@ -13,6 +13,12 @@ import ImpactPanel from "./ImpactPanel";
 import LinkPreviewDialog from "./LinkPreviewDialog";
 
 /**
+ * What this console's file picker accepts by default. A surface that wants a
+ * wider net (Add Goal, which takes documents as well) passes `sourceAccept`.
+ */
+const DEFAULT_SOURCE_ACCEPT = ".pdf,.md,.txt,.csv,.json,.png,.jpg,.jpeg";
+
+/**
  * EmptyState — the prompt shown when there are no messages yet.
  *
  * Two shapes:
@@ -268,7 +274,7 @@ function Message({ m, settled = false, onConfirm, onReject, onRefine, onOpenRefi
   );
 }
 
-export default function ChatConsole({ messages, onSend, sending, input, setInput, onConfirm, onReject, onRefine, onOpenRefine, onOpenReject, onNavigate = null, onAnswerChoice = null, showConfirm = true, busyProposal, autoAnswer, setAutoAnswer, grillMe = false, setGrillMe = () => {}, onUploadFile = () => {}, onAddLink = () => {}, sources = [], onDeleteSource = () => {}, onClearChat = () => {}, pendingClarifications = null, onAnswerClarification = () => {}, onDismissClarifications = () => {}, showSources = true, focusOnMount = false, scopeLabel = "", scopeIntent = "", goalContext = "", emptyPrompt = "", loading = false, onViewGoal = null, showModeSelect = true, readOnly = false, readOnlyNote = "" }) {
+export default function ChatConsole({ messages, onSend, sending, input, setInput, onConfirm, onReject, onRefine, onOpenRefine, onOpenReject, onNavigate = null, onAnswerChoice = null, showConfirm = true, busyProposal, autoAnswer, setAutoAnswer, grillMe = false, setGrillMe = () => {}, onUploadFile = () => {}, onAddLink = () => {}, sources = [], onDeleteSource = () => {}, onClearChat = () => {}, pendingClarifications = null, onAnswerClarification = () => {}, onDismissClarifications = () => {}, showSources = true, sourceAccept = DEFAULT_SOURCE_ACCEPT, allowMultipleSources = false, sourceLabel = null, focusOnMount = false, scopeLabel = "", scopeIntent = "", goalContext = "", emptyPrompt = "", loading = false, onViewGoal = null, showModeSelect = true, readOnly = false, readOnlyNote = "" }) {
   const endRef = useRef(null);
   const reopenLink = useReopenLink(goalContext);
   const taRef = useRef(null);
@@ -971,7 +977,7 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
             {sources.map((s) => (
               <span key={s.id} className="flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-[var(--bg-tertiary)] text-[var(--text-secondary)]">
                 <FileText className="w-3 h-3" />{" "}
-                <button type="button" data-testid={`source-chip-${s.id}`} onClick={() => reopenLink.open(s)} title="See what the coach read" className="max-w-[140px] truncate text-left hover:text-[var(--text-primary)] hover:underline">{s.original_filename}</button>
+                <button type="button" data-testid={`source-chip-${s.id}`} onClick={() => reopenLink.open(s)} title="See what the coach read" className="max-w-[140px] truncate text-left hover:text-[var(--text-primary)] hover:underline">{sourceLabel ? sourceLabel(s) : s.original_filename}</button>
                 <button onClick={() => onDeleteSource(s.id)} aria-label={`Remove source ${s.original_filename}`} className="min-h-11 min-w-11 inline-flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--danger)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] rounded"><X className="w-3 h-3" /></button>
               </span>
             ))}
@@ -1028,7 +1034,7 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
             <div className="flex items-center gap-0 shrink-0">
               {showSources && (
                 <>
-                  <input ref={fileRef} type="file" hidden accept=".pdf,.md,.txt,.csv,.json,.png,.jpg,.jpeg" onChange={(e) => { if (e.target.files[0]) { onUploadFile(e.target.files[0]); e.target.value = ""; } }} />
+                  <input ref={fileRef} type="file" hidden accept={sourceAccept} multiple={allowMultipleSources} onChange={(e) => { const files = Array.from(e.target.files || []); e.target.value = ""; if (allowMultipleSources) files.forEach((f) => onUploadFile(f)); else if (files[0]) onUploadFile(files[0]); }} />
                   {cameraUi}
       {reopenLink.dialog}
                   <button data-testid="chat-attach-file" onClick={() => fileRef.current?.click()} title="Attach a file (PDF, .md, .txt…)" aria-label="Attach a file" className="h-11 w-9 flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors shrink-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] rounded">

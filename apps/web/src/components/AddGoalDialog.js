@@ -26,6 +26,7 @@ import { useDialogBack } from "../hooks/useDialogBack";
 import { usePlanSend, renegotiationChoiceLabel, clearRenegotiation } from "../hooks/use-plan-send";
 import { toast } from "sonner";
 import { api, API } from "../lib/api";
+import { SOURCE_FILE_ACCEPT, sourceChipLabel } from "../lib/sources";
 import { buildSchedule } from "../lib/goalPlanning";
 import { readDraftBucket, writeDraftBucket, clearDraftBucket } from "../hooks/useDraftPersistence";
 
@@ -127,6 +128,25 @@ const CATEGORIES = [
 /** "Confirm 9 items", or "Confirm 9 items · 1 removed" once the user has rejected some. */
 const confirmLabel = (count, removed) =>
   `Confirm ${count} ${count === 1 ? "item" : "items"}${removed > 0 ? ` · ${removed} removed` : ""}`;
+
+/**
+ * One message carries every marked card, and asks for a whole re-plan rather
+ * than a patch: a milestone that moves dates everything after it, so the coach
+ * has to re-date and re-size the plan as a whole, and may need a milestone that
+ * was not in the first draft.
+ */
+const CHANGE_REQUEST =
+  "Re-plan the whole goal around these changes. Re-date and re-size every milestone so it fits, and add or drop milestones if the change needs it. Keep everything we've discussed (answers, attachments, assumptions), and keep the title unless I asked to rename it.";
+
+/** A change set that only removes cards needs no re-plan — just drop them. */
+const REMOVE_ONLY_REQUEST = "Remove these and keep the rest of the plan as it is.";
+
+/** The one message that asks the coach to take in sources attached after a plan exists. */
+const sourceUpdateMessage = (names) => {
+  const quoted = names.map((name) => `"${name}"`).join(", ");
+  const one = names.length === 1;
+  return `I just attached ${one ? quoted : `${names.length} sources: ${quoted}`} — read ${one ? "it" : "them"} and re-propose the plan so the goal, milestones and tasks reflect what ${one ? "it says" : "they say"}.`;
+};
 
 export default function AddGoalDialog({
   open,
@@ -232,10 +252,14 @@ export default function AddGoalDialog({
   const [finalStatus, setFinalStatus] = useState("");
   const autoResumePendingRef = useRef(false);
   const reusedDraftRef = useRef(false);
-  // Set to the source's label when a source is attached while a plan is
-  // already on screen. The effect below fires the re-propose once `sources`
-  // has committed (so the planner's request actually carries the new id).
-  const autoReplanRef = useRef(false);
+  // Sources attached while a plan is already on screen. They are collected
+  // here, not sent on attach: the founder added a link and then could not add
+  // a PDF because the first attach had already started a re-plan. One
+  // "Update plan with N sources" sends all of them in a single message.
+  const [pendingSourceIds, setPendingSourceIds] = useState([]);
+  // Set when "Make changes" is sent; once the coach's next proposal lands the
+  // marks on the old cards are cleared, so they do not linger as pending edits.
+  const clearMarksRef = useRef(false);
   const previousModeRef = useRef({ autoAnswer: initialAutoAnswer, grillMe: initialGrillMe });
   const sendRef = useRef(null);
 
@@ -253,6 +277,8 @@ export default function AddGoalDialog({
     clearRenegotiation();
     setFocusToken(0);
     setSources([]);
+    setPendingSourceIds([]);
+    clearMarksRef.current = false;
     autoResumePendingRef.current = false;
     previousModeRef.current = { autoAnswer: initialAutoAnswer, grillMe: initialGrillMe };
     setRefiningProposal(null);
@@ -440,6 +466,9 @@ export default function AddGoalDialog({
       setMessages((prev) => prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)));
     } finally {
       setSending(false);
+      // The message just sent already carried every attachment via `sourceIds`,
+      // so nothing is left for "Update plan with N sources" to send.
+      setPendingSourceIds([]);
       setMessages((prev) => prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)));
     }
   };
@@ -460,18 +489,33 @@ export default function AddGoalDialog({
     }
   }, [autoAnswer, grillMe, pendingClarifications, sending]);
 
-  // Source attached while a plan is on screen → rebuild the plan with the
-  // new source. Deferred to this effect so `sources` has committed and the
-  // planner's request actually includes the new source id.
+  // "Make changes" was sent: the moment the coach's next proposal stops
+  // streaming, clear the marks on the previous cards. They were the input to
+  // that proposal, so keeping them marked would look like unsent edits.
   useEffect(() => {
-    const name = autoReplanRef.current;
-    if (!name || sending) return;
-    autoReplanRef.current = false;
-    sendRef.current?.(
-      `I just attached ${typeof name === "string" ? `"${name}"` : "a source"} — read it and re-propose the plan so the goal, milestones and tasks reflect what it says.`,
-      { showUser: false },
+    if (!clearMarksRef.current) return;
+    const last = messages[messages.length - 1];
+    if (!last || last.role !== "assistant" || last.streaming) return;
+    clearMarksRef.current = false;
+    setMessages((prev) =>
+      prev.map((m) => ({
+        ...m,
+        proposals: (m.proposals || []).map((p) =>
+          p.refinement || p.rejection || p.status === "rejected"
+            ? { ...p, refinement: "", rejection: "", status: "pending" }
+            : p,
+        ),
+      })),
     );
-  }, [sources, sending]);
+  }, [messages]);
+
+  const onUpdatePlanSources = () => {
+    const names = sources
+      .filter((s) => pendingSourceIds.includes(s.id))
+      .map((s) => s.original_filename || s.url);
+    if (names.length === 0) return;
+    send(sourceUpdateMessage(names));
+  };
 
   const onRenegotiationChoice = (choice) => {
     setBusyChoice(choice);
@@ -595,7 +639,9 @@ export default function AddGoalDialog({
           url: created.url || file.name,
         },
       ]);
-      if (hasPlanOnScreen) autoReplanRef.current = created.original_filename || file.name;
+      // A plan on screen does not re-plan by itself any more: collect the source
+      // so the user can add several of every kind first, then update once.
+      if (hasPlanOnScreen) setPendingSourceIds((prev) => (prev.includes(created.id) ? prev : [...prev, created.id]));
     } catch {}
   };
 
@@ -612,12 +658,13 @@ export default function AddGoalDialog({
           url: created.url || url,
         },
       ]);
-      if (hasPlanOnScreen) autoReplanRef.current = created.original_filename || created.url || url;
+      if (hasPlanOnScreen) setPendingSourceIds((prev) => (prev.includes(created.id) ? prev : [...prev, created.id]));
     } catch {}
   };
 
   const handleDeleteSource = (id) => {
     setSources((prev) => prev.filter((s) => s.id !== id));
+    setPendingSourceIds((prev) => prev.filter((sourceId) => sourceId !== id));
     onDeleteSource(id);
   };
 
@@ -744,47 +791,43 @@ export default function AddGoalDialog({
     return `${(p.action || "change").replace(/_/g, " ")}${fields.length ? ` — current: ${fields.join(", ")}` : ""}`;
   };
 
-  // `override` lets a just-saved edit (not yet in `messages`) be included:
-  // { id, field: "refinement" | "rejection", value }. Scoped to the ONE plan
-  // message being changed so refinements from earlier iterations don't repeat.
-  const buildChangeMessage = (override = null) => {
-    let target = null;
-    if (override) {
-      target = messages.find((m) => (m.proposals || []).some((p) => p.id === override.id)) || null;
+  // The latest plan is the one the marks live on. Every card's CURRENT values
+  // go in, so the coach re-plans from what is on screen rather than from its
+  // memory of the first draft.
+  const latestPlanMessage = () => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role === "assistant" && !m.streaming && (m.proposals || []).length > 0) return m;
     }
-    if (!target) {
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const m = messages[i];
-        if (m.role === "assistant" && !m.streaming && (m.proposals || []).length > 0) {
-          target = m;
-          break;
-        }
-      }
-    }
-    const ps = target?.proposals || [];
+    return null;
+  };
+
+  // One message for every marked card. It carries the whole current plan,
+  // which cards were refined (with the note) and which were removed.
+  const buildChangeMessage = () => {
+    const ps = (latestPlanMessage()?.proposals || []).filter(
+      (p) => p.action !== "ask" && p.action !== "navigate",
+    );
+    if (ps.length === 0) return "";
     const refinements = [];
     const rejections = [];
     for (const p of ps) {
-      const isOverride = override?.id === p.id;
-      const refinement = isOverride && override.field === "refinement" ? override.value : p.refinement;
-      const rejected = isOverride && override.field === "rejection" ? true : p.status === "rejected";
-      const rejection = isOverride && override.field === "rejection" ? override.value : p.rejection;
-      if (refinement) refinements.push(`- ${describeProposal(p)} → change to: ${refinement}`);
-      if (rejected) rejections.push(`- ${describeProposal(p)}${rejection ? ` → reason: ${rejection}` : ""}`);
+      if (p.refinement) refinements.push(`- ${describeProposal(p)} → change to: ${p.refinement}`);
+      if (p.status === "rejected") {
+        rejections.push(`- ${describeProposal(p)}${p.rejection ? ` → reason: ${p.rejection}` : ""}`);
+      }
     }
     if (!refinements.length && !rejections.length) return "";
-    const lines = [];
+
+    const lines = ["Current plan:", ...ps.map((p) => `- ${describeProposal(p)}`)];
     if (refinements.length) {
-      lines.push("Change these (keep every other detail exactly as-is):");
-      lines.push(...refinements);
+      lines.push("", "Refine these:", ...refinements);
     }
     if (rejections.length) {
-      lines.push("Remove these entirely and do NOT replace or re-plan them:");
-      lines.push(...rejections);
+      lines.push("", refinements.length ? "Remove these:" : "Remove these and keep the rest:", ...rejections);
     }
-    const goalTitle = ps.find((p) => p.action === "create_goal")?.args?.title;
-    const keepTitle = goalTitle ? ` Keep the goal title exactly "${goalTitle}" and do not add milestones that were not already proposed.` : "";
-    return `Re-propose the plan applying ALL of these changes at once. Return the full goal + milestones again with the changes applied.${keepTitle}\n\n${lines.join("\n")}`;
+    const request = refinements.length ? CHANGE_REQUEST : REMOVE_ONLY_REQUEST;
+    return `${request}\n\n${lines.join("\n")}`;
   };
 
   const onOpenRefine = (proposal) => {
@@ -796,8 +839,9 @@ export default function AddGoalDialog({
 
   const submitRefine = (thought) => {
     if (!refiningProposal) return;
-    // Store the note (a card is either refined or rejected, never both) and
-    // immediately re-propose so the user never has to press "Apply changes".
+    // Marking only marks. The note is stored on the card (a card is either
+    // refined or rejected, never both) and nothing is sent until the user
+    // presses "Make changes", so they can mark several cards first.
     const id = refiningProposal.id;
     setMessages((prev) =>
       prev.map((m) => ({
@@ -807,8 +851,6 @@ export default function AddGoalDialog({
         ),
       })),
     );
-    const msg = buildChangeMessage({ id, field: "refinement", value: thought });
-    if (msg) sendRef.current?.(msg, { showUser: false });
   };
 
   // Revert: clear the saved refinement / rejection from a card.
@@ -830,6 +872,21 @@ export default function AddGoalDialog({
         ...m,
         proposals: (m.proposals || []).map((p) =>
           p.id === id ? { ...p, rejection: "", status: "pending" } : p,
+        ),
+      })),
+    );
+  };
+
+  // Drop every mark without sending anything: the plan goes back to Confirm.
+  const discardChanges = () => {
+    clearMarksRef.current = false;
+    setMessages((prev) =>
+      prev.map((m) => ({
+        ...m,
+        proposals: (m.proposals || []).map((p) =>
+          p.refinement || p.rejection || p.status === "rejected"
+            ? { ...p, refinement: "", rejection: "", status: "pending" }
+            : p,
         ),
       })),
     );
@@ -874,16 +931,17 @@ export default function AddGoalDialog({
       const proposals = m.proposals || [];
       if (proposals.length === 0) continue;
 
-      // Priority 1 — any saved change (a refinement or a rejection) is addressed first: the coach
-      // re-proposes the plan with every change applied, and the user confirms that new plan, not the old one.
+      // Priority 1 — any marked change (a refinement or a rejection) is sent
+      // first, all at once: the coach re-plans around every mark, and the user
+      // confirms that new plan, not the old one.
       const refined = proposals.filter((p) => p.refinement || p.status === "rejected");
       const changedCount = refined.length;
       if (changedCount > 0) {
         return {
           messageId: m.id,
           proposalId: null,
-          label: `Apply changes (${changedCount})`,
-          variant: "refine",
+          label: `Make changes (${changedCount})`,
+          variant: "make_changes",
           proposals,
         };
       }
@@ -933,10 +991,13 @@ export default function AddGoalDialog({
   const onPinnedAction = () => {
     if (!pinnedAction) return;
 
-    if (pinnedAction.variant === "refine") {
-      // Fallback only — saves usually auto-send now. Same proper prompt.
+    if (pinnedAction.variant === "make_changes") {
+      // One message for every marked card. Marks are cleared once the coach's
+      // next proposal lands (the effect above).
       const msg = buildChangeMessage();
-      if (msg) send(msg);
+      if (!msg) return;
+      clearMarksRef.current = true;
+      send(msg);
       return;
     }
 
@@ -1122,8 +1183,7 @@ export default function AddGoalDialog({
                 onUploadFile={handleUploadFile}
                 onAddLink={handleAddLink}
                 onDeleteSource={handleDeleteSource}
-                onNotNow={releaseHeldFirst}
-                onDone={releaseHeldFirst}
+                onContinue={releaseHeldFirst}
                 goalContext={heldFirst}
               />
             </div>
@@ -1163,7 +1223,14 @@ export default function AddGoalDialog({
               pendingClarifications={pendingClarifications}
               onAnswerClarification={(text) => { setPendingClarifications(null); send(text); }}
               onDismissClarifications={() => setPendingClarifications(null)}
+              // Links, files (PDFs and documents) and photos stay available at
+              // every stage of Add Goal: before the first plan, while one is on
+              // screen, and after refining. The picker takes several files at
+              // once so a batch can be attached before a single update.
               showSources={true}
+              sourceAccept={SOURCE_FILE_ACCEPT}
+              allowMultipleSources
+              sourceLabel={sourceChipLabel}
               readOnly={planConfirmed || !!finalStatus}
               readOnlyNote={finalStatus}
               focusOnMount={true}
@@ -1172,6 +1239,27 @@ export default function AddGoalDialog({
               // the per-item Confirm so there aren't two confirm paths.
               showConfirm={false}
             />
+            {/* Sources attached while this plan is on screen. They wait here
+                until the user has added as many as they want of every kind,
+                then one tap sends all of them together. */}
+            {pendingSourceIds.length > 0 && (
+              <div className="shrink-0 px-4 sm:px-5 pt-1 bg-[var(--bg-primary)]">
+                <button
+                  data-testid="update-plan-sources"
+                  onClick={onUpdatePlanSources}
+                  disabled={sending}
+                  className="w-full h-11 rounded-full inline-flex items-center justify-center gap-2 border border-[var(--border-accent)] text-sm font-medium text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-50"
+                >
+                  {sending ? (
+                    <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <RefreshCw className="w-4 h-4" aria-hidden="true" />
+                  )}
+                  Update plan with {pendingSourceIds.length} source
+                  {pendingSourceIds.length === 1 ? "" : "s"}
+                </button>
+              </div>
+            )}
             {/* Iteration 9 — Confirm / Recreate pinned button. Renders
                 below the chat console's composer, inside the dialog so
                 it stays visible at the bottom of the sheet even when
@@ -1186,40 +1274,56 @@ export default function AddGoalDialog({
                   const busy =
                     sending ||
                     (pinnedAction.proposalId != null && busyProposal === pinnedAction.proposalId);
+                  const isPrimary =
+                    pinnedAction.variant === "confirm" ||
+                    pinnedAction.variant === "confirm_all" ||
+                    pinnedAction.variant === "make_changes";
                   return (
-                    <button
-                      data-testid="pinned-action-button"
-                      onClick={onPinnedAction}
-                      disabled={busy}
-                      aria-busy={busy}
-                      className={`w-full h-12 rounded-full inline-flex items-center justify-center gap-2 text-[15px] font-semibold transition-opacity disabled:opacity-60 hover:opacity-90 active:scale-[0.99] ${
-                        pinnedAction.variant === "confirm" || pinnedAction.variant === "confirm_all" || pinnedAction.variant === "refine"
-                          ? "bg-[var(--accent)] text-[var(--bg-primary)]"
-                          : "bg-[var(--bg-tertiary)] text-[var(--text-primary)]"
-                      }`}
-                    >
-                      {busy ? (
-                        <>
-                          <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
-                          {pinnedAction.variant === "refine" ? "Refining…" : "Confirming…"}
-                        </>
-                      ) : pinnedAction.variant === "confirm" || pinnedAction.variant === "confirm_all" ? (
-                        <>
-                          <Check className="w-4 h-4" aria-hidden="true" />
-                          {pinnedAction.label}
-                        </>
-                      ) : pinnedAction.variant === "refine" ? (
-                        <>
-                          <Pencil className="w-4 h-4" aria-hidden="true" />
-                          {pinnedAction.label}
-                        </>
-                      ) : (
-                        <>
-                          <RefreshCw className="w-4 h-4" aria-hidden="true" />
-                          {pinnedAction.label}
-                        </>
+                    <>
+                      <button
+                        data-testid="pinned-action-button"
+                        onClick={onPinnedAction}
+                        disabled={busy}
+                        aria-busy={busy}
+                        className={`w-full h-12 rounded-full inline-flex items-center justify-center gap-2 text-[15px] font-semibold transition-opacity disabled:opacity-60 hover:opacity-90 active:scale-[0.99] ${
+                          isPrimary
+                            ? "bg-[var(--accent)] text-[var(--bg-primary)]"
+                            : "bg-[var(--bg-tertiary)] text-[var(--text-primary)]"
+                        }`}
+                      >
+                        {busy ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                            {pinnedAction.variant === "make_changes" ? "Sending…" : "Confirming…"}
+                          </>
+                        ) : pinnedAction.variant === "confirm" || pinnedAction.variant === "confirm_all" ? (
+                          <>
+                            <Check className="w-4 h-4" aria-hidden="true" />
+                            {pinnedAction.label}
+                          </>
+                        ) : pinnedAction.variant === "make_changes" ? (
+                          <>
+                            <Pencil className="w-4 h-4" aria-hidden="true" />
+                            {pinnedAction.label}
+                          </>
+                        ) : (
+                          <>
+                            <RefreshCw className="w-4 h-4" aria-hidden="true" />
+                            {pinnedAction.label}
+                          </>
+                        )}
+                      </button>
+                      {pinnedAction.variant === "make_changes" && (
+                        <button
+                          data-testid="pinned-action-discard"
+                          onClick={discardChanges}
+                          disabled={busy}
+                          className="mt-1 w-full h-11 rounded-full text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-50"
+                        >
+                          Discard changes
+                        </button>
                       )}
-                    </button>
+                    </>
                   );
                 })()}
               </div>
@@ -1240,6 +1344,9 @@ export default function AddGoalDialog({
             proposalAction={(refiningProposal?.action || "change").replace(/_/g, " ")}
             proposalActionKey={refiningProposal?.action || ""}
             initialValue={refiningProposal?.refinement || ""}
+            // Add Goal marks first and sends all the marks together, so the
+            // note is not re-planned on save.
+            subtitle={`What should change about this ${(refiningProposal?.action || "change").replace(/_/g, " ")}? Mark as many cards as you like, then tap Make changes.`}
             onSubmit={submitRefine}
             onClear={clearRefine}
           />

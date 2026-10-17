@@ -3,6 +3,7 @@ import { Link2, Loader2, ExternalLink, FileText, ShieldAlert, ClipboardPaste, Sp
 import CenteredDialog from "./CenteredDialog";
 import LinkAskPanel from "./LinkAskPanel";
 import { api } from "../lib/api";
+import { LINK_INPUT_HINT } from "../lib/sourcesExplainer";
 
 /**
  * LinkPreviewDialog — LLM link exploration (Iteration 11).
@@ -304,6 +305,9 @@ export default function LinkPreviewDialog({ open, onClose, url = "", onAttach, g
                 <Link2 className="w-3 h-3" aria-hidden="true" /> Preview
               </button>
             </div>
+            <p data-testid="link-preview-input-hint" className="text-xs text-[var(--text-muted)]">
+              {LINK_INPUT_HINT}
+            </p>
           </form>
         )}
 
