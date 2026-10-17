@@ -1,5 +1,6 @@
 import { clsx } from "clsx";
 import { twMerge } from "tailwind-merge"
+import { istNow } from "./istTime";
 
 export function cn(...inputs) {
   return twMerge(clsx(inputs));
@@ -19,8 +20,13 @@ export function cn(...inputs) {
  * Date-only values from the API are stored as plain `YYYY-MM-DD` strings
  * with no zone, so they must be compared against a local date key, never a
  * UTC one.
+ *
+ * The default is `istNow()`, not `new Date()`: today is IST's date whatever
+ * the device's zone is (see `lib/istTime.js`). An explicit Date is still read
+ * with its own local fields, which is what callers passing a wall-clock Date
+ * (a picker's day, a date-key round trip) expect.
  */
-export function localDateKey(date = new Date()) {
+export function localDateKey(date = istNow()) {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, "0");
   const d = String(date.getDate()).padStart(2, "0");

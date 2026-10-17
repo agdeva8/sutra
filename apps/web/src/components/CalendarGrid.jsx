@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { CalendarCard } from "./CalendarCards";
 import { cardSurface } from "../constants/calendarKinds";
+import { parseDateKey } from "../lib/istTime";
 import useMediaQuery from "../hooks/useMediaQuery";
 
 /**
@@ -41,10 +42,15 @@ const startOfDay = (d) => {
   return x;
 };
 
+/** One row of a Day/Week grid is an hour; only cells this short can carry the now line. */
+const HOUR_MS = 3600000;
+const DAY_MS = 24 * HOUR_MS;
+
 const asDate = (v) => {
   if (!v) return null;
-  const d = v instanceof Date ? new Date(v) : new Date(`${String(v).slice(0, 10)}T00:00:00`);
-  return isNaN(d.getTime()) ? null : startOfDay(d);
+  // Local field-by-field parse: `new Date("YYYY-MM-DD")` would be UTC midnight.
+  const d = v instanceof Date ? new Date(v) : parseDateKey(v);
+  return d && !isNaN(d.getTime()) ? startOfDay(d) : null;
 };
 
 /** The range an item covers: `item.start`/`item.end` when it spans, else its own `date`. */
@@ -54,7 +60,7 @@ function rangeOf(card) {
   const e = asDate(card?.item?.end || card?.date) || s;
   // An item with a clock time runs to the end of its slot, not to midnight of the same day.
   const startAt = card?.item?.startAt instanceof Date ? card.item.startAt : s;
-  const endAt = card?.item?.endAt instanceof Date ? card.item.endAt : new Date(e.getTime() + 86400000);
+  const endAt = card?.item?.endAt instanceof Date ? card.item.endAt : new Date(e.getTime() + DAY_MS);
   return { start: startAt, end: endAt };
 }
 
@@ -67,6 +73,9 @@ export default function CalendarGrid({
   rowLabel, // (row) => node, rendered in the left gutter
   cards = [],
   today = new Date(),
+  //: IST "now" (`lib/istTime.istNow()`), for the current-time line on a Day/Week grid. Omit it and no
+  //: line is drawn; callers that do not have an hourly axis (Month, Year) never pass one.
+  now = null,
   onSelectItem,
   onSelectDay,
   onSelectSlot,
@@ -84,6 +93,19 @@ export default function CalendarGrid({
   const narrow = useMediaQuery(COMPACT_QUERY);
   const compact = narrow && columns >= COMPACT_MIN_COLUMNS && !allDayRow;
   const todayTime = startOfDay(today).getTime();
+  const nowTime = now instanceof Date && !isNaN(now.getTime()) ? now.getTime() : null;
+
+  /**
+   * Whether a cell is "today".
+   *
+   * Containment alone marks only the cell that contains midnight — on a Week grid that is the single
+   * 12 AM cell of today's column, so the rest of the column (and the header) looked unhighlighted. A
+   * cell is today when either its own day is today (the day/hour cells) or today falls inside it (the
+   * week/month cells that span several days).
+   */
+  const isTodayCell = (cell) =>
+    startOfDay(cell.start).getTime() === todayTime ||
+    (todayTime >= cell.start.getTime() && todayTime < cell.end.getTime());
   //: The bar being dragged. Kept in state so the cells can offer themselves as drop targets only
   //: while a drag is actually happening.
   const [dragging, setDragging] = useState(null);
@@ -153,6 +175,8 @@ export default function CalendarGrid({
   const headerRow = columnHeader ? 1 : 0;
   const gridColumn = (c) => `${c + 1 + gutter} / ${c + 2 + gutter}`;
   const gridRow = (r) => `${r + 1 + headerRow} / ${r + 2 + headerRow}`;
+  // Which header is the today column — this is the blue "today" chip on a Week grid.
+  const isTodayColumn = (c) => Boolean(cellRanges[0]?.[c]) && isTodayCell(cellRanges[0][c]);
 
   return (
     <div
@@ -176,9 +200,21 @@ export default function CalendarGrid({
             {Array.from({ length: columns }, (_, c) => (
               <div
                 key={`h-${c}`}
-                className="sticky top-0 z-10 flex items-center justify-center border-b border-l border-[var(--border)] bg-[var(--bg-primary)] px-2 text-[11px] font-medium text-[var(--text-primary)]"
+                data-testid={isTodayColumn(c) ? "calendar-today-header" : undefined}
+                className={[
+                  "sticky top-0 z-10 flex items-center justify-center border-b border-l border-[var(--border)] px-2 text-[11px] font-medium text-[var(--text-primary)]",
+                  isTodayColumn(c)
+                    ? "bg-[color-mix(in_srgb,var(--accent)_8%,var(--bg-primary))]"
+                    : "bg-[var(--bg-primary)]",
+                ].join(" ")}
               >
-                {columnHeader(c)}
+                {isTodayColumn(c) ? (
+                  <span className="inline-flex items-center rounded-full bg-[var(--accent)] px-2 py-0.5 font-semibold text-[var(--bg-primary)]">
+                    {columnHeader(c)}
+                  </span>
+                ) : (
+                  columnHeader(c)
+                )}
               </div>
             ))}
           </>
@@ -187,7 +223,17 @@ export default function CalendarGrid({
         {Array.from({ length: rows }, (_, r) =>
           Array.from({ length: columns }, (_, c) => {
             const cell = cellRanges[r][c];
-            const isToday = todayTime >= cell.start.getTime() && todayTime < cell.end.getTime();
+            const isToday = isTodayCell(cell);
+            // The tint says "this is today"; the filled pill would otherwise repeat on every hour row of
+            // a Day grid. Keep the pill for the row that carries the day's own label.
+            const isTodayLabel = isToday && (!allDayRow || r === 0);
+            const cellSpan = cell.end.getTime() - cell.start.getTime();
+            const hasNow =
+              nowTime != null &&
+              cellSpan <= HOUR_MS &&
+              nowTime >= cell.start.getTime() &&
+              nowTime < cell.end.getTime();
+            const nowPct = hasNow ? ((nowTime - cell.start.getTime()) / cellSpan) * 100 : 0;
             return (
               <React.Fragment key={`${r}-${c}`}>
                 {c === 0 && rowLabel ? (
@@ -245,11 +291,25 @@ export default function CalendarGrid({
                       <span
                         className={[
                           "inline-flex max-w-full items-center rounded-full px-1.5 text-[10px] tabular-nums",
-                          isToday ? "bg-[var(--accent)] font-semibold text-[var(--bg-primary)]" : "text-[var(--text-secondary)]",
+                          isTodayLabel ? "bg-[var(--accent)] font-semibold text-[var(--bg-primary)]" : "text-[var(--text-secondary)]",
                         ].join(" ")}
                       >
                         <span className="truncate">{cellLabel(r, c)}</span>
                       </span>
+                    </div>
+                  )}
+                  {/* The current time, on the hour row that contains it. Positioned as a fraction of
+                      the row so it moves between hour boundaries. A cell that is not an hour (Month,
+                      Year) never draws one. */}
+                  {hasNow && (
+                    <div
+                      data-testid="calendar-now-line"
+                      aria-label="Current time"
+                      className="pointer-events-none absolute inset-x-0 z-20 flex items-center"
+                      style={{ top: `${nowPct}%` }}
+                    >
+                      <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--accent)]" aria-hidden="true" />
+                      <span className="h-px flex-1 bg-[var(--accent)]" aria-hidden="true" />
                     </div>
                   )}
                   {compact && singles[r][c].length > 0 && (

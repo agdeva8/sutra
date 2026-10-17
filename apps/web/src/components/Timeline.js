@@ -58,6 +58,7 @@ import useMediaQuery from "../hooks/useMediaQuery";
 import useGoalProgress from "../lib/useGoalProgress";
 import { progressStatus } from "../constants/goalProgress";
 import { planItemEvent, isTodo } from "../lib/events";
+import { istNow, parseClockTime, parseWallClock, parseWallClockAt } from "../lib/istTime";
 import { KIND_STYLE, REMINDER_SLOT_MINUTES, SOURCE_RECURRING, GOAL_PALETTE, GOAL_GLYPH, WEEK_GLYPH, isGoalSession, BLOCK_KIND_REMINDER, goalColor, reminderColor, recurringColor } from "../constants/calendarKinds";
 import { blockColor } from "../constants/blockKinds";
 
@@ -296,16 +297,21 @@ const HORIZONS = [
 ];
 
 const DAY_MS = 86400000;
+/** How long a block with a start but no end is drawn as. */
+const DEFAULT_BLOCK_MINUTES = 60;
 
 /** "YYYY-Qn" identity for a date's quarter — used by the quarter picker. */
 const anonQuarter = (d) => `${d.getFullYear()}-Q${Math.floor(d.getMonth() / 3)}`;
 
 /* ------------------------------- date helpers ----------------------------- */
 
+/* API dates are IST wall-clock. `parseWallClock` reads a date-only or naive
+ * timestamp field by field (never through UTC); a timestamp that carries a
+ * zone is an instant and is shifted into IST first. `startOfDay` then pins the
+ * day, so a value with a time never leaks hours into a date comparison. */
 const parse = (s) => {
-  if (!s) return null;
-  const d = new Date(s + "T00:00:00");
-  return isNaN(d.getTime()) ? null : d;
+  const d = parseWallClock(s);
+  return d ? startOfDay(d) : null;
 };
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -448,10 +454,10 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
   const [viewType, setViewType] = useState("calendar");
   const [view, setView] = useState({
     level: "year",
-    anchor: new Date(new Date().getFullYear(), 0, 1),
+    anchor: new Date(istNow().getFullYear(), 0, 1),
   });
   const [calSpan, setCalSpan] = useState("month");
-  const [calAnchor, setCalAnchor] = useState(() => startOfDay(new Date()));
+  const [calAnchor, setCalAnchor] = useState(() => startOfDay(istNow()));
   // The editable day planner (timetable blocks / blockers)
   // opens when a day is clicked in the calendar view.
   const [selectedDay, setSelectedDay] = useState(null);
@@ -500,7 +506,11 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
     return () => clearTimeout(t);
   }, [selectedDay]);
 
-  const today = useMemo(() => startOfDay(new Date()), []);
+  // "Today" is the IST calendar date, not the device's. The API and the planner
+  // are IST-only (CLAUDE.md); a browser on another zone must still see the day
+  // the plan was written for. `istNow()` carries IST's wall clock in local
+  // fields, so the locally-built grid cells compare against it directly.
+  const today = useMemo(() => startOfDay(istNow()), []);
 
   // Iteration 5 (Bug 11) — prefer the scoped opener so tile-chip
   // clicks carry `scope`/`refId`/`kind` into the new conversation.
@@ -566,11 +576,12 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
   const recentActivity = useMemo(() => {
     const events = [];
     (state?.audit_summary?.recent || []).forEach((a) => {
-      const d = a.created_at ? new Date(a.created_at) : null;
+      // An audited timestamp is an instant; render it on its IST wall clock.
+      const d = parseWallClock(a.created_at);
       if (d) events.push({ date: d, kind: a.type || "event", label: a.summary || a.type });
     });
     (state?.sources || []).forEach((s) => {
-      const d = s.created_at ? new Date(s.created_at) : null;
+      const d = parseWallClock(s.created_at);
       if (d) events.push({ date: d, kind: s.kind || "source", label: s.original_filename || "source" });
     });
     return events.sort((a, b) => a.date - b.date);
@@ -763,7 +774,7 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
           setCalAnchor((a) => addDays(a, -(preset?.days || 30)));
         } else if (e.key === "t" || e.key === "T") {
           e.preventDefault();
-          setCalAnchor(startOfDay(new Date()));
+          setCalAnchor(startOfDay(istNow()));
         } else if (["1", "2", "3", "4", "5"].includes(e.key)) {
           const idx = clamp(parseInt(e.key, 10) - 1, 0, CAL_SPANS.length - 1);
           if (CAL_SPANS[idx]) {
@@ -798,7 +809,7 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
         calAnchor={calAnchor}
         setCalAnchor={setCalAnchor}
         today={today}
-        onAddToDay={() => setAddDay(startOfDay(new Date()))}
+        onAddToDay={() => setAddDay(startOfDay(istNow()))}
       />
 
       {isEmpty && <EmptyState onPrefill={onPrefill} onOpenChatWith={onOpenChatWith} />}
@@ -1173,7 +1184,7 @@ function HeaderStrip({
       </p>
       {isNarrow && viewType === "calendar" && (
         <div className="flex justify-end items-center gap-2">
-          <TimelineTodayButton onClick={() => setCalAnchor(startOfDay(new Date()))} />
+          <TimelineTodayButton onClick={() => setCalAnchor(startOfDay(istNow()))} />
           {onAddToDay && <AddToDayButton onClick={onAddToDay} />}
         </div>
       )}
@@ -1574,7 +1585,7 @@ function CalendarNav({ span, setSpan, anchor, setAnchor, today, children, onAddT
                   {pickDays.map((d, i) =>
                     d ? (
                       <button
-                        key={d.toISOString()}
+                        key={fmtIso(d)}
                         type="button"
                         onClick={() => jumpToDay(d)}
                         className={`h-8 rounded text-xs tabular-nums transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
@@ -1608,7 +1619,7 @@ function CalendarNav({ span, setSpan, anchor, setAnchor, today, children, onAddT
         </button>
         {!isNarrow && (
           <>
-            <TimelineTodayButton onClick={() => setAnchor(startOfDay(new Date()))} />
+            <TimelineTodayButton onClick={() => setAnchor(startOfDay(istNow()))} />
             {onAddToDay && <AddToDayButton onClick={onAddToDay} />}
           </>
         )}
@@ -1838,7 +1849,7 @@ function StripView({ state, today, openChat, onSelectItem, onPrefill }) {
       push("milestone", m, d);
     });
     (state?.blockers || []).forEach((b) => {
-      if (b.end_date && new Date(b.end_date) < today) return;
+      if (b.end_date && parse(b.end_date) < today) return;
       out.today.push({ kind: "blocker", item: b, date: today });
     });
     return out;
@@ -1848,7 +1859,7 @@ function StripView({ state, today, openChat, onSelectItem, onPrefill }) {
     const goals = (state?.goals || []).filter((g) => g.status !== "dropped").length;
     const milestones = state?.milestones?.length || 0;
     const blockers = (state?.blockers || []).filter(
-      (b) => !b.end_date || new Date(b.end_date) >= today,
+      (b) => !b.end_date || parse(b.end_date) >= today,
     ).length;
     return { goals, milestones, blockers };
   }, [state, today]);
@@ -2380,22 +2391,34 @@ function CalendarView({
   const sessionCards = useMemo(
     () =>
       (blocks || []).map((b) => {
-        const hhmm = (t) => String(t || "").slice(0, 5);
+        // A block's time can be a bare "HH:MM" or a full timestamp; read both as
+        // IST wall clock, and print nothing when it is neither.
+        const clockOf = (v) => {
+          const bare = parseClockTime(v);
+          if (bare) return bare;
+          const d = parseWallClock(v);
+          return d ? { hours: d.getHours(), minutes: d.getMinutes() } : null;
+        };
+        const hhmm = (t) => {
+          const c = clockOf(t);
+          return c ? `${String(c.hours).padStart(2, "0")}:${String(c.minutes).padStart(2, "0")}` : "";
+        };
         // Check if it's the new 4-kind block (has block_kind) or old timetable block (has kind).
         const isNewBlock = !!b.block_kind;
         const date = isNewBlock ? (b.day || b.start_date || b.target_date) : b.block_date;
         const title = isNewBlock ? b.title : b.label;
         const time = isNewBlock ? b.start : b.start_time;
+        const clock = clockOf(time);
         const goalTitle = isNewBlock ? (b.goal_title || (goals.find(g => g.id === b.goal_id)?.title) || "") : (b.goal_title || "");
         const color = isNewBlock ? blockColor(b) : timeBlockStyle(b).color;
         const glyph = isNewBlock ? KIND_STYLE[b.block_kind]?.glyph || "◆" : timeBlockStyle(b).glyph;
         return {
           id: `session-${b.id}`,
-          item: { id: b.id, kind: "block", title, date, start_date: date, end_date: date, goalTitle, goal_id: b.goal_id, source_id: b.source_id, why: b.why, start_time: time, end_time: isNewBlock ? b.end : b.end_time, block_kind: b.block_kind },
-          date: new Date(`${String(date).slice(0, 10)}T00:00:00`),
+          item: { id: b.id, kind: "block", title, date, start_date: date, end_date: date, goalTitle, goal_id: b.goal_id, source_id: b.source_id, why: b.why, start_time: clock ? hhmm(time) : undefined, end_time: isNewBlock ? b.end : b.end_time, block_kind: b.block_kind },
+          date: parse(date),
           color,
           glyph,
-          title: time ? `${hhmm(time)} ${title}`.trim() : title,
+          title: clock ? `${hhmm(time)} ${title}`.trim() : title,
           goalTitle,
           fulfils: "",
           hours: "",
@@ -2489,9 +2512,9 @@ function CalendarView({
         // Carried so a finished item strikes through in the grid, the same as everywhere else.
         status: p.status || "",
         date: p.due_date
-          ? new Date(`${String(p.due_date).slice(0, 10)}T00:00:00`)
+          ? parse(p.due_date)
           : p.start_date
-          ? new Date(`${String(p.start_date).slice(0, 10)}T00:00:00`)
+          ? parse(p.start_date)
           : null,
       };
     };
@@ -2519,7 +2542,7 @@ function CalendarView({
             goalTitle: m.goal_title || (gi >= 0 ? goals[gi].title : ""),
             color: hasVerdict(verdicts[m.id]) ? progressStatus(verdicts[m.id].status).color : (gi < 0 ? GOAL_PALETTE[0] : goalColor(goals[gi].id)),
             status: m.status || "",
-            date: new Date(`${String(raw).slice(0, 10)}T00:00:00`),
+            date: parse(raw),
           };
         }),
     [milestones, goals, verdicts],
@@ -2548,7 +2571,7 @@ function CalendarView({
             color: ev.color,
             hours: hours ? `${hours[1]}h` : "",
             status: p.status || "",
-            date: new Date(`${String(raw).slice(0, 10)}T00:00:00`),
+            date: parse(raw),
           };
         }),
     [planItems, goals],
@@ -2559,16 +2582,20 @@ function CalendarView({
     const out = [];
     (reminders || []).forEach((r) => {
       (r.days || []).forEach((dayIso) => {
-        (r.times || []).forEach((t) => {
-          const day = new Date(`${String(dayIso).slice(0, 10)}T00:00:00`);
-          const [h, m] = String(t).split(":").map(Number);
-          const startAt = new Date(day);
-          startAt.setHours(h || 0, m || 0, 0, 0);
-          const endAt = new Date(startAt.getTime() + REMINDER_SLOT_MINUTES * 60000);
+        // A reminder with no times still belongs on its day; one untimed card
+        // puts it in the all-day row instead of not rendering it at all.
+        const times = r.times && r.times.length ? r.times : [null];
+        times.forEach((t) => {
+          const day = parse(dayIso);
+          if (!day) return;
+          // A time that is missing or not "HH:MM" is not a slot: leave the card
+          // untimed (the grid's all-day row) rather than defaulting it to 00:00.
+          const startAt = parseWallClockAt(dayIso, t);
+          const endAt = startAt ? new Date(startAt.getTime() + REMINDER_SLOT_MINUTES * 60000) : null;
           out.push({
             id: `rem-${r.id}-${dayIso}-${t}`,
-            item: { id: r.id, kind: "reminder", title: r.title, date: day, start_date: dayIso, end_date: dayIso, startAt, endAt, goal_id: r.goal_id, time: t },
-            title: `${t} ${r.title}`,
+            item: { id: r.id, kind: "reminder", title: r.title, date: day, start_date: dayIso, end_date: dayIso, startAt: startAt || undefined, endAt: endAt || undefined, goal_id: r.goal_id, time: t },
+            title: startAt ? `${t} ${r.title}` : r.title,
             glyph: KIND_STYLE.reminder.glyph,
             look: KIND_STYLE.reminder.look,
             goalTitle: "",
@@ -2632,17 +2659,18 @@ function CalendarView({
 
   // Timed blocks as cards carrying their own `startAt`/`endAt`. The grid places every item by the one
   // overlap rule, so a session has to say when it starts and ends — not which row it belongs to.
+  //
+  // A block with no start time is NOT a midnight block: it carries no `startAt`, so the grid drops it in
+  // the all-day row. Defaulting a missing or unparseable time to "0:0" is what made untimed items show at
+  // 12 AM.
   const blockCards = useMemo(
     () =>
       (blocks || []).map((b) => {
-        const day = new Date(`${String(b.block_date).slice(0, 10)}T00:00:00`);
-        const [sh, sm] = String(b.start_time || "0:0").split(":").map(Number);
-        const [eh, em] = String(b.end_time || "0:0").split(":").map(Number);
-        const startAt = new Date(day);
-        startAt.setHours(sh || 0, sm || 0, 0, 0);
-        const endAt = new Date(day);
-        endAt.setHours(eh || 0, em || 0, 0, 0);
-        if (endAt <= startAt) endAt.setDate(endAt.getDate() + 1); // a session running past midnight
+        const day = parse(b.block_date);
+        const startAt = parseWallClockAt(b.block_date, b.start_time);
+        let endAt = parseWallClockAt(b.block_date, b.end_time);
+        if (startAt && !endAt) endAt = new Date(startAt.getTime() + DEFAULT_BLOCK_MINUTES * 60000);
+        if (startAt && endAt && endAt <= startAt) endAt.setDate(endAt.getDate() + 1); // a session running past midnight
         return {
           id: b.id,
           item: {
@@ -2652,8 +2680,8 @@ function CalendarView({
             date: day,
             start_date: b.block_date,
             end_date: b.block_date,
-            startAt,
-            endAt,
+            startAt: startAt || undefined,
+            endAt: endAt || undefined,
             goal_id: b.goal_id,
             goalTitle: b.goal_title,
             goal_title: b.goal_title,
@@ -2805,6 +2833,8 @@ function CalendarView({
   // are hours. Nothing here knows what an "hour grid" is — it is just m × n.
   if (span === "day") {
     const d = startOfDay(anchor);
+    // The clock line belongs only on the day we are actually in, at IST now.
+    const now = sameDay(d, today) ? istNow() : null;
     return (
       <div className="space-y-2">
         {filterBar}
@@ -2825,6 +2855,7 @@ function CalendarView({
           rowLabel={(r) => (r === 0 ? "all-day" : fmtHourLabel(r - 1))}
           cards={[...blockCards, ...visibleCards, ...unscheduledTaskCards, ...reminderCards]}
           today={today}
+          now={now}
           onSelectItem={onSelectItem}
           onSelectSlot={onSelectSlot}
           onBlockDrop={handleBlockDrop}
@@ -2869,6 +2900,7 @@ function CalendarView({
   // Week span → the same grid, seven day columns. Identical structure to Day; only `columns` differs.
   if (span === "week") {
     const ws = startOfWeek(anchor);
+    const now = today >= ws && today < addDays(ws, 7) ? istNow() : null;
     return (
       <div className="space-y-2">
         {filterBar}
@@ -2893,6 +2925,7 @@ function CalendarView({
           rowLabel={(r) => (r === 0 ? "all-day" : fmtHourLabel(r - 1))}
           cards={[...blockCards, ...visibleCards, ...unscheduledTaskCards, ...reminderCards]}
           today={today}
+          now={now}
           onSelectItem={onSelectItem}
           onSelectSlot={onSelectSlot}
           onBlockDrop={handleBlockDrop}
