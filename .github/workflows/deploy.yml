@@ -189,8 +189,13 @@ jobs:
         # `blocks-empty` exits 0 (empty: copy now), 1 (rows already there: skip) or 2 (could not
         # read the table). Only 1 may skip: an error has to stop the run before the deploy, or new
         # code would go live reading an empty table.
+        # The repo variable BLOCKS_BACKFILL=always forces the copy (and the catch-up after the deploy)
+        # for runs where calendar_blocks already holds rows but the old code has written since: set it
+        # for one deploy, then delete it.
+        env:
+          BLOCKS_BACKFILL: ${{ vars.BLOCKS_BACKFILL }}
         run: |
-          if [ "$MODE" = "backfill" ]; then
+          if [ "$MODE" = "backfill" ] || [ "$BLOCKS_BACKFILL" = "always" ]; then
             gate=0
           else
             set +e

@@ -9,7 +9,8 @@
   "functions": {
     "api/index.py": {
       "maxDuration": 300,
-      "includeFiles": "apps/{api/sutra_api,agentv2}/**"
+      "includeFiles": "apps/{api/sutra_api,agentv2}/**",
+      "excludeFiles": "apps/agentv2/{demo,tests}/**"
     }
   },
   "rewrites": [
