@@ -4,6 +4,12 @@
 own session, so a slow or failing model never delays or loses the capture. The
 `status` column is the queue (docs/prd/scratchpad.md §9): `retry` and a future
 poller both just re-run `process` on a row.
+
+An entry can carry several sources — a note with three photos is one entry, not
+three — and the photos are uploaded in the background after Send. The attachments
+are confirmed onto the entry with `POST /scratch/{id}/sources`, and only then does
+the client ask for the entry to be filed. The vision reading happens here, not at
+upload time, so an upload never waits on the model.
 """
 from __future__ import annotations
 
@@ -12,12 +18,16 @@ import logging
 from datetime import datetime, timezone
 
 from agentv2 import local_now, triage_entry
+from agentv2.llm import Image
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from . import storage
 from .agent_store import SqlStore
+from .core import extract as extract_mod
 from .db import get_engine
 from .models import ScratchEntry, Source
+from .vision import IMAGE_UNREADABLE, describe_image, needs_reading
 
 log = logging.getLogger(__name__)
 
@@ -28,22 +38,82 @@ MSG_UNEXPECTED = "Something went wrong reading this. Try again."
 SOURCE_TEXT_CHARS = 8000
 
 #: What the user is told while an entry is filed, in order. Plain words.
-SAY_OPENING_PHOTO = "Opening your photo…"
+SAY_READING_PHOTO = "Reading the photo…"
 SAY_READING = "Reading what you wrote…"
 SAY_DECIDING = "Working out what this is and where it belongs…"
 SAY_FILING = "Filing it into your plan…"
 
+#: Sources attached after the entry was created, kept in the entry's existing JSONB `result` so that
+#: attaching a confirmed upload needs no new column. `ScratchEntry.source_id` stays the primary (first)
+#: source, which is what triage links when the note is filed as a source.
+ATTACHED_SOURCES_KEY = "sources"
+#: When the current filing started, under the same JSONB. `/process` reads it to reclaim an entry whose
+#: filing died with its request instead of leaving the row `processing` for ever.
+PROCESSING_SINCE_KEY = "processing_since"
 
-async def _images(session, entry: ScratchEntry) -> list[tuple[bytes, str]]:
-    if entry.kind != "image" or not entry.source_id:
+
+def attached_source_ids(entry: ScratchEntry) -> list[str]:
+    """Every source on this entry: the primary one first, then the rest in the order they arrived."""
+    ids: list[str] = []
+    if entry.source_id:
+        ids.append(entry.source_id)
+    for source_id in (entry.result or {}).get(ATTACHED_SOURCES_KEY) or []:
+        if isinstance(source_id, str) and source_id not in ids:
+            ids.append(source_id)
+    return ids
+
+
+def attach_source(entry: ScratchEntry, source_id: str) -> list[str]:
+    """Record one confirmed upload on the entry, idempotently, and return the full list."""
+    ids = attached_source_ids(entry)
+    if source_id not in ids:
+        ids.append(source_id)
+    entry.result = {
+        **(entry.result or {}),
+        # `source_id` is not repeated here; `attached_source_ids` already reads it.
+        ATTACHED_SOURCES_KEY: [i for i in ids if i != entry.source_id],
+    }
+    return ids
+
+
+async def _entry_sources(session, entry: ScratchEntry) -> list[Source]:
+    """The entry's source rows, in attachment order, owned by the same user (other rows never enter)."""
+    ids = attached_source_ids(entry)
+    if not ids:
         return []
-    src = await session.get(Source, entry.source_id)
-    obj = await storage.get(src.storage_path) if src and src.storage_path else None
-    if obj is None:
-        return []
-    # The row records what the client claimed; the store may only know "octet-stream".
-    mime = src.content_type if obj.content_type == "application/octet-stream" else obj.content_type
-    return [(obj.data, mime)]
+    rows = (await session.execute(
+        select(Source).where(Source.user_id == entry.user_id, Source.id.in_(ids))
+    )).scalars().all()
+    by_id = {row.id: row for row in rows}
+    return [by_id[i] for i in ids if i in by_id]
+
+
+async def _read_images(entry: ScratchEntry, sources: list[Source], say) -> list[Image]:
+    """Read the images attached to the entry and return their bytes for triage.
+
+    Only an excerpt that is still pending is sent to the model; a source already marked unreadable is
+    not retried on every filing. A missing object or a failed reading is stored as
+    `IMAGE_UNREADABLE`, so the entry still files with the text it has.
+    """
+    images: list[Image] = []
+    if any(needs_reading(src.text_excerpt) for src in sources
+           if extract_mod.is_image(src.original_filename, src.content_type)):
+        say(SAY_READING_PHOTO)
+    for src in sources:
+        if not extract_mod.is_image(src.original_filename, src.content_type):
+            continue
+        data, mime = b"", src.content_type
+        if src.storage_path:
+            obj = await storage.get(src.storage_path)
+            if obj is not None:
+                data = obj.data
+                # The row records what the client claimed; the store may only know "octet-stream".
+                mime = src.content_type if obj.content_type == "application/octet-stream" else obj.content_type
+        if needs_reading(src.text_excerpt):
+            src.text_excerpt = await describe_image(data, mime) if data else IMAGE_UNREADABLE
+        if data:
+            images.append((data, mime))
+    return images
 
 
 async def process(entry_id: str, say=None) -> None:
@@ -55,11 +125,14 @@ async def process(entry_id: str, say=None) -> None:
         if entry is None:
             return
         entry.status = "processing"
+        entry.result = {**(entry.result or {}), PROCESSING_SINCE_KEY: datetime.now(timezone.utc).isoformat()}
         await session.commit()
 
         try:
-            say(SAY_OPENING_PHOTO if entry.kind == "image" else SAY_READING)
-            images = await _images(session, entry)
+            say(SAY_READING)
+            sources = await _entry_sources(session, entry)
+            source_ids = attached_source_ids(entry)
+            images = await _read_images(entry, sources, say)
             # Voice arrives already transcribed by the browser; an empty transcript is a failure to hear.
             if entry.kind == "audio" and not entry.body.strip():
                 outcome = None
@@ -71,18 +144,27 @@ async def process(entry_id: str, say=None) -> None:
                 clarified = (entry.result or {}).get("clarification")
                 text = f"{entry.body}\n\nClarified by the user: {clarified}" if clarified else entry.body
                 # A file or link attached to the note: what was read from it is part of what the note means.
-                src = await session.get(Source, entry.source_id) if entry.source_id else None
-                if src is not None and (src.text_excerpt or "").strip():
-                    text = f"{text}\n\nAttached ({src.url or src.original_filename}):\n{src.text_excerpt[:SOURCE_TEXT_CHARS]}".strip()
+                # Images travel separately, as image parts the model can actually see.
+                for src in sources:
+                    if extract_mod.is_image(src.original_filename, src.content_type):
+                        continue
+                    if (src.text_excerpt or "").strip():
+                        text = (
+                            f"{text}\n\nAttached ({src.url or src.original_filename}):\n"
+                            f"{src.text_excerpt[:SOURCE_TEXT_CHARS]}"
+                        ).strip()
                 say(SAY_DECIDING)
                 outcome = await triage_entry(
-                    store, text, entry_id=entry.id, images=images, source_id=entry.source_id, now=now
+                    store, text, entry_id=entry.id, images=images,
+                    source_id=source_ids[0] if source_ids else None,
+                    now=now,
                 )
         except Exception:  # noqa: BLE001 - nothing here may lose the entry
             log.exception("scratch entry %s failed", entry_id)
             await session.rollback()
             entry = await session.get(ScratchEntry, entry_id)
             entry.status, entry.error = "failed", MSG_UNEXPECTED
+            entry.result = {k: v for k, v in (entry.result or {}).items() if k != PROCESSING_SINCE_KEY}
             await session.commit()
             return
 
@@ -91,7 +173,11 @@ async def process(entry_id: str, say=None) -> None:
             entry.status = outcome.status
             entry.question = outcome.question
             entry.error = outcome.error
-            entry.result = {"bucket": outcome.bucket, "lines": outcome.lines, "proposed": outcome.proposed}
+            # Keep the attached sources; drop the lease so a later retry starts clean.
+            entry.result = {
+                **{k: v for k, v in (entry.result or {}).items() if k != PROCESSING_SINCE_KEY},
+                "bucket": outcome.bucket, "lines": outcome.lines, "proposed": outcome.proposed,
+            }
             if outcome.status == "handled":
                 entry.handled_at = datetime.now(timezone.utc)
         await session.commit()

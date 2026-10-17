@@ -1,7 +1,11 @@
-"""Read an uploaded image with the vision model, once, at upload time.
+"""Read an uploaded image with the vision model, while the Scratch entry that owns it is filed.
 
 The reading is stored as the source's `text_excerpt`, so later chat turns need only the text and never
 the bytes (which on a serverless host are not guaranteed to still be there).
+
+It deliberately does **not** run at upload time: an upload returns as soon as the bytes are stored
+(`text_pending: true`) so capture is instant, and `scratch_service.process` reads the pending images
+before triage, where its progress line can be shown.
 """
 from __future__ import annotations
 
@@ -21,6 +25,15 @@ IMAGE_PROMPT = (
 )
 #: Marker stored when the model could not read the image, so it is distinguishable from an empty file.
 IMAGE_UNREADABLE = "[image could not be read]"
+
+
+def needs_reading(excerpt: str | None) -> bool:
+    """Whether an image's excerpt is still an outstanding reading.
+
+    Empty means the upload arrived with `text_pending`; the unreadable marker is a finished attempt and
+    is not retried on every filing.
+    """
+    return not (excerpt or "").strip() and excerpt != IMAGE_UNREADABLE
 
 
 def _describe(data: bytes, content_type: str) -> str:

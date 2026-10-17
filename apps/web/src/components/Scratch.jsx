@@ -48,8 +48,8 @@ const STATE_TONE = {
   failed: "text-[var(--danger)] bg-[color-mix(in_srgb,var(--danger)_12%,transparent)]",
 };
 
-/** Attachment states shown on the chip under the composer. */
-const ATTACH_LABEL = { uploading: "Uploading…", ready: "Attached", error: "Couldn't attach" };
+/** Attachment states shown on the chip under the composer. Nothing uploads until the note is sent. */
+const ATTACH_LABEL = { ready: "Ready to send", error: "Can't send this" };
 
 export default function Scratch({
   inbox = [],
@@ -58,8 +58,6 @@ export default function Scratch({
   goals = [],
   initialTab = "write",
   onSend,
-  onUpload,
-  onAddLink,
   onAnswer,
   onRetry,
   onUndo,
@@ -72,49 +70,41 @@ export default function Scratch({
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
 
-  // Files, photos and links added to this note. Each is uploaded as soon as it is picked, so "Send" only
-  // waits for ones still in flight and the user sees every one of them attached (or not).
+  // Files, photos and links added to this note. Nothing leaves the phone at this point: Send writes the
+  // note at once and the parent hands each attachment to the background upload queue, so picking a photo
+  // never delays the sentence (see `lib/scratchUploads.js`).
   const [attachments, setAttachments] = useState([]);
   const [linkOpen, setLinkOpen] = useState(false);
   const patchAttachment = (key, patch) => setAttachments((all) => all.map((a) => (a.key === key ? { ...a, ...patch } : a)));
 
   const atLimit = attachments.length >= MAX_ATTACHMENTS_PER_NOTE;
 
-  async function attachFile(file, kind) {
+  function attachFile(file, kind) {
     const key = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const preview = kind === "image" ? URL.createObjectURL(file) : "";
-    // The count and the size are judged before the upload starts, so the person is told rather than
-    // left watching a bar that will only end in a rejection.
+    // The count and the size are judged here, before Send, so the person hears "too big" now rather
+    // than after the note has already gone.
     const problem = uploadProblem(file, attachments.length);
-    if (problem) {
-      setAttachments((all) => [...all, { key, kind, name: file.name, preview, status: "error", error: problem }]);
-      return;
-    }
-    setAttachments((all) => [...all, { key, kind, name: file.name, preview, status: "uploading", percent: 0 }]);
-    try {
-      const source = await onUpload?.(file, (percent) => patchAttachment(key, { percent }));
-      patchAttachment(key, { status: "ready", percent: 100, id: source.id });
-    } catch (e) {
-      patchAttachment(key, { status: "error", error: e?.message || "Upload failed" });
-    }
+    const chip = { key, kind, name: file.name, file, preview, status: problem ? "error" : "ready" };
+    if (problem) chip.error = problem;
+    setAttachments((all) => [...all, chip]);
   }
 
-  async function attachLink(url, excerpt) {
+  function attachLink(url, excerpt) {
     if (atLimit) return;
     const key = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    setAttachments((all) => [...all, { key, kind: "link", name: url, status: "uploading" }]);
-    try {
-      const source = await onAddLink?.(url, excerpt);
-      patchAttachment(key, { status: "ready", id: source.id });
-    } catch (e) {
-      patchAttachment(key, { status: "error", error: e?.message || "Couldn't add that link" });
-    }
+    setAttachments((all) => [...all, { key, kind: "link", name: url, url, excerpt, status: "ready" }]);
+  }
+
+  /** Re-check a chip that was refused before Send. A refused file has not moved, so this is the same test. */
+  function retryAttachment(a) {
+    const problem = uploadProblem(a.file, attachments.length - 1);
+    patchAttachment(a.key, problem ? { status: "error", error: problem } : { status: "ready", error: "" });
   }
 
   const removeAttachment = (key) => setAttachments((all) => all.filter((a) => a.key !== key));
-  const uploading = attachments.some((a) => a.status === "uploading");
   const ready = attachments.filter((a) => a.status === "ready");
-  const canSend = (text.trim() || ready.length > 0) && !uploading && !sending;
+  const canSend = (text.trim() || ready.length > 0) && !sending;
 
   async function send() {
     if (!canSend) return;
@@ -215,7 +205,7 @@ export default function Scratch({
             {attachments.length > 0 && (
               <ul className="space-y-1.5" data-testid="scratch-attachments">
                 {attachments.map((a) => (
-                  <AttachmentChip key={a.key} a={a} onRemove={() => removeAttachment(a.key)} />
+                  <AttachmentChip key={a.key} a={a} onRemove={() => removeAttachment(a.key)} onRetry={() => retryAttachment(a)} />
                 ))}
               </ul>
             )}
@@ -248,7 +238,6 @@ export default function Scratch({
                 once there is a first entry, so it is never in the way of a user who already knows it. */}
             {inbox.length === 0 && handled.length === 0 && <MeetScratchCard />}
             {atLimit && <p className="text-[12px] text-[var(--text-muted)]">That's the most one note can hold ({MAX_ATTACHMENTS_PER_NOTE} attachments). Send it, then add more in another note.</p>}
-            {uploading && <p className="text-[12px] text-[var(--text-muted)]">Waiting for your attachment to finish uploading…</p>}
             <LinkPreviewDialog
               open={linkOpen}
               onClose={() => setLinkOpen(false)}
@@ -295,9 +284,14 @@ export default function Scratch({
   );
 }
 
-/** One attachment under the composer: what it is, and whether it is attached yet. */
-function AttachmentChip({ a, onRemove }) {
-  const tone = a.status === "error" ? "text-[var(--danger)]" : a.status === "ready" ? "text-[var(--accent)]" : "text-[var(--text-muted)]";
+/**
+ * One attachment under the composer: what it is, and whether it is ready to go with the note.
+ *
+ * Nothing here is in flight any more — the upload starts only after Send — so the only failure is one
+ * caught before sending (too big, or one past the per-note limit). That chip offers Retry beside the ✕.
+ */
+function AttachmentChip({ a, onRemove, onRetry }) {
+  const tone = a.status === "error" ? "text-[var(--danger)]" : "text-[var(--accent)]";
   return (
     <li data-testid={`scratch-attachment-${a.status}`} className="relative flex items-center gap-2.5 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-2">
       {a.preview ? (
@@ -310,27 +304,23 @@ function AttachmentChip({ a, onRemove }) {
       <div className="min-w-0 flex-1">
         <p className="truncate text-[13px] text-[var(--text-primary)]">{a.name}</p>
         <p className={`flex items-center gap-1 text-[12px] ${tone}`}>
-          {a.status === "uploading" && <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />}
           {a.status === "ready" && <Check className="h-3 w-3" aria-hidden="true" />}
           {a.status === "error" && <AlertCircle className="h-3 w-3" aria-hidden="true" />}
-          {a.status === "error"
-            ? a.error || ATTACH_LABEL.error
-            : a.status === "uploading" && a.percent > 0
-              ? `Uploading ${a.percent}%`
-              : ATTACH_LABEL[a.status]}
+          {a.status === "error" ? a.error || ATTACH_LABEL.error : ATTACH_LABEL[a.status]}
         </p>
       </div>
+      {a.status === "error" && (
+        <button
+          type="button"
+          onClick={onRetry}
+          className="h-9 shrink-0 rounded-full px-2 text-[12px] text-[var(--accent)] hover:bg-[var(--bg-tertiary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+        >
+          Retry
+        </button>
+      )}
       <button type="button" onClick={onRemove} aria-label={`Remove ${a.name}`} className="h-9 w-9 shrink-0 flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)]">
         <X className="h-4 w-4" aria-hidden="true" />
       </button>
-      {a.status === "uploading" && (
-        <span aria-hidden="true" className="absolute inset-x-0 bottom-0 h-0.5 bg-[var(--bg-tertiary)]">
-          <span
-            className="block h-full bg-[var(--accent)] transition-[width] duration-200 ease-out"
-            style={{ width: `${a.percent || 0}%` }}
-          />
-        </span>
-      )}
     </li>
   );
 }

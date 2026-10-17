@@ -15,6 +15,21 @@ export const NOTE_COUNTER_FROM = 0.8;
 
 export const formatMegabytes = (bytes) => `${Math.round(bytes / (1024 * 1024))} MB`;
 
+/**
+ * A photo is shrunk on the phone before it is uploaded: longest edge at most this, JPEG at the quality
+ * below. A 12 MP camera photo becomes roughly 300–600 KB, which is what makes a background upload both
+ * quick and cheap. Non-images are never re-encoded.
+ */
+export const MAX_PHOTO_EDGE_PX = 1600;
+export const PHOTO_JPEG_QUALITY = 0.8;
+
+/**
+ * Background-upload retries. Attempts run 1..MAX_UPLOAD_ATTEMPTS; the wait before attempt N+1 is
+ * UPLOAD_BACKOFF_MS[N-1]. The last entry is reused if the list is shorter than the attempts.
+ */
+export const MAX_UPLOAD_ATTEMPTS = 5;
+export const UPLOAD_BACKOFF_MS = [2000, 5000, 15000, 60000];
+
 /** An error sentence if `file` is too big to upload, else "". */
 export function uploadSizeProblem(file) {
   return file && file.size > MAX_UPLOAD_BYTES ? `Too big — the limit is ${formatMegabytes(MAX_UPLOAD_BYTES)}.` : "";

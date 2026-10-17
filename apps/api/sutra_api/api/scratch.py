@@ -7,7 +7,7 @@ cannot drift.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy import select
@@ -24,7 +24,14 @@ from ..deps import CurrentUser, require_user
 from ..ids import new_id
 from ..agent_store import AUDIT_APPLY, SqlStore
 from ..models import SCRATCH_KINDS, AuditEntry, CalendarBlock, Goal, PlanItem, ScratchEntry, Source
-from ..scratch_service import process
+from ..scratch_service import (
+    ATTACHED_SOURCES_KEY,
+    PROCESSING_SINCE_KEY,
+    STUCK_AFTER_S,
+    attach_source,
+    attached_source_ids,
+    process,
+)
 from ..stream import progress_stream, sse_response, wants_stream
 from ..wire import iso_dt
 
@@ -86,7 +93,12 @@ def _row(e: ScratchEntry, *, undoable: bool | None = None, linkable: int | None 
         "kind": e.kind,
         "body": e.body,
         "source_id": e.source_id,
+        # Every source on the entry, in attachment order. A note with three photos is one entry.
+        "source_ids": attached_source_ids(e),
         "status": e.status,
+        # A processing row nobody is working on any more. The client files it again instead of leaving
+        # it on screen as "Reading…" for ever; a row with a live lease reports false.
+        "stale": e.status == "processing" and filing_is_stale(e, datetime.now(timezone.utc)),
         "question": e.question,
         "error": e.error,
         "result": e.result,
@@ -292,9 +304,13 @@ async def create_entry(
         raise HTTPException(status_code=400, detail=f"kind must be one of {', '.join(SCRATCH_KINDS)}")
     text = str(body.get("body") or "").strip()[:BODY_MAX_CHARS]
     source_id = body.get("source_id") or None
+    deferred = body.get("defer") is True
     if kind == "text" and not text:
         raise HTTPException(status_code=400, detail="body is required")
-    if kind in ("image", "file") and not source_id:
+    # A deferred entry is created before its uploads finish: the client confirms each attachment with
+    # `POST /scratch/{id}/sources` and only then asks for it to be filed. A non-deferred create still
+    # has to name the source it was written around.
+    if kind in ("image", "file") and not source_id and not deferred:
         raise HTTPException(status_code=400, detail="source_id is required")
     if source_id:
         src = await session.get(Source, source_id)
@@ -307,7 +323,7 @@ async def create_entry(
     await session.commit()
     # `defer`: the client will start the work itself with `POST /scratch/{id}/process`, which streams
     # progress. That is how a serverless host gets it done, and how the user sees what is happening.
-    if body.get("defer") is not True:
+    if not deferred:
         await run_after(background, process, entry.id)
         await session.refresh(entry)
     return _row(entry)
@@ -317,6 +333,26 @@ async def create_entry(
 PROCESS_FIRST = "Got it."
 
 
+def filing_is_stale(entry: ScratchEntry, now: datetime) -> bool:
+    """Whether a `processing` entry's filing has outlived every legitimate run.
+
+    A filing that died with its request (the tab was closed, a serverless instance ended) leaves the
+    row `processing` with nobody working on it. Without a reclaim the entry sat in Waiting for ever.
+    The start time is the lease written by `scratch_service.process`; a row with no lease predates it,
+    so it is treated as stale.
+    """
+    since = (entry.result or {}).get(PROCESSING_SINCE_KEY)
+    if not isinstance(since, str):
+        return True
+    try:
+        started = datetime.fromisoformat(since)
+    except ValueError:
+        return True
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    return (now - started).total_seconds() >= STUCK_AFTER_S
+
+
 @router.post("/scratch/{entry_id}/process", dependencies=[Depends(llm_rate_limit)])
 async def process_entry(
     entry_id: str,
@@ -324,11 +360,17 @@ async def process_entry(
     session: AsyncSession = Depends(get_session),
     user: CurrentUser = Depends(require_user),
 ) -> object:
-    """File one pending entry now, streaming what is happening. A no-op for an entry already past `pending`."""
+    """File one pending entry now, streaming what is happening.
+
+    A no-op for an entry already past `pending`, except a `processing` one whose filing went stale:
+    that is reclaimed and filed again, so a visit recovers what a closed tab left behind.
+    """
     entry = await session.get(ScratchEntry, entry_id)
     if entry is None or entry.user_id != user.user_id:
         raise HTTPException(status_code=404, detail="Entry not found")
-    runnable = entry.status == "pending"
+    runnable = entry.status == "pending" or (
+        entry.status == "processing" and filing_is_stale(entry, datetime.now(timezone.utc))
+    )
 
     async def job(say) -> dict:
         if runnable:
@@ -339,6 +381,42 @@ async def process_entry(
     if wants_stream(request):
         return sse_response(progress_stream(job, first=PROCESS_FIRST))
     return await job(lambda _line: None)
+
+
+@router.post("/scratch/{entry_id}/sources")
+async def attach_entry_source(
+    entry_id: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(require_user),
+) -> dict:
+    """Record an upload that finished after the entry was created.
+
+    The composer sends at once and uploads in the background, so the source row exists only when its
+    bytes are confirmed. This is the one link between them: the entry stays `pending` (nothing to file
+    yet) until the client asks for `POST /scratch/{id}/process` once every attachment has landed.
+    """
+    try:
+        body = (await request.json()) or {}
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    source_id = str(body.get("source_id") or "")
+    if not source_id:
+        raise HTTPException(status_code=400, detail="source_id is required")
+
+    entry = await session.get(ScratchEntry, entry_id)
+    if entry is None or entry.user_id != user.user_id:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    if entry.status != "pending":
+        raise HTTPException(status_code=409, detail="Only a pending entry can take an attachment")
+    src = await session.get(Source, source_id)
+    if src is None or src.user_id != user.user_id or src.is_deleted:
+        raise HTTPException(status_code=404, detail="Source not found")
+
+    if source_id not in attached_source_ids(entry):
+        attach_source(entry, source_id)
+        await session.commit()
+    return _row(entry)
 
 
 @router.get("/scratch")
@@ -498,6 +576,8 @@ async def retry_entry(
     if entry.status not in ("failed", "needs_input"):
         raise HTTPException(status_code=409, detail="Only a failed or waiting entry can be retried")
     entry.status, entry.error, entry.question = "pending", None, None
+    # A stale filing lease from a previous attempt would make the row look busy; this run owns it.
+    entry.result = {k: v for k, v in (entry.result or {}).items() if k != PROCESSING_SINCE_KEY}
     await session.commit()
     # Filed by the client via `/process` (streamed), not inline: see `chat_entry`.
     await session.refresh(entry)
@@ -537,7 +617,9 @@ async def chat_entry(
         raise HTTPException(status_code=503, detail=step.error)
     result = {"chat": [list(t) for t in step.turns]}
     if step.resolved:
-        entry.result = {**result, "clarification": step.resolved}
+        # Merge, not replace: the entry's attached-source ids (and anything else on the row) must survive
+        # the chat turn, because the filing that follows reads them.
+        entry.result = {**(entry.result or {}), **result, "clarification": step.resolved}
         entry.status, entry.question = "pending", None
         await session.commit()
         # Not filed here: filing runs the whole triage (often 10-20s), which used to hold this reply
@@ -545,7 +627,7 @@ async def chat_entry(
         # which streams progress; an entry nobody files is picked up by the recovery job.
         await session.refresh(entry)
     else:
-        entry.result = result
+        entry.result = {**(entry.result or {}), **result}
         entry.question = step.reply
         await session.commit()
     return {"reply": step.reply, "resolved": bool(step.resolved), "entry": _row(entry)}

@@ -249,6 +249,10 @@ export const api = {
   // Point everything an entry filed at a goal, or at none (`goalId === null`).
   linkGoalScratch: (id, goalId) =>
     req(`/scratch/${id}/link-goal`, { method: "POST", body: JSON.stringify({ goal_id: goalId ?? null }) }).then(boardChanged),
+  // Confirm a background upload onto the entry it was sent with. The entry is filed only once every
+  // attachment is attached, so this is what releases the upload queue.
+  attachScratchSource: (id, sourceId) =>
+    req(`/scratch/${id}/sources`, { method: "POST", body: JSON.stringify({ source_id: sourceId }) }),
   // Goal progress: the numbers (always fresh) with the model's verdict when one is current.
   goalProgress: () => req("/agent/progress"),
   judgeProgress: () => req("/agent/progress/judge", { method: "POST" }),

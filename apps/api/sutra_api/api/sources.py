@@ -25,7 +25,6 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 
-from ..vision import describe_image
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -141,20 +140,21 @@ async def _record_source_row(
     temporary: bool,
     purpose: str,
 ) -> dict:
-    """Read the bytes into text and write the `sources` row.
+    """Extract what the bytes say and write the `sources` row.
 
     Shared by the proxied upload and the direct-upload completion. Both arrive with the bytes in hand —
     only the route the bytes took differs, so everything after that point is one implementation.
+
+    An image is **not** read here. The upload returns as soon as the bytes are stored and says
+    `text_pending: true`; the vision reading runs while the Scratch entry that owns the photo is filed
+    (`scratch_service.process`). That keeps the upload off the model's critical path — the user can
+    send a note while the photo is still in flight — and puts the reading where progress can be shown.
     """
     resolved_goal_id, goal_title = await _goal_or_404(session, user_id=user_id, goal_id=goal_id)
 
     excerpt, pending = extract_mod.extract_text(
         filename=filename, content_type=content_type, data=data
     )
-    if pending and extract_mod.is_image(filename, content_type):
-        # Read the image now, while the bytes are in hand; the text is what chat and planning use.
-        excerpt = await describe_image(data, content_type)
-        pending = False
 
     row = Source(
         id=new_id("src"),
