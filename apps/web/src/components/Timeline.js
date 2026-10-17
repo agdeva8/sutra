@@ -58,7 +58,8 @@ import useMediaQuery from "../hooks/useMediaQuery";
 import useGoalProgress from "../lib/useGoalProgress";
 import { progressStatus } from "../constants/goalProgress";
 import { planItemEvent, isTodo } from "../lib/events";
-import { istNow, parseClockTime, parseWallClock, parseWallClockAt } from "../lib/istTime";
+import { toTimetableRows, toReminderRows, isMilestoneDone } from "../lib/timetableRows";
+import { istNow, istTodayKey, parseClockTime, parseDateKey, parseWallClock, parseWallClockAt } from "../lib/istTime";
 import { KIND_STYLE, REMINDER_SLOT_MINUTES, SOURCE_RECURRING, GOAL_PALETTE, GOAL_GLYPH, WEEK_GLYPH, isGoalSession, BLOCK_KIND_REMINDER, goalColor, reminderColor, recurringColor } from "../constants/calendarKinds";
 import { blockColor } from "../constants/blockKinds";
 
@@ -299,6 +300,9 @@ const HORIZONS = [
 const DAY_MS = 86400000;
 /** How long a block with a start but no end is drawn as. */
 const DEFAULT_BLOCK_MINUTES = 60;
+/** How far a repeating block is expanded around IST today, so a series draws without narrowing the view. */
+const TIMELINE_REPEAT_PAST_DAYS = 62;
+const TIMELINE_REPEAT_AHEAD_DAYS = 186;
 
 /** "YYYY-Qn" identity for a date's quarter — used by the quarter picker. */
 const anonQuarter = (d) => `${d.getFullYear()}-Q${Math.floor(d.getMonth() / 3)}`;
@@ -471,8 +475,29 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
   const [replanOffer, setReplanOffer] = useState(null);
   // Timetable blocks come with /api/state (`timetableBlocks`), so there is no separate request per visit.
   // The old per-visit GET /timetable is kept only as a fallback for a board that omits them.
-  // Phase 6: prefer `state.blocks` (4-kind model) if available.
-  const stateBlocks = Array.isArray(state?.blocks) ? state.blocks : (Array.isArray(state?.timetableBlocks) ? state.timetableBlocks : null);
+  // Phase 6: prefer `state.blocks` (4-kind model) if available. The card builders below read the old
+  // timetable row shape, so the adapter converts at the door rather than in every builder.
+  // Keyed on IST today, so the window moves when the day does and not on every board refresh.
+  const repeatTodayKey = istTodayKey();
+  const repeatRange = useMemo(() => {
+    const base = parseDateKey(repeatTodayKey);
+    return {
+      from: addDays(base, -TIMELINE_REPEAT_PAST_DAYS),
+      to: addDays(base, TIMELINE_REPEAT_AHEAD_DAYS),
+    };
+  }, [repeatTodayKey]);
+  const stateBlocks = useMemo(() => {
+    const raw = Array.isArray(state?.blocks)
+      ? state.blocks
+      : Array.isArray(state?.timetableBlocks)
+        ? state.timetableBlocks
+        : null;
+    return raw ? toTimetableRows(raw, repeatRange) : null;
+  }, [state, repeatRange]);
+  const reminderRows = useMemo(
+    () => toReminderRows(state?.reminders || [], repeatRange),
+    [state, repeatRange],
+  );
   const [fetchedBlocks, setFetchedBlocks] = useState([]);
   useEffect(() => {
     if (stateBlocks) return;
@@ -547,7 +572,7 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
             (m.goal_id && goals.find((g) => g.id === m.goal_id)?.title) ||
             "",
         }))
-        .filter((m) => m.date && m.status !== "done"),
+        .filter((m) => m.date && !isMilestoneDone(m)),
     [state, goals],
   );
 
@@ -832,7 +857,7 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
           cards={calendarCards}
           monthCards={calendarCards}
           planItems={state?.plan_items || []}
-          reminders={state?.reminders || []}
+          reminders={reminderRows}
           verdicts={verdicts}
           goals={goals}
           milestones={milestones}
@@ -2623,6 +2648,9 @@ function CalendarView({
   // silently stacking two sessions would make the day unreadable. The message names what is in the way
   // so they can move that one first.
   const handleBlockDrop = async (card, targetStart) => {
+    // An occurrence of a repeating row is `<id>:<day>`, not a row of its own: the series owns its days,
+    // so there is nothing for the API to move.
+    if (String(card?.id || "").includes(":")) return;
     const block = (blocks || []).find((b) => b.id === card?.id);
     if (!block || !targetStart) return;
     const toMin = (t) => {
