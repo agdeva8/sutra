@@ -1,7 +1,10 @@
-import { CheckCircle2, Circle, Loader2 } from "lucide-react";
+import { useState } from "react";
+import { CheckCircle2, ChevronDown, Circle, Loader2 } from "lucide-react";
 import { localDateKey } from "../lib/utils";
 import { summarize } from "../lib/agenda";
 import { EVENT_KIND } from "../lib/events";
+import { itemHours } from "../lib/horizons";
+import { BUILDING_PLAN_TEXT } from "../constants/goalActivity";
 import { cardSurface, goalColor, TODO_PRIORITY_BY_KEY, TODO_PRIORITY_NORMAL } from "../constants/calendarKinds";
 import { TODAY_RANGES } from "../constants/todayRanges";
 import NeedHelpActions from "./NeedHelpActions";
@@ -117,6 +120,179 @@ export function AgendaWeek({ byDay, ...rowProps }) {
         </section>
       ))}
     </div>
+  );
+}
+
+/** A week target's dates, as one compact line on the month card's ladder. */
+const weekRange = (item) => {
+  const start = item.start_date ? fmtDay(item.start_date) : "";
+  const end = item.end_date ? fmtDay(item.end_date) : "";
+  return start && end ? `${start} – ${end}` : start;
+};
+
+const progressLine = (p) =>
+  p.total ? `${p.done} of ${p.total} task${p.total === 1 ? "" : "s"} done` : "No tasks yet";
+
+/** A thin done/total bar, in the goal's own colour. */
+function TargetBar({ goalId, progress }) {
+  const pct = progress.total ? Math.min(100, (progress.done / progress.total) * 100) : 0;
+  return (
+    <div
+      className="mt-1.5 h-1 overflow-hidden rounded-full"
+      style={{ background: `color-mix(in srgb, ${goalColor(goalId)} 18%, var(--bg-primary))` }}
+      aria-hidden="true"
+    >
+      <div className="h-full rounded-full" style={{ width: `${pct}%`, background: goalColor(goalId) }} />
+    </div>
+  );
+}
+
+/**
+ * One target card: the goal's name and colour, the target's focus, its `why`, the planned hours and how
+ * far the days under it have got. `expandable` adds the tap that opens those daily tasks.
+ */
+function TargetCard({ goal, item, progress, entries = [], expandable = false, children, ...rowProps }) {
+  const [open, setOpen] = useState(false);
+  const hours = itemHours(item);
+  const body = (
+    <>
+      <div className="flex items-baseline gap-2">
+        <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: goalColor(goal.id) }} aria-hidden="true" />
+        <span className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+          {goal.title}
+        </span>
+        {hours > 0 && (
+          <span className="shrink-0 font-mono tabular-nums text-[11px] text-[var(--text-secondary)]">{fmtHours(hours)}</span>
+        )}
+      </div>
+      <p className="mt-1 text-[14px] font-medium leading-snug text-[var(--text-primary)]">{item.title}</p>
+      {item.why && <p className="mt-0.5 truncate text-[12px] text-[var(--text-secondary)]">{item.why}</p>}
+      <p className="mt-1.5 text-[11px] text-[var(--text-muted)]">{progressLine(progress)}</p>
+      <TargetBar goalId={goal.id} progress={progress} />
+    </>
+  );
+  return (
+    <li data-testid={`target-${item.id}`} className="rounded-xl bg-[var(--bg-secondary)] p-3">
+      {/* The tap target is the card's face, not the whole row: the expanded tasks carry their own
+          buttons, and a click on one must tick it, not collapse the card. */}
+      <div
+        className={`flex min-h-11 items-start gap-2 ${expandable ? "cursor-pointer" : ""}`}
+        onClick={expandable ? () => setOpen((v) => !v) : undefined}
+      >
+        <div className="min-w-0 flex-1">{body}</div>
+        {expandable && (
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-label={open ? `Hide the tasks under ${item.title}` : `Show the tasks under ${item.title}`}
+            className="-m-2 flex h-11 w-11 shrink-0 items-center justify-center rounded text-[var(--text-muted)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+          >
+            <ChevronDown
+              className={`h-4 w-4 transition-transform ${open ? "rotate-180" : ""}`}
+              aria-hidden="true"
+            />
+          </button>
+        )}
+      </div>
+      {children}
+      {expandable && open && (
+        <div className="mt-2 border-t border-[var(--border)] pt-2">
+          <AgendaDay entries={entries} empty="No tasks under this target yet." {...rowProps} />
+        </div>
+      )}
+    </li>
+  );
+}
+
+/** A goal whose plan is still being written, in place of a target card. */
+function PlanningCard({ goal }) {
+  return (
+    <li data-testid={`target-building-${goal.id}`} className="flex items-center gap-2 rounded-xl bg-[var(--bg-secondary)] p-3">
+      <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: goalColor(goal.id) }} aria-hidden="true" />
+      <span className="min-w-0 flex-1 truncate text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+        {goal.title}
+      </span>
+      <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[var(--accent)]" aria-hidden="true" />
+      <span className="shrink-0 text-[12px] text-[var(--accent)]">{BUILDING_PLAN_TEXT}</span>
+    </li>
+  );
+}
+
+const TARGET_EMPTY = "No targets yet — they appear here once your goals have a plan.";
+
+/**
+ * "This week's targets" — one card per goal above the day-by-day list, the rung the week's tasks climb
+ * toward. `rows` is `[{ goal, item, progress, entries }]`, built by `lib/horizons.js`.
+ */
+export function WeekTargets({ rows, planningGoals = [], ...rowProps }) {
+  return (
+    <section data-testid="week-targets" className="space-y-2" aria-label="This week's targets">
+      <h3 className="px-1 text-[12px] font-semibold text-[var(--text-secondary)]">This week's targets</h3>
+      {rows.length === 0 && planningGoals.length === 0 ? (
+        <p className="px-1 text-[13px] text-[var(--text-muted)]">{TARGET_EMPTY}</p>
+      ) : (
+        <ul className="space-y-2" role="list">
+          {rows.map(({ goal, item, progress, entries }) => (
+            <TargetCard key={item.id} goal={goal} item={item} progress={progress} entries={entries} expandable {...rowProps} />
+          ))}
+          {planningGoals.map((g) => (
+            <PlanningCard key={g.id} goal={g} />
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/** "This month's targets" — the month focus and hours, with that month's week targets listed beneath. */
+export function MonthTargets({ rows, planningGoals = [] }) {
+  return (
+    <section data-testid="month-targets" className="space-y-2" aria-label="This month's targets">
+      <h3 className="px-1 text-[12px] font-semibold text-[var(--text-secondary)]">This month's targets</h3>
+      {rows.length === 0 && planningGoals.length === 0 ? (
+        <p className="px-1 text-[13px] text-[var(--text-muted)]">{TARGET_EMPTY}</p>
+      ) : (
+        <ul className="space-y-2" role="list">
+          {rows.map(({ goal, item, progress, weeks }) => (
+            <TargetCard key={item.id} goal={goal} item={item} progress={progress}>
+              {weeks.length > 0 && (
+                <ul className="mt-2 space-y-1.5 border-t border-[var(--border)] pt-2" role="list">
+                  {weeks.map((w) => (
+                    <li key={w.id} className="flex items-baseline gap-2 text-[12px]">
+                      <span className="min-w-0 flex-1 truncate text-[var(--text-secondary)]">{w.title}</span>
+                      <span className="shrink-0 font-mono tabular-nums text-[10px] text-[var(--text-muted)]">{weekRange(w)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </TargetCard>
+          ))}
+          {planningGoals.map((g) => (
+            <PlanningCard key={g.id} goal={g} />
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Today's rung upward: one compact line per goal naming the week target the day's tasks serve, so the
+ * day visibly ladders into the week.
+ */
+export function TodayTargets({ rows }) {
+  if (!rows.length) return null;
+  return (
+    <section data-testid="today-targets" className="space-y-1" aria-label="This week's targets">
+      {rows.map(({ goal, item }) => (
+        <div key={item.id} className="flex items-baseline gap-2 text-[12px]">
+          <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: goalColor(goal.id) }} aria-hidden="true" />
+          <span className="min-w-0 truncate text-[var(--text-secondary)]">
+            <span className="text-[var(--text-muted)]">This week:</span> {item.title}
+          </span>
+        </div>
+      ))}
+    </section>
   );
 }
 

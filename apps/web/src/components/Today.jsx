@@ -4,6 +4,9 @@ import { toast } from "sonner";
 import { localDateKey } from "../lib/utils";
 import { toggleDone, upsertPlanItem } from "../lib/todos";
 import { buildAgenda, dayKeys } from "../lib/agenda";
+import { planItemEvent } from "../lib/events";
+import { planningIsLive } from "../lib/goalPlanning";
+import { monthTargetsFor, targetProgress, tasksInTarget, weekTargetsFor, weekTargetsInMonth } from "../lib/horizons";
 import {
   TODAY_RANGE_DAY,
   TODAY_RANGE_WEEK,
@@ -11,10 +14,27 @@ import {
   TODAY_RANGES,
   TODAY_RANGE_STORAGE_KEY,
 } from "../constants/todayRanges";
-import { AgendaDay, AgendaWeek, MonthSummary, RangeTabs } from "./TodayAgenda";
+import { AgendaDay, AgendaWeek, MonthSummary, MonthTargets, RangeTabs, TodayTargets, WeekTargets } from "./TodayAgenda";
 import TodoForm from "./TodoForm";
 
 const DAYS_PER_WEEK = 7;
+
+/** A target as its card draws it: the goal and row, its progress, and the daily tasks under it as Events. */
+function targetRow(state, goal, item, extra = {}) {
+  return {
+    goal,
+    item,
+    progress: targetProgress(state, item),
+    entries: tasksInTarget(state, item).map((p) => planItemEvent(p, goal.title)),
+    ...extra,
+  };
+}
+
+/** Active goals whose plan the server says is being written, minus any already carrying a card. */
+const planningGoalsFor = (state, rows) =>
+  (state?.goals || []).filter(
+    (g) => g.status === "active" && planningIsLive(g) && !rows.some((r) => r.goal.id === g.id),
+  );
 
 /** The days a range covers: today; Monday to Sunday of this week; the 1st to the last of this month. */
 function rangeKeys(range, now) {
@@ -69,6 +89,18 @@ export default function Today({ state, onChange, onOpenChat, onOpenTimeline }) {
   };
   const byDay = useMemo(() => buildAgenda(state, rangeKeys(range, new Date())), [state, range]);
   const todayEntries = byDay[localDateKey()] || [];
+  // The rungs above the days: this week's and this month's targets, and the tasks that meet them.
+  const weekRows = useMemo(
+    () => weekTargetsFor(state, new Date()).map(({ goal, item }) => targetRow(state, goal, item)),
+    [state],
+  );
+  const monthRows = useMemo(
+    () =>
+      monthTargetsFor(state, new Date()).map(({ goal, item }) =>
+        targetRow(state, goal, item, { weeks: weekTargetsInMonth(state, item) }),
+      ),
+    [state],
+  );
 
   const [adding, setAdding] = useState(false);
   // Ticking a to-do, a task, or a session made for a task flips it in place: it stays listed, struck through.
@@ -140,6 +172,8 @@ export default function Today({ state, onChange, onOpenChat, onOpenTimeline }) {
 
       {range === TODAY_RANGE_DAY && (
         <section className="space-y-3" data-testid="agenda-today">
+          {/* The ladder upward: what today's tasks are for. Quiet lines, so the day stays the focus. */}
+          <TodayTargets rows={weekRows} />
           {adding ? (
             <TodoForm
               goals={state?.goals || []}
@@ -163,8 +197,18 @@ export default function Today({ state, onChange, onOpenChat, onOpenTimeline }) {
           <AgendaDay entries={todayEntries} empty="Nothing on today. Add a to-do, or drop anything in Scratch." {...rowProps} />
         </section>
       )}
-      {range === TODAY_RANGE_WEEK && <AgendaWeek byDay={byDay} {...rowProps} />}
-      {range === TODAY_RANGE_MONTH && <MonthSummary byDay={byDay} goals={state?.goals || []} />}
+      {range === TODAY_RANGE_WEEK && (
+        <>
+          <WeekTargets rows={weekRows} planningGoals={planningGoalsFor(state, weekRows)} {...rowProps} />
+          <AgendaWeek byDay={byDay} {...rowProps} />
+        </>
+      )}
+      {range === TODAY_RANGE_MONTH && (
+        <>
+          <MonthTargets rows={monthRows} planningGoals={planningGoalsFor(state, monthRows)} />
+          <MonthSummary byDay={byDay} goals={state?.goals || []} />
+        </>
+      )}
 
       <SectionChatInput
         text={text}

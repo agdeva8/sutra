@@ -7,6 +7,13 @@ export const ACTIVITY_TOAST_MANY = (n) => `Coach is working on ${n} goals…`;
 export const ACTIVITY_FALLBACK_TITLE = "your goals";
 /** The key for work that touches every goal (a calendar change that may displace any of them). */
 export const ACTIVITY_ALL_GOALS = "*";
+/**
+ * Shown on a goal whose schedule the server says is being built, even when this tab did not start it.
+ * It replaces "No schedule yet" and the Build button, so a mid-build goal never offers a second build.
+ */
+export const BUILDING_SCHEDULE_TEXT = "Building your schedule…";
+/** What a goal's slot in Today's target sections says while its plan is being written. */
+export const BUILDING_PLAN_TEXT = "Building your plan…";
 /** Shown on a goal that has no schedule yet (the planner was interrupted), with the button that builds it. */
 export const NO_SCHEDULE_TEXT = "No schedule yet — the coach hasn't placed this goal on your calendar.";
 export const NO_SCHEDULE_BUTTON = "Build schedule";

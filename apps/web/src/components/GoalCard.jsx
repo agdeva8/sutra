@@ -22,7 +22,8 @@ import SourceActionDialog from "./SourceActionDialog";
 import LinkPreviewDialog from "./LinkPreviewDialog";
 import GoalProgress from "./GoalProgress";
 import useGoalActivity from "../lib/goalActivity";
-import { NO_SCHEDULE_BUTTON, NO_SCHEDULE_TEXT } from "../constants/goalActivity";
+import { BUILDING_SCHEDULE_TEXT, NO_SCHEDULE_BUTTON, NO_SCHEDULE_TEXT } from "../constants/goalActivity";
+import { SHOW_PLAN_LIST } from "../constants/features";
 
 /**
  * GoalCard — one editable goal: status, why, target, next action, its
@@ -209,10 +210,13 @@ function SourcesChip({ goal, sources, onUpload, onAddLink, onDelete }) {
   );
 }
 
-export default function GoalCard({ goal, milestones, progress, onAction, onUploadSource, onAddLink, onDeleteSource, onAddMemory, onOpenPlan, unscheduled = false, onScheduled }) {
+export default function GoalCard({ goal, milestones, progress, onAction, onUploadSource, onAddLink, onDeleteSource, onAddMemory, onOpenPlan, unscheduled = false, planningLive = false, onScheduled }) {
   const goalMiles = milestones.filter((m) => m.goal_id === goal.id || m.goal_title === goal.title);
   const sources = goal.sources || [];
   const activity = useGoalActivity(goal.id);
+  // Busy here, or busy somewhere this tab cannot see (another tab, or before the activity marker
+  // lands). Either way the goal is mid-build and must not offer a second one.
+  const building = !!activity || planningLive;
   return (
     <div data-testid={`goal-card-${goal.id}`} className="group p-4">
       <div className="flex items-start gap-3">
@@ -221,14 +225,14 @@ export default function GoalCard({ goal, milestones, progress, onAction, onUploa
           <div className="text-[15px] font-semibold text-[var(--text-primary)] leading-snug">{goal.title}</div>
           {goal.why && <div className="text-[13px] text-[var(--text-secondary)] mt-0.5 leading-relaxed">{goal.why}</div>}
           {goal.target_date && <div className="mt-1 text-[11px] font-medium text-[var(--accent)]">Target · {goal.target_date}</div>}
-          {activity && (
+          {building && (
             // The goal is being worked on: say so, so nobody mistakes a plan mid-rewrite for a finished one.
             <div role="status" aria-live="polite" data-testid={`goal-activity-${goal.id}`} className="mt-2 flex items-center gap-2 rounded-lg bg-[color-mix(in_srgb,var(--accent)_10%,transparent)] px-3 py-2 text-[12px] text-[var(--accent)]">
               <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden="true" />
-              <span className="min-w-0">{activity}</span>
+              <span className="min-w-0">{activity || BUILDING_SCHEDULE_TEXT}</span>
             </div>
           )}
-          {!activity && unscheduled && goal.status === "active" && (
+          {!building && unscheduled && goal.status === "active" && (
             <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg bg-[var(--bg-tertiary)] px-3 py-2 text-[12px] text-[var(--text-secondary)]">
               <span className="min-w-0 flex-1">{NO_SCHEDULE_TEXT}</span>
               <button
@@ -254,16 +258,18 @@ export default function GoalCard({ goal, milestones, progress, onAction, onUploa
         {/* Labelled, not icon-only — and sized to match the `memories`
             button beside it. As a bare 14px glyph this read as decoration
             rather than the way into the goal's plan. */}
-        <button
-          data-testid={`goal-plan-${goal.id}`}
-          title="Show this goal's plan"
-          aria-label={`Show the plan for ${goal.title}`}
-          onClick={() => onOpenPlan?.(goal)}
-          className="h-11 sm:h-10 px-2.5 inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] hover:border-[var(--accent)] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
-        >
-          <ListTree className="w-3 h-3" aria-hidden="true" />
-          <span className="font-mono text-[10px] uppercase tracking-wider">plan</span>
-        </button>
+        {SHOW_PLAN_LIST && (
+          <button
+            data-testid={`goal-plan-${goal.id}`}
+            title="Show this goal's plan"
+            aria-label={`Show the plan for ${goal.title}`}
+            onClick={() => onOpenPlan?.(goal)}
+            className="h-11 sm:h-10 px-2.5 inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] hover:border-[var(--accent)] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+          >
+            <ListTree className="w-3 h-3" aria-hidden="true" />
+            <span className="font-mono text-[10px] uppercase tracking-wider">plan</span>
+          </button>
+        )}
         <IconBtn testid={`goal-edit-${goal.id}`} title="Refine or rename this goal" onClick={() => onAction(goal, "edit")}><Pencil className="w-3.5 h-3.5" /></IconBtn>
         <IconBtn testid={`goal-pause-${goal.id}`} title="Pause this goal" onClick={() => onAction(goal, "pause")}><Pause className="w-3.5 h-3.5" /></IconBtn>
         <button

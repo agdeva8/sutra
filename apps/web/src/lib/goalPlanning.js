@@ -33,7 +33,11 @@ export function buildSchedule(goal, { force = false } = {}) {
     .finally(() => window.dispatchEvent(new Event(STATE_STALE_EVENT)));
 }
 
-const planningIsLive = (g) =>
+/**
+ * Whether the server says a goal's schedule is being built right now, by this tab or another one.
+ * The lease tells a live run from one that died mid-build (a run older than it is treated as over).
+ */
+export const planningIsLive = (g) =>
   g.plan_status === PLAN_STATUS_PLANNING && g.plan_started_at && Date.now() - Date.parse(g.plan_started_at) < PLAN_LEASE_MS;
 
 /** True when the goal has no planned work yet (milestones alone are not a schedule). */
