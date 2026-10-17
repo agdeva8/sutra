@@ -29,6 +29,14 @@ const PROVIDERS = [
   { key: "outlook", label: "Outlook", urlKey: "outlook_url", newTab: true },
   { key: "other", label: "Another calendar", urlKey: null, newTab: false },
 ];
+/** One sentence under the add link: in that provider's terms, why subscribing once is enough. */
+const ADD_HELP = {
+  google: "Add it once and Google keeps your plan in step by itself.",
+  apple: "Add it once and your iPhone and Mac keep your plan in step by themselves.",
+  outlook: "Add it once and Outlook keeps your plan in step whenever it refreshes.",
+  other: "Add it once and your calendar app keeps your plan in step whenever it refreshes.",
+  generic: "Add it once — after that the calendar pulls every change to your plan by itself.",
+};
 /** Where the user removes the subscription itself, which only the calendar app can do. */
 const REMOVE_HELP = {
   google: "In Google Calendar, open Settings, pick this calendar under “Settings for other calendars” and choose Unsubscribe.",
@@ -92,7 +100,12 @@ const providerLabel = (key) => PROVIDERS.find((p) => p.key === key)?.label || PR
  */
 const isLinked = (cal) => cal.status === "active";
 
-function AddLinks({ cal }) {
+/**
+ * The ways to add this feed. `provider` narrows the list to one calendar app: inside a linked row only that
+ * row's own way makes sense, and a stack of every provider's full-width button reads as a picker the user
+ * has already made. Left out (the picker after linking), every provider is listed.
+ */
+function AddLinks({ cal, provider }) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     try {
@@ -103,10 +116,16 @@ function AddLinks({ cal }) {
       /* clipboard blocked — the URL is still visible to select by hand */
     }
   };
-  const first = PROVIDERS.find((p) => p.key === cal.provider && p.urlKey);
-  const ordered = first ? [first, ...PROVIDERS.filter((p) => p !== first && p.urlKey)] : PROVIDERS.filter((p) => p.urlKey);
+  const offered = provider ? PROVIDERS.filter((p) => p.key === provider) : PROVIDERS;
+  const withUrl = offered.filter((p) => p.urlKey);
+  // Keep the provider the calendar was created for first, so the one-tap add sits at the top.
+  const first = withUrl.find((p) => p.key === cal.provider);
+  const ordered = first ? [first, ...withUrl.filter((p) => p !== first)] : withUrl;
+  // "Another calendar" has no deep link, so copying is its whole answer rather than a fallback under one.
+  const copyIsOnly = ordered.length === 0;
+  const help = `${ADD_HELP[provider] || ADD_HELP.generic}${provider === "google" ? ` ${GOOGLE_REFRESH_NOTE}` : ""}`;
   return (
-    <div className="space-y-2 pt-2">
+    <div className="space-y-1.5 pt-2">
       {ordered.map((p) => (
         <a
           key={p.key}
@@ -120,17 +139,28 @@ function AddLinks({ cal }) {
           <CalendarPlus className="w-4 h-4 text-[var(--text-muted)]" aria-hidden="true" />
         </a>
       ))}
-      <button
-        type="button"
-        onClick={copy}
-        className="flex min-h-11 items-center justify-between w-full rounded-lg border border-dashed border-[var(--border)] px-4 text-sm text-[var(--text-secondary)] hover:border-[var(--accent)] transition-colors"
-      >
-        {copied ? "Link copied" : "Copy link (any other calendar)"}
-        {copied ? <Check className="w-4 h-4" aria-hidden="true" /> : <Copy className="w-4 h-4" aria-hidden="true" />}
-      </button>
-      <p className="text-[12px] text-[var(--text-muted)] leading-relaxed">
-        Add it once — after that the calendar pulls every change to your plan by itself. {GOOGLE_REFRESH_NOTE}
-      </p>
+      {copyIsOnly ? (
+        <button
+          type="button"
+          onClick={copy}
+          data-testid="calendar-copy-link"
+          className="flex min-h-11 items-center justify-between w-full rounded-lg border border-dashed border-[var(--border)] px-4 text-sm text-[var(--text-secondary)] hover:border-[var(--accent)] transition-colors"
+        >
+          {copied ? "Link copied" : "Copy link"}
+          {copied ? <Check className="w-4 h-4" aria-hidden="true" /> : <Copy className="w-4 h-4" aria-hidden="true" />}
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={copy}
+          data-testid="calendar-copy-link"
+          className="inline-flex min-h-9 items-center gap-1.5 py-1 text-[13px] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
+        >
+          {copied ? <Check className="w-3.5 h-3.5" aria-hidden="true" /> : <Copy className="w-3.5 h-3.5" aria-hidden="true" />}
+          {copied ? "Link copied" : "Copy link"}
+        </button>
+      )}
+      <p className="text-[12px] text-[var(--text-muted)] leading-relaxed">{help}</p>
     </div>
   );
 }
@@ -147,6 +177,8 @@ function CalendarRow({ cal, state, startExpanded }) {
     if (startExpanded) setShowAdd(true);
   }, [startExpanded]);
   const provider = providerLabel(cal.provider);
+  // A linked row shows only its own provider's way to add; an unknown key is "Another calendar", as above.
+  const providerKey = PROVIDERS.some((p) => p.key === cal.provider) ? cal.provider : "other";
   // The server names a calendar after its provider unless the user renamed it; when they did, both are
   // worth showing — the provider says what it is, the name says which one.
   const renamed = cal.name && cal.name !== provider;
@@ -188,7 +220,7 @@ function CalendarRow({ cal, state, startExpanded }) {
           How to add it <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showAdd ? "rotate-180" : ""}`} aria-hidden="true" />
         </button>
       )}
-      {showAdd && !unlinking && <AddLinks cal={cal} />}
+      {showAdd && !unlinking && <AddLinks cal={cal} provider={providerKey} />}
 
       {unlinking && (
         <div className="mt-2 space-y-3 rounded-lg bg-[var(--bg-secondary)] p-3" data-testid={`calendar-unlink-panel-${cal.id}`}>
