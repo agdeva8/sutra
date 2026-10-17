@@ -33,16 +33,25 @@ const RELOOK_MS = 150;
 const VEIL_PANEL_CLASS = "pointer-events-auto absolute bg-black/40 backdrop-blur-[2px]";
 
 /**
- * The visible box of the first selector that has one, or null. A hidden element —
+ * The first element that is actually on screen, or null. A hidden element —
  * `display:none`, or the nav belonging to the other width — measures zero, so one
  * list of selectors can cover the phone's bottom bar and the desktop's tab strip.
+ *
+ * The element itself is handed back, not just its box: the tour scrolls it into view and
+ * listens for a tap on it, and both need the node.
  */
-export function findTarget(selectors) {
+export function findTargetElement(selectors) {
   for (const sel of selectors || []) {
-    const r = document.querySelector(sel)?.getBoundingClientRect();
-    if (r && r.width > 0 && r.height > 0) return r;
+    const el = document.querySelector(sel);
+    const r = el?.getBoundingClientRect();
+    if (r && r.width > 0 && r.height > 0) return el;
   }
   return null;
+}
+
+/** The visible box of the first selector that has one, or null. */
+export function findTarget(selectors) {
+  return findTargetElement(selectors)?.getBoundingClientRect() || null;
 }
 
 /**
@@ -62,28 +71,32 @@ export function ringFor(rect) {
 }
 
 /**
- * Track a target's box while `active`. Re-measured on resize and on any scroll — the
- * app's panes scroll rather than the window, so the listener is a capturing one.
+ * Track a target's box while `active`, and hand back the element too. Re-measured on
+ * resize and on any scroll — the app's panes scroll rather than the window, so the
+ * listener is a capturing one.
  *
  * A panel that is still fetching its chunk has not drawn its target yet, so a missing
  * one is looked for again for about a second before the caller settles for a card with
  * no ring on it. Past that, a resize or a scroll still picks a late target up.
  *
+ * `refreshToken` is the caller's "measure again now" — the first paint after a step
+ * change lands with stale geometry, and a change to this value re-runs the measurement.
+ *
  * `selectors` must be a stable array (a module constant), not built during render.
  */
-export function useTargetRect(selectors, active) {
-  const [rect, setRect] = useState(null);
+export function useTarget(selectors, active, refreshToken) {
+  const [target, setTarget] = useState({ rect: null, el: null });
   useLayoutEffect(() => {
     if (!active) {
-      setRect(null);
+      setTarget({ rect: null, el: null });
       return undefined;
     }
     const deadline = Date.now() + LOOK_FOR_MS;
     let retry = null;
     const measure = () => {
-      const next = findTarget(selectors);
-      setRect(next);
-      if (!next && Date.now() < deadline) retry = setTimeout(measure, RELOOK_MS);
+      const el = findTargetElement(selectors);
+      setTarget({ rect: el ? el.getBoundingClientRect() : null, el });
+      if (!el && Date.now() < deadline) retry = setTimeout(measure, RELOOK_MS);
     };
     measure();
     window.addEventListener("resize", measure);
@@ -93,8 +106,13 @@ export function useTargetRect(selectors, active) {
       window.removeEventListener("resize", measure);
       window.removeEventListener("scroll", measure, true);
     };
-  }, [active, selectors]);
-  return rect;
+  }, [active, selectors, refreshToken]);
+  return target;
+}
+
+/** The box alone, for callers that only draw a ring around it. */
+export function useTargetRect(selectors, active, refreshToken) {
+  return useTarget(selectors, active, refreshToken).rect;
 }
 
 /**

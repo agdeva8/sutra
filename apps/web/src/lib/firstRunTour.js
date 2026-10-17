@@ -100,7 +100,7 @@ export function advanceTour(from) {
   write({ step: from + 1, done: false });
 }
 
-/** Jump to a step by index — a nav step's Skip passes over a visit with it, and so does a dot. */
+/** Jump to a step by index — the progress dots and the card's arrows both use it. */
 export function goToStep(index) {
   if (index > LAST_STEP) {
     endTour();
@@ -110,15 +110,23 @@ export function goToStep(index) {
 }
 
 /**
- * The next navigation step after `from`, or -1 when there is none. A nav step's Skip
- * jumps here: it passes over the visit (and the screen step that follows it) without
- * the user having to go anywhere.
+ * The shown step after `from`, or -1 on the last one. The card's › arrow uses this; the
+ * last step offers Done instead, so there is nowhere further to go.
  */
-export function nextNavStep(from) {
-  for (let i = from + 1; i < TOUR_STEPS.length; i += 1) {
-    if (TOUR_STEPS[i].kind === "nav") return i;
-  }
-  return -1;
+export function nextStep(from) {
+  return from < LAST_STEP ? from + 1 : -1;
+}
+
+/**
+ * The shown step before `from`, or -1 when there is none. A signed-in user never sees the
+ * sign-in card, so stepping back onto it would silently leave them where they are — the
+ * arrow is disabled instead.
+ */
+export function previousStep(from, isGuest) {
+  const prev = from - 1;
+  if (prev < 0) return -1;
+  const shown = shownStep(prev, isGuest);
+  return shown < from ? shown : -1;
 }
 
 /** The nearest navigation step before `index`, or -1 when there is none. */
@@ -164,7 +172,7 @@ export function shownStep(step, isGuest) {
   return !isGuest && step === 0 ? 1 : step;
 }
 
-/** Skip, or the last step's Done: the tour never shows itself again. */
+/** The last step's Done: the tour never shows itself again. */
 export function endTour() {
   write({ step: LAST_STEP, done: true });
 }

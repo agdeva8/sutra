@@ -152,18 +152,29 @@ describe("the first-run tour", () => {
       expect(arrivesAt(stepFor("more_nav"), "state")).toBe(false);
     });
 
-    test("nextNavStep passes over the screen step that follows a nav step", () => {
+    test("nextStep walks forward to the last step and stops there", () => {
       const tour = load();
       const indexOf = (key) => tour.TOUR_STEPS.findIndex((step) => step.key === key);
 
-      // Goal nav → over its screen step → Timeline nav.
-      expect(tour.nextNavStep(indexOf("goal_nav"))).toBe(indexOf("timeline_nav"));
-      expect(tour.nextNavStep(indexOf("timeline_nav"))).toBe(indexOf("today_nav"));
-      expect(tour.nextNavStep(indexOf("today_nav"))).toBe(indexOf("scratch_nav"));
-      // Scratch's dialog and composer steps are passed over too.
-      expect(tour.nextNavStep(indexOf("scratch_nav"))).toBe(indexOf("more_nav"));
-      // There is no nav step after the last one.
-      expect(tour.nextNavStep(indexOf("more_nav"))).toBe(-1);
+      expect(tour.nextStep(indexOf("goal_nav"))).toBe(indexOf("goal_screen"));
+      expect(tour.nextStep(indexOf("scratch_dialog"))).toBe(indexOf("scratch_screen"));
+      expect(tour.nextStep(indexOf("more_nav"))).toBe(-1);
+    });
+
+    test("previousStep walks back, and never onto the sign-in card a signed-in user cannot see", () => {
+      const tour = load();
+      const indexOf = (key) => tour.TOUR_STEPS.findIndex((step) => step.key === key);
+
+      expect(tour.previousStep(indexOf("scratch_screen"), true)).toBe(indexOf("scratch_dialog"));
+      expect(tour.previousStep(indexOf("scratch_screen"), false)).toBe(indexOf("scratch_dialog"));
+
+      // Guest: the whole tour, including the sign-in card, is reachable backwards.
+      expect(tour.previousStep(1, true)).toBe(0);
+      expect(tour.previousStep(0, true)).toBe(-1);
+
+      // Signed in: step 0 is not shown, so step 1 is the first arrow-stop.
+      expect(tour.previousStep(1, false)).toBe(-1);
+      expect(tour.previousStep(0, false)).toBe(-1);
     });
   });
 
