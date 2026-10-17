@@ -88,7 +88,7 @@ const TARGETS = {
  * is about to tap. The sign-in card is the only one with a second button, and the last
  * step is the only one whose primary ends the tour.
  */
-const COPY = {
+export const COPY = {
   signin: {
     line: "Your plan on every device, backed up.",
     primary: "Sign in",
@@ -107,7 +107,8 @@ const COPY = {
     emphasis: "Timeline",
   },
   timeline_screen: {
-    line: "It shows up in Google, Apple or Outlook calendar too.",
+    line: "Sync straight to your Google or Outlook calendar with the Sync to calendar button.",
+    emphasis: "Sync to calendar",
     primary: "Next",
   },
   today_nav: { line: "Today, this week, this month, at a glance.", emphasis: "Today" },
@@ -145,6 +146,11 @@ const prefersReducedMotion = () =>
 /**
  * One full-height tap zone down the card's edge. 44px wide, as tall as the card — the
  * same thumb-sized target the Meet Scratch carousel uses, so the two feel like one app.
+ *
+ * The zone itself is transparent: only the chevron shows. Its background is left alone
+ * because an opaque band down the card's edge reads as a rendering fault, and iOS keeps
+ * a hover background stuck after a tap. `relative z-10` keeps the zone above whatever the
+ * step renders inside the card, so a control there can never swallow the arrow's taps.
  */
 function ArrowZone({ direction, onClick, disabled, testId }) {
   const Icon = direction === "prev" ? ChevronLeft : ChevronRight;
@@ -155,7 +161,7 @@ function ArrowZone({ direction, onClick, disabled, testId }) {
       disabled={disabled}
       aria-label={direction === "prev" ? "Previous step" : "Next step"}
       data-testid={testId}
-      className="flex w-11 shrink-0 items-center justify-center rounded-2xl text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-primary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)] disabled:pointer-events-none disabled:opacity-30"
+      className="relative z-10 flex w-11 shrink-0 items-center justify-center bg-transparent text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)] active:text-[var(--text-primary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)] disabled:pointer-events-none disabled:opacity-0"
     >
       <Icon className="h-6 w-6" aria-hidden="true" />
     </button>
@@ -605,7 +611,10 @@ export default function FirstRunTour({
       onTouchStart={onTouchStart}
       onTouchEnd={onTouchEnd}
     >
-      {def.kind === "dialog" && <ScratchExamples />}
+      {/* The carousel is shapes only here: the card's own edge zones and swipe are the
+          navigation on this step, and a second set of arrows inside it reads as two
+          competing controls. Dots and the auto-rotation still work. */}
+      {def.kind === "dialog" && <ScratchExamples interactive={false} />}
     </TourCard>
   );
 

@@ -8,6 +8,11 @@ import { ArrowDown, Camera, ChevronLeft, ChevronRight, Mic, PenLine } from "luci
  * dots or a swipe. Until then it holds still while they are touching, hovering or focused inside it, and
  * starts again when they leave. It does not rotate at all for users who prefer reduced motion. Purely
  * illustrative: the examples are fixed copy, not the user's data.
+ *
+ * `interactive` is for hosts that already own the gestures. The first-run tour renders the carousel
+ * inside its own card, whose full-height edge zones and sideways swipe are that step's navigation; a
+ * second set of arrows, tap zones and swipe handlers in here would steal the tour's own taps. With
+ * `interactive={false}` it shows no arrows and takes no gestures — only the auto-rotation and the dots.
  */
 
 const ROTATE_MS = 3000;
@@ -99,7 +104,7 @@ function Dumped({ input }) {
   return <div className={`${INPUT_BOX} px-3 py-2.5 text-[14px] text-[var(--text-primary)] [overflow-wrap:anywhere]`}>{input.text}</div>;
 }
 
-export default function ScratchExamples() {
+export default function ScratchExamples({ interactive = true }) {
   const [index, setIndex] = useState(0);
   const [paused, setPaused] = useState(false);
   // Using the arrows, the dots or a swipe means "I'm reading": stop rotating for good.
@@ -151,22 +156,26 @@ export default function ScratchExamples() {
       onMouseLeave={() => setPaused(false)}
       onFocus={() => setPaused(true)}
       onBlur={() => setPaused(false)}
-      onTouchStart={onTouchStart}
-      onTouchEnd={onTouchEnd}
-      onTouchCancel={onTouchEnd}
+      onTouchStart={interactive ? onTouchStart : undefined}
+      onTouchEnd={interactive ? onTouchEnd : undefined}
+      onTouchCancel={interactive ? onTouchEnd : undefined}
       className="rounded-2xl border border-[var(--border)] bg-gradient-to-br from-[color-mix(in_srgb,var(--accent)_14%,transparent)] via-[color-mix(in_srgb,var(--accent)_5%,transparent)] to-transparent p-3"
     >
       {/* The two arrows are the full height of the carousel's edges, not just the glyph — a 44px zone
-          down each side is what a thumb actually aims at. `items-stretch` gives them that height. */}
+          down each side is what a thumb actually aims at. `items-stretch` gives them that height.
+          A non-interactive carousel omits them entirely, so the host's own edge zones take those taps. */}
       <div className="flex items-stretch gap-1.5">
-        <button
-          type="button"
-          onClick={() => go(index - 1)}
-          aria-label="Previous example"
-          className="flex w-11 shrink-0 items-center justify-center rounded-xl text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
-        >
-          <ChevronLeft className="h-5 w-5" aria-hidden="true" />
-        </button>
+        {interactive && (
+          <button
+            type="button"
+            onClick={() => go(index - 1)}
+            aria-label="Previous example"
+            data-testid="scratch-examples-prev"
+            className="flex w-11 shrink-0 items-center justify-center rounded-xl text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+          >
+            <ChevronLeft className="h-5 w-5" aria-hidden="true" />
+          </button>
+        )}
 
         {/* aria-live is off while it rotates by itself so a screen reader is not interrupted. */}
         <div key={index} aria-live={auto ? "off" : "polite"} className="gc-fade-in min-w-0 flex-1">
@@ -190,14 +199,17 @@ export default function ScratchExamples() {
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={() => go(index + 1)}
-          aria-label="Next example"
-          className="flex w-11 shrink-0 items-center justify-center rounded-xl text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
-        >
-          <ChevronRight className="h-5 w-5" aria-hidden="true" />
-        </button>
+        {interactive && (
+          <button
+            type="button"
+            onClick={() => go(index + 1)}
+            aria-label="Next example"
+            data-testid="scratch-examples-next"
+            className="flex w-11 shrink-0 items-center justify-center rounded-xl text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+          >
+            <ChevronRight className="h-5 w-5" aria-hidden="true" />
+          </button>
+        )}
       </div>
 
       <div className="mt-2 flex justify-center gap-1.5" role="tablist" aria-label="Choose an example">
