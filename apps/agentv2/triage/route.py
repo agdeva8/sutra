@@ -114,11 +114,9 @@ def _item(chat, it: TriageItem, ctx: Context, now: datetime, source_id: str | No
         due_time = parse_hhmm(it.due.time) if it.due and it.due.time else None
         if due_day is not None and due_day < now.date():
             due_day = None  # a due date already gone is a misread; file it undated rather than in the past
-        if FOUR_KIND_WRITES:
-            return [AddItem(block=TaskBlock(
-                id=new_id(TODO_ID_PREFIX), title=it.title, goal_id=gid,
-                day=due_day, at=due_time if due_day else None, placed_by="user"
-            ))], None, None
+        # A to-do stays a `plan_items` row on both paths: the To-dos screen and `POST /todos` still use that
+        # table, so a 4-kind to-do from Scratch would be missing from the To-dos list. It moves to
+        # `calendar_blocks` together with that screen.
         return [AddTodo(id=new_id(TODO_ID_PREFIX), goal_id=gid, title=it.title,
                         day=due_day, due_time=due_time if due_day else None)], None, None
 

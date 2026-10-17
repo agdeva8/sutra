@@ -1,21 +1,21 @@
 """Scratch routing for the buckets added with the goal-less to-do, the away range and partial ticks.
 `route` is pure given a TriageResult, so no model is involved."""
 import asyncio
-from datetime import date, datetime, time
-
 import importlib
+from datetime import date, datetime, time
 
 import pytest
 
-# The package re-exports the `route` function under the module's own name, so the module is
-# fetched by path: that is where `route()` reads the flag.
-triage_route = importlib.import_module("agentv2.triage.route")
-from agentv2.contracts import AddBlocker, AddItem, CompleteItem, Origin
+from agentv2.contracts import AddBlocker, AddItem, AddTodo, CompleteItem, Origin
 from agentv2.contracts.triage import AwaySpec, ReminderSpec, TriageItem, TriageResult
 from agentv2.core.context import Context
 from agentv2.gateway import apply
 from agentv2.gateway.memory import InMemoryStore
 from agentv2.triage.route import route
+
+# The package re-exports the `route` function under the module's own name, so the module is
+# fetched by path: that is where `route()` reads the flag.
+triage_route = importlib.import_module("agentv2.triage.route")
 
 
 @pytest.fixture(autouse=True)
@@ -33,16 +33,15 @@ def _route(*items, ctx=None):
 
 
 def test_a_todo_needs_no_goal_and_no_hours():
+    # Still a plan_items to-do on the 4-kind path: the To-dos screen reads that table.
     routed = _route(TriageItem(bucket="todo", title="Reply to Mohit on Slack"))
     task = routed.changeset.changes[0]
-    assert isinstance(task, AddItem) and task.block.block_kind == "task"
-    assert task.block.goal_id is None and routed.waiting is None
+    assert isinstance(task, AddTodo) and task.goal_id is None and routed.waiting is None
 
 
 def test_a_task_that_cannot_be_tied_to_a_goal_becomes_a_todo_instead_of_a_question():
     routed = _route(TriageItem(bucket="task", title="Buy milk"))
-    assert routed.waiting is None and isinstance(routed.changeset.changes[0], AddItem)
-    assert routed.changeset.changes[0].block.block_kind == "task"
+    assert routed.waiting is None and isinstance(routed.changeset.changes[0], AddTodo)
 
 
 def test_a_bare_reminder_gets_defaults_and_an_explicit_time_is_honoured():

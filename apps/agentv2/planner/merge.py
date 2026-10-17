@@ -18,6 +18,9 @@ from ..core.slots import first_fit, free_windows, pad_after, picks_to_blocks, pi
 
 
 def _overlaps_new(block, taken: list[BlockRow]) -> bool:
+    # An untimed task (a day item, or one with no day) holds no hours, so it cannot clash.
+    if block.day is None or block.start is None or block.end is None:
+        return False
     return any(t.day == block.day and block.start < t.end and t.start < block.end for t in taken)
 
 

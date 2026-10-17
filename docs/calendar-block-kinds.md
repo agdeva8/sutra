@@ -10,11 +10,12 @@ proposals. Tasks, time slots, commitments and away ranges are written straight t
 
 ## Writes live in `calendar_blocks`
 
-`FOUR_KIND_WRITES` (`apps/agentv2/config.py`) switches the agent's planner, triage, intake and the
-executor to writing the four kinds to `calendar_blocks`, which is what the board, the Timeline, the
-`.ics` feed, the coach and goal drop read. It is **still off by default**, because the web's Today
-agenda (`apps/web/src/lib/agenda.js`) reads the old shapes; it flips once Today reads `state.blocks`.
-Set it to any value but `0`, `false` or `no` to turn it on for one deployment.
+`FOUR_KIND_WRITES` (`apps/agentv2/config.py`) is **on by default**: the agent's planner, triage, intake
+and the executor write the four kinds to `calendar_blocks`, which is what the board, the Timeline, Today's
+agenda, the `.ics` feed, the coach and goal drop read. Only `0`, `false` or `no` turn it off.
+
+**To-dos are the exception.** Scratch files a to-do as a `plan_items` row on both paths, like `POST /todos`,
+because the To-dos screen reads `plan_items`. They move to `calendar_blocks` together with that screen.
 
 The old tables are legacy, not gone. Rows written before the switch — and rows the backfill copied
 with their original ids — are still read where it matters: `SqlStore.context()` folds their

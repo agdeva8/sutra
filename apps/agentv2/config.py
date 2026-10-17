@@ -90,10 +90,10 @@ FLAG_OFF_VALUES = frozenset({"0", "false", "no"})
 
 #: Phase 4 rollout switch (D10). When True, agent stages emit the new 4-kind changes that write
 #: `calendar_blocks` instead of `timetable_blocks`/`milestones` (docs/calendar-block-kinds.md).
-#: Still off by default: the web's Today agenda (`apps/web/src/lib/agenda.js`) reads the old shapes,
-#: so a plan written only to `calendar_blocks` would vanish from Today. Flip it once Today reads
-#: `state.blocks`; `FOUR_KIND_WRITES=1` turns it on for one deployment in the meantime.
-FOUR_KIND_WRITES_DEFAULT = False
+#: On by default: the board, the Timeline, Today's agenda, the `.ics` feed, the coach and goal drop all read
+#: `calendar_blocks`. To-dos are the exception and stay in `plan_items` on both paths (triage/route.py),
+#: because the To-dos screen reads that table.
+FOUR_KIND_WRITES_DEFAULT = True
 _FOUR_KIND_WRITES_ENV = os.environ.get("FOUR_KIND_WRITES", "").strip().lower()
 FOUR_KIND_WRITES = (
     _FOUR_KIND_WRITES_ENV not in FLAG_OFF_VALUES if _FOUR_KIND_WRITES_ENV else FOUR_KIND_WRITES_DEFAULT
