@@ -133,13 +133,29 @@ async function reqStream(path, body, onStatus, { timeout = LONG_JOB_TIMEOUT_MS }
 }
 
 /**
- * Calendar writes return at once; this follow-up asks the server to plan goals again around the change,
- * then tells the app its board may have moved. Failure is silent: the write itself already succeeded.
+ * Calendar writes return at once; this follow-up queues a re-plan of any goal the change displaced,
+ * then says the board may have moved. Failure is silent: the write itself already succeeded.
  */
 export const STATE_STALE_EVENT = "sutra:state-stale";
+
+/** Drain this user's queued jobs, streaming each progress line. Resolves with `{ran, jobs}`. */
+function runQueuedJobs(onStatus) {
+  return reqStream("/jobs/run", {}, onStatus);
+}
+
+/** Fire-and-forget drain for callers that only need the board refreshed once it is over. */
+function drainJobs(onStatus) {
+  return runQueuedJobs(onStatus)
+    .catch(() => null)
+    .finally(() => window.dispatchEvent(new Event(STATE_STALE_EVENT)));
+}
+
 function replanAfter(result) {
   // Any goal may be re-planned around the change, so every goal card says so until it is done.
-  trackGoalActivity(ACTIVITY_ALL_GOALS, ACTIVITY_REPLAN, () => req("/timetable/replan-conflicts", { method: "POST", timeout: LONG_JOB_TIMEOUT_MS }), ACTIVITY_FALLBACK_TITLE)
+  trackGoalActivity(ACTIVITY_ALL_GOALS, ACTIVITY_REPLAN, async () => {
+    const queued = await req("/timetable/replan-conflicts", { method: "POST", timeout: LONG_JOB_TIMEOUT_MS });
+    if (queued?.job_id) await drainJobs();
+  }, ACTIVITY_FALLBACK_TITLE)
     .then(() => window.dispatchEvent(new Event(STATE_STALE_EVENT)))
     .catch(() => {});
   return result;
@@ -153,6 +169,12 @@ function replanAfter(result) {
 function boardChanged(result) {
   window.dispatchEvent(new Event(STATE_STALE_EVENT));
   return result;
+}
+
+/** A confirm may have queued a re-plan; drain it in the background so the returned state is usable at once. */
+function afterConfirm(resp) {
+  if (resp?.job_id) drainJobs();
+  return resp;
 }
 
 export const api = {
@@ -184,10 +206,12 @@ export const api = {
   goalThread: (goalId) => req(`/chat/goal-thread?goal_id=${encodeURIComponent(goalId)}`),
   audit: () => req("/audit"),
   confirm: (message_id, proposal_id) =>
-    req("/tools/confirm", { method: "POST", body: JSON.stringify({ message_id, proposal_id }) }),
-  // Several proposals in one transactional request: all apply or none do. Replies with the fresh `state`.
+    req("/tools/confirm", { method: "POST", body: JSON.stringify({ message_id, proposal_id }) }).then(afterConfirm),
+  // Several proposals in one transactional request: all apply or none do. Replies with the fresh `state`,
+  // and queues the re-plan the change needs; the drain runs in the background so the card is usable now.
   confirmBatch: (message_id, proposal_ids) =>
-    req("/tools/confirm", { method: "POST", body: JSON.stringify({ message_id, proposal_ids }), timeout: 180000 }),
+    req("/tools/confirm", { method: "POST", body: JSON.stringify({ message_id, proposal_ids }), timeout: 180000 })
+      .then(afterConfirm),
   reject: (message_id, proposal_id, reason) =>
     req("/tools/reject", {
       method: "POST",
@@ -217,17 +241,31 @@ export const api = {
   goalProgress: () => req("/agent/progress"),
   judgeProgress: () => req("/agent/progress/judge", { method: "POST" }),
   // Goal intake — one dialogue turn, then confirm to create and plan the goal.
-  // Plan a goal the chat dialog just created: agentv2 places its weeks around the calendar.
-  // The goal's card shows each progress line while its timeline is worked out; the caller's own onStatus still gets them.
+  // Plan a goal the chat dialog just created. The server queues a `build_plan` job and returns at
+  // once; this then drains it with progress streamed. The goal's card shows each line while its
+  // timeline is worked out; the caller's own onStatus still gets them.
   planGoal: (goalId, onStatus, title) =>
     trackGoalActivity(
       goalId,
       ACTIVITY_PLANNING,
-      (update) =>
-        reqStream("/plan/change", { goal_id: goalId, action: { intent: "create_goal" }, confirmed: true }, (line) => {
+      async (update) => {
+        const report = (line) => {
           update(line);
           onStatus?.(line);
-        }),
+        };
+        const queued = await req("/plan/change", {
+          method: "POST",
+          timeout: LONG_JOB_TIMEOUT_MS,
+          body: JSON.stringify({
+            goal_id: goalId,
+            action: { intent: "create_goal" },
+            confirmed: true,
+            enqueue: true,
+          }),
+        });
+        if (queued?.job_id) await runQueuedJobs(report);
+        return queued;
+      },
       title,
     ),
   goalIntake: (message, state) => req("/goals/intake", { method: "POST", body: JSON.stringify({ message, state }), timeout: 90000 }),

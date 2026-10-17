@@ -32,11 +32,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..core.blast_radius import radius_for
 from ..agent_background import replan_conflicts_for
 from ..db import get_session
+from ..jobs import enqueue
 from ..rate_limit import llm_rate_limit
 from ..background import run_after
 from ..deps import CurrentUser, require_user
 from ..ids import new_id
-from ..models import BLOCKER_KINDS, CalendarBlock, Reminder, TimetableBlock
+from ..models import JOB_REPLAN_CONFLICTS, BLOCKER_KINDS, CalendarBlock, Reminder, TimetableBlock
 from ..store import repo, staleness
 from ..wire import time_block
 from agentv2.contracts.blocks import BLOCK_ADAPTER, EventBlock
@@ -137,14 +138,29 @@ async def list_timetable(
 @router.post("/timetable/replan-conflicts", dependencies=[Depends(llm_rate_limit)])
 async def replan_conflicts_now(
     request: Request,
+    session: AsyncSession = Depends(get_session),
     user: CurrentUser = Depends(require_user),
 ) -> dict:
     """Plan goals again around calendar changes the user just made.
 
-    The follow-up the client sends after adding, editing or removing a block or an away period. It is its own
-    request so the write itself returns at once; it does nothing when nothing conflicts."""
-    await replan_conflicts_for(user.user_id, request.headers.get("x-timezone"))
-    return {"ok": True}
+    The follow-up the client sends after adding, editing or removing a block or an away period.
+    It queues one `replan_conflicts` job and returns; the client then drains it with
+    `POST /jobs/run`, which is what lets the work outlive this request on a serverless host.
+
+    `{"inline": true}` keeps the old synchronous behaviour for one release, for a client
+    that has not moved to the queue yet.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if (body or {}).get("inline") is True:
+        await replan_conflicts_for(user.user_id, request.headers.get("x-timezone"))
+        return {"ok": True}
+
+    job_id = await enqueue(session, user_id=user.user_id, kind=JOB_REPLAN_CONFLICTS)
+    await session.commit()
+    return {"ok": True, "job_id": job_id}
 
 
 @router.post("/timetable", status_code=201)

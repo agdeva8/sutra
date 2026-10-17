@@ -51,6 +51,23 @@ class Settings(BaseSettings):
     #: Shared secret the platform scheduler sends (`Authorization: Bearer ...`) to the `/cron/*` routes.
     cron_secret: str = Field(default="", alias="CRON_SECRET")
 
+    # ── background jobs ────────────────────────────────────────────────────
+    #: How long a worker may hold a claimed job. Longer than the host's 300 s function limit on
+    #: purpose: the lease is a crash detector, not a timeout — a lease that expires while the
+    #: function is still legitimately working would let a second worker start the same job.
+    job_lease_seconds: int = 360
+    #: Attempts before a job is marked failed. Lease expiry counts as an attempt.
+    job_max_attempts: int = 3
+    #: How long a retry waits before it becomes claimable again.
+    job_retry_delay_seconds: int = 60
+    #: Wall-clock budget for one cron drain. Leaves headroom inside the 300 s function limit for
+    #: the HTTP round trip and the response, and is checked between jobs so a drain never overruns.
+    cron_jobs_budget_seconds: int = 240
+    #: Finished jobs stay in `/state` this long, so a toast and an Undo survive a screen refresh.
+    jobs_recent_minutes: int = 10
+    #: How many jobs `/state` reports. Active jobs are always included; this bounds the finished tail.
+    jobs_report_limit: int = 20
+
     # ── auth ───────────────────────────────────────────────────────────────
     #: HMAC key for the guest cookie. v1 required >= 32 chars; kept.
     auth_secret: str = Field(default="", alias="AUTH_SECRET")

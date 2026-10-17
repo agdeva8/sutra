@@ -1,7 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { toast } from "sonner";
 import { Loader2 } from "lucide-react";
 import { useActivityList } from "../lib/goalActivity";
+import { jobsToActivity, mergeActivity } from "../lib/goalPlanning";
 import { ACTIVITY_FALLBACK_TITLE, ACTIVITY_TOAST_ID, ACTIVITY_TOAST_MANY, ACTIVITY_TOAST_WORKING } from "../constants/goalActivity";
 
 /**
@@ -11,8 +12,12 @@ import { ACTIVITY_FALLBACK_TITLE, ACTIVITY_TOAST_ID, ACTIVITY_TOAST_MANY, ACTIVI
  * being written never looks like nothing happening. One toast, updated as the lines change, gone when idle.
  * Renders nothing itself.
  */
-export default function CoachActivityToast() {
-  const items = useActivityList();
+export default function CoachActivityToast({ jobs = [], goals = [] }) {
+  const local = useActivityList();
+  // The server's `jobs` outlive this tab: a job started in another tab, or before a reload, still
+  // shows. This tab's own lines win for the goals it is already showing.
+  const fromJobs = useMemo(() => jobsToActivity(jobs, goals), [jobs, goals]);
+  const items = useMemo(() => mergeActivity(local, fromJobs), [local, fromJobs]);
   // Closed by the user: stays closed until the coach goes idle, so a new progress line does not bring it
   // back over the bottom nav. The goal card still shows the work in place.
   const closed = useRef(false);

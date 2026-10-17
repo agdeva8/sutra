@@ -78,6 +78,19 @@ CONVERSATION_KINDS = (
     "drop_goal",
 )
 CONVERSATION_STATUSES = ("open", "closed")
+
+#: The background queue's jobs. `replan_conflicts` is per user (any goal may move),
+#: the other three name the goal they act on.
+JOB_REPLAN_CONFLICTS = "replan_conflicts"
+JOB_REPLAN_GOAL = "replan_goal"
+JOB_BUILD_PLAN = "build_plan"
+JOB_TICK_USER = "tick_user"
+JOB_KINDS = (JOB_REPLAN_CONFLICTS, JOB_REPLAN_GOAL, JOB_BUILD_PLAN, JOB_TICK_USER)
+JOB_QUEUED = "queued"
+JOB_RUNNING = "running"
+JOB_DONE = "done"
+JOB_FAILED = "failed"
+JOB_STATUSES = (JOB_QUEUED, JOB_RUNNING, JOB_DONE, JOB_FAILED)
 MESSAGE_ROLES = ("user", "assistant")
 PROPOSAL_STATUSES = ("pending", "confirmed", "rejected")
 MOTIVATION_BUCKETS = ("overdue", "dormant", "stuck")
@@ -1093,3 +1106,63 @@ class GoalProgress(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     __table_args__ = (Index("goal_progress_user_idx", "user_id"),)
+
+
+class AgentJob(Timestamped, Base):
+    """One unit of background work: a re-plan, a first plan, or a user's nightly tick.
+
+    The row *is* the queue. A client enqueues in the same transaction as the change
+    that made the work necessary, so a committed change can never lose its job. A
+    worker claims a due row with `FOR UPDATE SKIP LOCKED` and holds it under a lease;
+    if the process dies the lease expires and the job is retried up to
+    `JOB_MAX_ATTEMPTS`, after which it is marked failed and the app offers Retry.
+
+    `dedupe_key` collapses duplicates while a job is still queued: a partial unique
+    index on `(user_id, dedupe_key) WHERE status = 'queued'` means tapping "re-plan"
+    twice queues one job, while a job that has started no longer blocks the next one.
+    """
+
+    __tablename__ = "agent_jobs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    #: One of `JOB_KINDS`.
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    #: The goal a goal-scoped job acts on; NULL for `replan_conflicts` and `tick_user`.
+    goal_id: Mapped[str | None] = mapped_column(ForeignKey("goals.id", ondelete="SET NULL"))
+    #: `"<kind>:<goal_id or *>"`. Collapses a duplicate enqueue while this job is queued.
+    dedupe_key: Mapped[str] = mapped_column(String, nullable=False)
+    #: One of `JOB_STATUSES`.
+    status: Mapped[str] = mapped_column(String, nullable=False, default=JOB_QUEUED, server_default=JOB_QUEUED)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    #: The earliest moment a worker may claim this job. A retry pushes it forward.
+    run_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    #: Set while running. A worker that dies leaves this in the past, and the job is recoverable.
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The last progress line the job reported, for the client's toast and goal card.
+    progress: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    #: What the job produced: `{applied, proposed, audit_id, summary}` for a plan job.
+    result: Mapped[dict | None] = mapped_column(JSONB)
+    error: Mapped[str | None] = mapped_column(Text)
+    #: The `audit_log` row this job wrote, so the client's toast can offer Undo.
+    audit_id: Mapped[str | None] = mapped_column(String)
+
+    __table_args__ = (
+        # Dedupe only while queued: once a job starts, a genuinely new request is new work.
+        Index(
+            "agent_jobs_queued_dedupe_idx",
+            "user_id",
+            "dedupe_key",
+            unique=True,
+            postgresql_where=text("status = 'queued'"),
+        ),
+        # One running job per user, so racing claims cannot start two re-plans for one user.
+        Index(
+            "agent_jobs_one_running_idx",
+            "user_id",
+            unique=True,
+            postgresql_where=text("status = 'running'"),
+        ),
+        Index("agent_jobs_claim_idx", "status", "run_after"),
+        Index("agent_jobs_user_status_idx", "user_id", "status"),
+    )

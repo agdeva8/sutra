@@ -208,6 +208,23 @@ async def replan_goal(
     return PlanOutcome("applied", notes, applied=len(res.applied), proposed=len(res.proposed))
 
 
+async def replan_preview(
+    store: Store, goal_id: str, *, now: datetime | None = None, tz: str | None = None, chat=None, progress=None
+) -> tuple[list, list[str]] | None:
+    """Work out what a re-plan would place, **without writing it**.
+
+    `replan_goal` applies as it goes, which is right for a request that has already
+    been authorised. A job has to inspect the result first: the queue's rule is that
+    a re-plan may move planned sessions on its own, but anything that would change a
+    goal's target date, weekly hours or milestones becomes a proposal instead. That
+    decision needs the change set in hand before the gateway sees it.
+    """
+    now = now or local_now(tz)
+    return await asyncio.to_thread(
+        replan_changes, chat or default_chat(), await store.context(), goal_id, now, progress
+    )
+
+
 async def replan_conflicts(store: Store, *, now: datetime | None = None, tz: str | None = None, chat=None) -> PlanOutcome:
     """Plan again any goal whose planned time now collides with something fixed (a commitment added in
     the app, or an away stretch). Safe to call after any change to the calendar: with no conflict it does nothing."""

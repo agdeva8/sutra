@@ -226,40 +226,22 @@ async def _link_goal_to_conversation(
         conversation.goal_id = goal_id
 
 
-async def _replan_after_confirm(session: AsyncSession, *, user_id: str, goal_id: str) -> bool:
-    """Re-plan the goal's sessions now that a confirmed change moved what they were planned around.
+async def _queue_replan_after_confirm(session: AsyncSession, *, user_id: str, goal_id: str) -> str | None:
+    """Queue a re-plan now that a confirmed change moved what the goal's sessions were planned around.
 
-    Runs in the same request, behind the same lease as `/plan/change`: when a build is already in
-    flight nothing starts, because two writers over the same rows would race. A failure does not
-    fail the confirm — the change is committed and the goal's `plan_status` says `failed`, which is
-    the signal the client polls. Returns whether a build ran.
+    It is queued **in the confirm's transaction**, so a committed confirm can never lose the
+    re-plan it needs. The job runs when the client drains `/jobs/run` (or the cron drain picks
+    it up), which is what lets it survive the response on a serverless host. When a build is
+    already in flight the job still queues: the job re-checks the lease before it starts and
+    steps aside, so a duplicate is cheap and never races the live writer.
     """
-    from agentv2 import local_now, replan_goal
+    from ..jobs import enqueue
+    from ..models import JOB_REPLAN_GOAL
 
-    from ..agent_store import SqlStore
-    from ..models import PLAN_FAILED, PLAN_PLANNING, PLAN_READY
-    from .plan import _set_plan_status, build_in_flight
-
-    now = local_now()
     goal = await repo.get_goal(session, user_id=user_id, goal_id=goal_id)
     if goal is None or goal.status != "active":
-        return False
-    if build_in_flight(goal.plan_status, goal.plan_started_at, now):
-        return False
-    await _set_plan_status(session, goal, PLAN_PLANNING)
-    try:
-        out = await replan_goal(SqlStore(session, user_id, today=now.date()), goal_id, now=now)
-    except Exception:
-        await session.rollback()
-        await _set_plan_status(session, goal, PLAN_FAILED)
-        return False
-    if out.status != "applied":
-        await session.rollback()
-        await _set_plan_status(session, goal, PLAN_FAILED)
-        return False
-    goal.plan_status = PLAN_READY
-    await session.commit()
-    return True
+        return None
+    return await enqueue(session, user_id=user_id, kind=JOB_REPLAN_GOAL, goal_id=goal_id)
 
 
 async def _confirm_batch(session: AsyncSession, *, user_id: str, proposal_ids: list) -> dict:
@@ -271,8 +253,8 @@ async def _confirm_batch(session: AsyncSession, *, user_id: str, proposal_ids: l
 
     An **edit batch** — the goal update and the whole re-proposed milestone set from the Edit-goal
     thread — is applied as `update_goal` followed by one `ReplaceMilestones`, so the goal's open
-    milestones are replaced rather than appended to. The goal's sessions are then re-planned after
-    the commit, in this request.
+    milestones are replaced rather than appended to. The goal's sessions are then queued for
+    re-planning in the same transaction, and the client drains that job with `/jobs/run`.
     """
     ids = [i for i in proposal_ids if isinstance(i, str) and i]
     if not ids or len(ids) != len(proposal_ids) or len(set(ids)) != len(ids) or len(ids) > MAX_BATCH_PROPOSALS:
@@ -358,16 +340,16 @@ async def _confirm_batch(session: AsyncSession, *, user_id: str, proposal_ids: l
         results.append(outcome.result)
         if outcome.goal_id and needs_replan(row.action, row.args):
             replan_goal_id = outcome.goal_id
+    job_id = (
+        await _queue_replan_after_confirm(session, user_id=user_id, goal_id=replan_goal_id)
+        if replan_goal_id else None
+    )
     await session.commit()
 
-    replanned = bool(
-        replan_goal_id
-        and await _replan_after_confirm(session, user_id=user_id, goal_id=replan_goal_id)
-    )
     state = await assemble_state(session, user_id=user_id)
     return {
         "ok": True, "result": "; ".join(results), "results": results,
-        "confirmed": ids, "replanned": replanned, "state": state,
+        "confirmed": ids, "replanned": False, "job_id": job_id, "state": state,
     }
 
 
@@ -434,15 +416,18 @@ async def confirm(
         await _link_goal_to_conversation(
             session, user_id=user.user_id, proposal=proposal, goal_id=outcome.goal_id
         )
+    job_id = (
+        await _queue_replan_after_confirm(session, user_id=user.user_id, goal_id=outcome.goal_id)
+        if outcome.goal_id and needs_replan(proposal.action, proposal.args)
+        else None
+    )
     await session.commit()
 
-    replanned = bool(
-        outcome.goal_id
-        and needs_replan(proposal.action, proposal.args)
-        and await _replan_after_confirm(session, user_id=user.user_id, goal_id=outcome.goal_id)
-    )
     state = await assemble_state(session, user_id=user.user_id)
-    return {"ok": True, "result": outcome.result, "replanned": replanned, "state": state}
+    return {
+        "ok": True, "result": outcome.result, "replanned": False,
+        "job_id": job_id, "state": state,
+    }
 
 
 @router.post("/tools/reject")

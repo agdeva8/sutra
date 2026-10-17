@@ -3,8 +3,15 @@ import { toast } from "sonner";
 import { api, STATE_STALE_EVENT } from "./api";
 import { clearGoalActivity, isGoalBusy, setGoalActivity } from "./goalActivity";
 import {
+  ACTIVITY_ALL_GOALS,
+  ACTIVITY_FALLBACK_TITLE,
   ACTIVITY_PLANNING,
+  ACTIVITY_REPLAN,
   BUILD_FAILED_TOAST,
+  JOB_DEFAULT_LINE,
+  JOB_STATUS_FAILED,
+  JOB_STATUS_QUEUED,
+  JOB_STATUS_RUNNING,
   PLAN_LEASE_MS,
   PLAN_POLL_MS,
   PLAN_STATUS_FAILED,
@@ -44,6 +51,58 @@ export const planningIsLive = (g) =>
 export const isUnscheduled = (state, goalId) =>
   !!state && !(state.plan_items || []).some((it) => it.goal_id === goalId && it.horizon !== "milestone");
 
+/** Whether a background job still has work to do (queued or running). */
+export const isJobLive = (job) =>
+  job?.status === JOB_STATUS_QUEUED || job?.status === JOB_STATUS_RUNNING;
+
+/** The newest live job for one goal, from `/state.jobs`; `null` when none is working on it. */
+export const liveJobForGoal = (state, goalId) =>
+  (state?.jobs || []).find((job) => isJobLive(job) && job.goal_id === goalId) || null;
+
+/**
+ * A goal-scoped job that failed and is waiting for a Retry, from `/state.jobs`.
+ *
+ * Only when it is the newest job for the goal: `/state.jobs` is newest-first, so a failure
+ * that a later run already fixed stops offering Retry instead of outliving its cause.
+ */
+export const failedJobForGoal = (state, goalId) => {
+  const newest = (state?.jobs || []).find((job) => job.goal_id === goalId);
+  return newest?.status === JOB_STATUS_FAILED ? newest : null;
+};
+
+/** Whether any of the user's background jobs is still working — the list polls while one is. */
+export const hasLiveJobs = (state) => (state?.jobs || []).some(isJobLive);
+
+/**
+ * The activity list the toast renders, in the shape `goalActivity` uses.
+ *
+ * `/state.jobs` is the server's view, so a job started in another tab (or before a reload) shows
+ * too. A user-wide job keys on `ACTIVITY_ALL_GOALS`; a goal job uses its own title. Running only:
+ * queued means "will run", and the toast should not claim work that has not started.
+ */
+export function jobsToActivity(jobs = [], goals = []) {
+  const titles = new Map((goals || []).map((g) => [g.id, g.title]));
+  return (jobs || [])
+    .filter((job) => job.status === JOB_STATUS_RUNNING)
+    .map((job) => ({
+      goalId: job.goal_id || ACTIVITY_ALL_GOALS,
+      title:
+        job.goal_title ||
+        titles.get(job.goal_id) ||
+        (job.goal_id ? ACTIVITY_FALLBACK_TITLE : "your goals"),
+      line: job.progress || (job.goal_id ? JOB_DEFAULT_LINE : ACTIVITY_REPLAN),
+    }));
+}
+
+/**
+ * The toast's list: this tab's own lines first (they update the moment a call starts), then the
+ * server's running jobs for goals this tab is not already showing. One entry per goal either way.
+ */
+export function mergeActivity(local = [], fromJobs = []) {
+  const seen = new Set(local.map((it) => it.goalId));
+  return [...local, ...fromJobs.filter((it) => !seen.has(it.goalId))];
+}
+
 /**
  * Keep the goal list honest about schedules: poll while the server says a goal is being built somewhere
  * else, and start the build for an active goal that has none (unless its last build failed, which keeps
@@ -55,6 +114,10 @@ export function usePlanWatch(state, refresh) {
 
   const elsewhere = goals.filter((g) => g.status === "active" && planningIsLive(g) && !started.has(g.id));
   const key = elsewhere.map((g) => g.id).join(",");
+  // A queued job is not a build yet, but it will become one within seconds; polling then keeps the
+  // card's progress line current without the client having to know when the switch happened.
+  const liveJobs = (state?.jobs || []).filter(isJobLive);
+  const jobsKey = liveJobs.map((job) => job.id).join(",");
 
   useEffect(() => {
     const now = new Set(elsewhere.map((g) => g.id));
@@ -66,11 +129,11 @@ export function usePlanWatch(state, refresh) {
       if (!now.has(id)) clearGoalActivity(id);
     });
     watched.current = now;
-    if (now.size === 0) return undefined;
+    if (now.size === 0 && !jobsKey) return undefined;
     const timer = setInterval(() => refresh?.(), PLAN_POLL_MS);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+  }, [key, jobsKey]);
 
   useEffect(() => {
     if (!state) return;

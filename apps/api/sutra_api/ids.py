@@ -29,6 +29,7 @@ PREFIXES = {
     "change": "chg",       # plan_change_ledger
     "conversation": "conv",  # conversations (usually deterministic, see below)
     "goal": "goal",
+    "job": "job",          # agent_jobs
     "memory": "mem",
     "message": "msg",
     "milestone": "mile",

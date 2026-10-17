@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .core.over_commitment import compute_over_commitment
 from .core.replan_suggestions import compute_replan_suggestions
+from .jobs import list_jobs
 from sqlalchemy import select
 
 from .models import CalendarBlock, Reminder, User
@@ -83,8 +84,7 @@ async def assemble_state(session: AsyncSession, *, user_id: str) -> dict:
     source_payload = [source_list_row(s) for s in sources]
     audit_payload = [audit_entry(a) for a in recent]
 
-    suggestions = compute_replan_suggestions(
-        {
+    suggestions = compute_replan_suggestions(        {
             "goals": [
                 {
                     "id": g["id"],
@@ -159,5 +159,8 @@ async def assemble_state(session: AsyncSession, *, user_id: str) -> dict:
         "reminders": reminder_payload,
         # Phase 5: New blocks and version
         "blocks": cal_blocks_list,
+        # Background work the app should surface: running jobs, and recently finished ones
+        # (a toast, its Undo, or "Couldn't re-plan — Retry" survives a refresh).
+        "jobs": await list_jobs(session, user_id=user_id),
         "version": version,
     }

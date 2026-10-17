@@ -4,7 +4,7 @@ import GoalMemoryDialog from "./GoalMemoryDialog";
 import GoalPlanPanel from "./GoalPlanPanel";
 import useGoalProgress from "../lib/useGoalProgress";
 import { goalNodes, goalMilestones } from "../lib/planNodes";
-import { isUnscheduled, planningIsLive, usePlanWatch } from "../lib/goalPlanning";
+import { failedJobForGoal, isUnscheduled, liveJobForGoal, planningIsLive, usePlanWatch } from "../lib/goalPlanning";
 
 /**
  * GoalBoard — the editable goal list, grouped by horizon.
@@ -102,6 +102,9 @@ export default function GoalBoard({
                 // The server's own word on a build in flight, so a goal being built by another tab
                 // (or before this one's activity marker lands) reads as building, not as unplanned.
                 planningLive={planningIsLive(g)}
+                // The queue's view: a job outlives this card, this tab, and a reload.
+                job={liveJobForGoal(state, g.id)}
+                failedJob={failedJobForGoal(state, g.id)}
                 onScheduled={onCreated}
                 onAction={onAction}
                 onUploadSource={onUploadSource}

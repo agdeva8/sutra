@@ -105,7 +105,7 @@ Set in the Vercel project for production, not read from a file.
 | `CORS_ALLOWED_ORIGINS` | yes | a **JSON list**, e.g. `["https://gurusutra.vercel.app"]`. A bare URL crashes settings parsing. |
 | `CALENDAR_FEED_BASE_URL` | yes in practice | the API's public origin, so calendar apps can fetch the `.ics` feed |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `SUPABASE_BUCKET` | yes in practice | uploads (photos, files). Without them files fall back to per-instance disk and are lost |
-| `CRON_SECRET` | yes for the nightly tick | shared secret the scheduler sends to `/cron/*` |
+| `CRON_SECRET` | yes | shared secret the scheduler sends to `/cron/*`; without it the job queue only drains while a client is calling `/jobs/run` |
 | `BACKGROUND_INLINE` | yes on Vercel | `true`. A serverless host freezes the process once the response is sent, so work queued "after the response" may never finish. |
 | `SUTRA_LLM_REQUESTS_PER_MINUTE` | no | per-user cap on model-backed routes, default 60 |
 | `LANGSMITH_*` | no | tracing |
@@ -116,15 +116,68 @@ Probes: `/health` (liveness, no dependencies) and `/ready` (database reachable).
 apps/api/scripts/smoke.sh https://sutra-api-neon.vercel.app
 ```
 
-## Nightly tick
+## Background jobs and Supabase Cron
 
-Run once a night for all users, or point Supabase Cron at `GET /cron/tick` with `Authorization: Bearer $CRON_SECRET`:
+Re-plans and goal builds run as rows in `agent_jobs` (`sutra_api/jobs.py`). The API drains them in three ways:
+
+- `POST /api/jobs/run` — the signed-in user's own due jobs, streamed over SSE. The web app calls it after a write queued one, so a re-plan finishes inside the request on Vercel.
+- `GET /api/cron/jobs` — everyone's due jobs, for as long as `CRON_JOBS_BUDGET_S` (default 240 s) allows. This is the safety net for work nobody's tab is holding open.
+- `GET /api/cron/tick` — no longer runs the nightly tick. It queues one `tick_user` job per user, and `/api/cron/jobs` runs them.
+
+All three cron routes are guarded by `Authorization: Bearer $CRON_SECRET` (`hmac.compare_digest`, fails closed with 404). Set `CRON_SECRET` in the Vercel project for `sutra-api` — 32+ random characters, the same value as in the SQL below:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+### One-time Supabase setup
+
+Enable the `pg_cron` and `pg_net` extensions (Dashboard → Database → Extensions), then run this once in the SQL editor. Replace `REPLACE_WITH_CRON_SECRET` with the value from Vercel.
+
+```sql
+select cron.schedule(
+  'sutra-jobs-drain',
+  '* * * * *',
+  $$
+  select net.http_get(
+    url := 'https://sutra-api-neon.vercel.app/api/cron/jobs',
+    headers := jsonb_build_object('Authorization', 'Bearer REPLACE_WITH_CRON_SECRET'),
+    timeout_milliseconds := 300000
+  );
+  $$
+);
+
+-- 02:00 IST is 20:30 UTC the previous day; pg_cron runs in UTC by default.
+select cron.schedule(
+  'sutra-nightly-tick',
+  '30 20 * * *',
+  $$
+  select net.http_get(
+    url := 'https://sutra-api-neon.vercel.app/api/cron/tick',
+    headers := jsonb_build_object('Authorization', 'Bearer REPLACE_WITH_CRON_SECRET')
+  );
+  $$
+);
+
+select cron.schedule(
+  'sutra-nightly-reap',
+  '35 20 * * *',
+  $$
+  select net.http_get(
+    url := 'https://sutra-api-neon.vercel.app/api/cron/reap',
+    headers := jsonb_build_object('Authorization', 'Bearer REPLACE_WITH_CRON_SECRET')
+  );
+  $$
+);
+```
+
+Check it is running: `select jobid, jobname, schedule, active from cron.job;` and `select * from cron.job_run_details order by start_time desc limit 20;`. `net.http_get` is fire-and-forget — it returns a request id, and responses land in `net._http_response`.
+
+The tick still lays out recurring commitments further ahead, gives day-level detail to weeks that have come into the window, and replans a goal when hours done and hours planned have drifted apart. Each user runs as its own job, in its own transaction. To run it by hand instead:
 
 ```bash
 cd apps/api && .venv/bin/python scripts/agent_tick.py
 ```
-
-It lays out recurring commitments further ahead, gives day-level detail to weeks that have come into the window, and replans a goal when hours done and hours planned have drifted apart. Each user runs in its own transaction.
 
 ## Running the API in a container
 

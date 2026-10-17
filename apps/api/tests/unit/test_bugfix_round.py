@@ -212,7 +212,25 @@ def test_replan_follow_up_route_exists_and_writes_no_longer_replan_inline():
         assert "run_after(background, replan_conflicts_for" not in inspect.getsource(module)
 
 
-def test_replan_follow_up_runs_the_replan(monkeypatch):
+def test_replan_follow_up_queues_a_job_by_default(monkeypatch):
+    from sutra_api.api import timetable
+
+    calls = []
+
+    async def fake_enqueue(session, *, user_id, kind):
+        calls.append((user_id, kind))
+        return "job_1"
+
+    monkeypatch.setattr(timetable, "enqueue", fake_enqueue)
+    client, session = _client(None)
+    res = client.post("/api/timetable/replan-conflicts")
+    assert res.status_code == 200
+    assert res.json() == {"ok": True, "job_id": "job_1"}
+    assert calls == [("u1", "replan_conflicts")]
+    assert session.committed
+
+
+def test_replan_follow_up_can_still_run_inline(monkeypatch):
     from sutra_api.api import timetable
 
     calls = []
@@ -222,7 +240,11 @@ def test_replan_follow_up_runs_the_replan(monkeypatch):
 
     monkeypatch.setattr(timetable, "replan_conflicts_for", fake)
     client, _ = _client(None)
-    res = client.post("/api/timetable/replan-conflicts", headers={"X-Timezone": "Asia/Kolkata"})
+    res = client.post(
+        "/api/timetable/replan-conflicts",
+        headers={"X-Timezone": "Asia/Kolkata"},
+        json={"inline": True},
+    )
     assert res.status_code == 200 and calls == [("u1", "Asia/Kolkata")]
 
 

@@ -67,6 +67,7 @@ import FocusedTaskChatDialog from "../components/FocusedTaskChatDialog";
 import PlanWorkspace from "../components/PlanWorkspace";
 import ReplanSuggestions from "../components/ReplanSuggestions";
 import ReplanToast from "../components/ReplanToast";
+import CoachActivityToast from "../components/CoachActivityToast";
 import ChatModal from "../components/ChatModal";
 import WelcomeToast from "../components/WelcomeToast";
 import FirstRunTour from "../components/FirstRunTour";
@@ -956,6 +957,8 @@ export default function Coach() {
         suggestions={state?.replan_suggestions || []}
         onReplan={openReplanSuggestion}
       />
+      {/* Server-side jobs, so work started in another tab (or before a reload) still shows. */}
+      <CoachActivityToast jobs={state?.jobs} goals={state?.goals} />
 
       <HonestyAuditView open={auditOpen} onClose={() => setAuditOpen(false)} />
       <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />

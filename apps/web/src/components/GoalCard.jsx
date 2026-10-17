@@ -22,7 +22,7 @@ import SourceActionDialog from "./SourceActionDialog";
 import LinkPreviewDialog from "./LinkPreviewDialog";
 import GoalProgress from "./GoalProgress";
 import useGoalActivity from "../lib/goalActivity";
-import { BUILDING_SCHEDULE_TEXT, NO_SCHEDULE_BUTTON, NO_SCHEDULE_TEXT } from "../constants/goalActivity";
+import { BUILDING_SCHEDULE_TEXT, NO_SCHEDULE_BUTTON, NO_SCHEDULE_TEXT, REPLAN_FAILED_TEXT } from "../constants/goalActivity";
 import { SHOW_PLAN_LIST } from "../constants/features";
 
 /**
@@ -210,13 +210,16 @@ function SourcesChip({ goal, sources, onUpload, onAddLink, onDelete }) {
   );
 }
 
-export default function GoalCard({ goal, milestones, progress, onAction, onUploadSource, onAddLink, onDeleteSource, onAddMemory, onOpenPlan, unscheduled = false, planningLive = false, onScheduled }) {
+export default function GoalCard({ goal, milestones, progress, onAction, onUploadSource, onAddLink, onDeleteSource, onAddMemory, onOpenPlan, unscheduled = false, planningLive = false, job = null, failedJob = null, onScheduled }) {
   const goalMiles = milestones.filter((m) => m.goal_id === goal.id || m.goal_title === goal.title);
   const sources = goal.sources || [];
   const activity = useGoalActivity(goal.id);
   // Busy here, or busy somewhere this tab cannot see (another tab, or before the activity marker
-  // lands). Either way the goal is mid-build and must not offer a second one.
-  const building = !!activity || planningLive;
+  // lands). Either way the goal is mid-build and must not offer a second one. A live job in
+  // `/state.jobs` is the queue's own word on the same thing, and outlives a reload or another tab.
+  const building = !!activity || planningLive || !!job;
+  // The server's progress line is the freshest one; the local marker is set the moment a build starts.
+  const line = activity || job?.progress || BUILDING_SCHEDULE_TEXT;
   return (
     <div data-testid={`goal-card-${goal.id}`} className="group p-4">
       <div className="flex items-start gap-3">
@@ -229,7 +232,21 @@ export default function GoalCard({ goal, milestones, progress, onAction, onUploa
             // The goal is being worked on: say so, so nobody mistakes a plan mid-rewrite for a finished one.
             <div role="status" aria-live="polite" data-testid={`goal-activity-${goal.id}`} className="mt-2 flex items-center gap-2 rounded-lg bg-[color-mix(in_srgb,var(--accent)_10%,transparent)] px-3 py-2 text-[12px] text-[var(--accent)]">
               <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden="true" />
-              <span className="min-w-0">{activity || BUILDING_SCHEDULE_TEXT}</span>
+              <span className="min-w-0">{line}</span>
+            </div>
+          )}
+          {!building && failedJob && (
+            // The queue gave up on this goal's re-plan. It says so here rather than in a toast that
+            // would vanish: the plan is stale until the user acts, so the card keeps the way to act.
+            <div role="alert" data-testid={`goal-job-failed-${goal.id}`} className="mt-2 flex flex-wrap items-center gap-2 rounded-lg bg-[color-mix(in_srgb,var(--danger)_10%,transparent)] px-3 py-2 text-[12px] text-[var(--danger)]">
+              <span className="min-w-0 flex-1">{REPLAN_FAILED_TEXT}</span>
+              <button
+                data-testid={`goal-job-retry-${goal.id}`}
+                onClick={() => buildSchedule(goal, { force: true }).then(() => onScheduled?.())}
+                className="h-9 px-3 rounded-md border border-[var(--danger)] text-[var(--danger)] text-[12px] font-medium"
+              >
+                Retry
+              </button>
             </div>
           )}
           {!building && unscheduled && goal.status === "active" && (

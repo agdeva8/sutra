@@ -28,7 +28,8 @@ from ..agent_store import SqlStore
 from ..core.blast_radius import radius_for_intent
 from ..core.staleness import build_adjustments, classify_change, make_change
 from ..db import get_session
-from ..models import PLAN_FAILED, PLAN_PLANNING, PLAN_READY
+from ..jobs import enqueue
+from ..models import JOB_BUILD_PLAN, JOB_REPLAN_GOAL, PLAN_FAILED, PLAN_PLANNING, PLAN_READY
 from ..rate_limit import llm_rate_limit
 from ..deps import CurrentUser, planner_enabled_for, require_user
 from ..store import repo, staleness
@@ -207,6 +208,8 @@ async def plan_change(
         adjustments = build_adjustments([recorded])
 
         replanned = False
+        queued = False
+        job_id: str | None = None
         already_planning = False
         if verdict.tier == "slim" or body.get("confirmed"):
             now = local_now(request.headers.get("x-timezone"))
@@ -215,7 +218,14 @@ async def plan_change(
             # `planning` where this read can see it. Starting anyway would race two writers over the same
             # rows, and the loser's rollback is what leaves a written plan stuck at `planning`.
             already_planning = build_in_flight(goal.plan_status, goal.plan_started_at, now)
-            if not already_planning:
+            if not already_planning and body.get("enqueue"):
+                # Queue the build in this transaction, so the recorded change can never lose its job.
+                # The job sets `planning` when it starts and the client drains it with `/jobs/run`;
+                # that is what keeps the work alive past this request on a serverless host.
+                kind = JOB_BUILD_PLAN if intent == "create_goal" else JOB_REPLAN_GOAL
+                job_id = await enqueue(session, user_id=user.user_id, kind=kind, goal_id=goal_id)
+                queued = True
+            elif not already_planning:
                 # Say the schedule is being built before the work starts, in its own commit, so the goal list
                 # (another tab, or this one after a reload) shows the coach working instead of "no schedule".
                 await _set_plan_status(session, goal, PLAN_PLANNING)
@@ -240,6 +250,8 @@ async def plan_change(
             "reason": verdict.reason,
             "adjustments": adjustments,
             "replanned": replanned,
+            "queued": queued,
+            "job_id": job_id,
             "already_planning": already_planning,
             "plan_items": [],
         }

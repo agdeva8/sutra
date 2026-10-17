@@ -28,3 +28,15 @@ export const PLAN_POLL_MS = 5000;
  */
 export const PLAN_LEASE_MS = 10 * 60 * 1000;
 export const BUILD_FAILED_TOAST = (title) => `Couldn't build the schedule for ${title || "this goal"}. Try again from the goal.`;
+
+/** `agent_jobs.status` values (sutra_api `JOB_STATUSES`). */
+export const JOB_STATUS_QUEUED = "queued";
+export const JOB_STATUS_RUNNING = "running";
+export const JOB_STATUS_DONE = "done";
+export const JOB_STATUS_FAILED = "failed";
+/** Jobs that act on one goal; `replan_conflicts` and `tick_user` are user-wide. */
+export const JOB_GOAL_KINDS = ["build_plan", "replan_goal"];
+/** A failed job stays on the goal card until Retry is tapped. */
+export const REPLAN_FAILED_TEXT = "Couldn't re-plan — Retry";
+/** What a goal card says while a queued job has not reported a line yet. */
+export const JOB_DEFAULT_LINE = "Working on your plan…";
