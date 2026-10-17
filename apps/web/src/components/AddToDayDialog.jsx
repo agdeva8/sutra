@@ -265,7 +265,7 @@ export default function AddToDayDialog({
                   setStartDate(e.target.value);
                   if (endDate < e.target.value) setEndDate(e.target.value);
                 }}
-                className={field}
+                className={`${field} gc-native-datetime`}
               />
               <input
                 type="date"
@@ -273,7 +273,7 @@ export default function AddToDayDialog({
                 min={startDate}
                 value={endDate}
                 onChange={(e) => setEndDate(e.target.value)}
-                className={field}
+                className={`${field} gc-native-datetime`}
               />
             </div>
           ) : (
@@ -283,7 +283,7 @@ export default function AddToDayDialog({
                 aria-label="Date"
                 value={startDate}
                 onChange={(e) => setStartDate(e.target.value)}
-                className={field}
+                className={`${field} gc-native-datetime`}
               />
               {timed && (
                 <div className="grid grid-cols-2 gap-2">

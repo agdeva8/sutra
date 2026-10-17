@@ -284,6 +284,7 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, e
         open={blockDialogOpen}
         onClose={closeBlockDialog}
         onSave={saveBlock}
+        onDelete={deleteBlock}
         editing={editBlock}
         goals={(state?.goals || []).filter((g) => g.status !== "dropped")}
         defaultDate={day}
@@ -305,11 +306,11 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, e
           <div className="grid grid-cols-2 gap-2">
             <div>
               <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)] mb-1">Start *</label>
-              <input data-testid="blocker-start-input" type="date" value={blockerStart} onChange={(e) => setBlockerStart(e.target.value)} className="w-full px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--bg-primary)] text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] transition-colors" />
+              <input data-testid="blocker-start-input" type="date" value={blockerStart} onChange={(e) => setBlockerStart(e.target.value)} className="gc-native-datetime w-full px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--bg-primary)] text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] transition-colors" />
             </div>
             <div>
               <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)] mb-1">End</label>
-              <input data-testid="blocker-end-input" type="date" value={blockerEnd} onChange={(e) => setBlockerEnd(e.target.value)} className="w-full px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--bg-primary)] text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] transition-colors" />
+              <input data-testid="blocker-end-input" type="date" value={blockerEnd} onChange={(e) => setBlockerEnd(e.target.value)} className="gc-native-datetime w-full px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--bg-primary)] text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] transition-colors" />
             </div>
           </div>
           <div>

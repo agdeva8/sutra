@@ -235,6 +235,49 @@ body {
 }
 .gc-fade-in { animation: gc-fade-in 0.18s ease-out both; }
 
+/* --- Bottom sheets (phone) ----------------------------------------------
+ * Every CenteredDialog on a phone is a bottom sheet. Three rules keep it
+ * usable above Chrome's bottom toolbar, which used to cover the note field
+ * and the whole action row:
+ *   - the panel is capped by `100dvh` (falling back to `100vh` on browsers
+ *     without dynamic viewport units), minus a top gap, so it never grows
+ *     past the part of the page the browser actually shows;
+ *   - the body is the only scrolling child (the component gives it
+ *     `flex-1 min-h-0`), so the header and the action footer stay pinned
+ *     whatever the scroll position;
+ *   - the footer adds the home-indicator inset so its buttons clear it.
+ * Desktop is unchanged: the sheet centres and the body keeps its 70vh cap.
+ *
+ * `--gc-sheet-gap` is the strip of the page left visible above the sheet,
+ * so a tap outside still reads as "close". */
+:root {
+  --gc-sheet-gap: 1rem;
+  --gc-sheet-max-h: calc(100vh - var(--gc-sheet-gap));
+  --gc-sheet-footer-pad: max(0.75rem, env(safe-area-inset-bottom));
+}
+@supports (height: 100dvh) {
+  :root { --gc-sheet-max-h: calc(100dvh - var(--gc-sheet-gap)); }
+}
+.gc-sheet-panel { max-height: var(--gc-sheet-max-h); }
+.gc-sheet-panel--full { height: var(--gc-sheet-max-h); max-height: var(--gc-sheet-max-h); }
+.gc-dialog-footer { padding-bottom: var(--gc-sheet-footer-pad); }
+@media (min-width: 640px) {
+  .gc-sheet-panel { max-height: none; }
+  .gc-sheet-panel--full { height: 90dvh; max-height: 90dvh; }
+  .gc-dialog-footer { padding-bottom: 0.75rem; }
+}
+
+/* iOS gives `<input type="date|time">` an intrinsic minimum width — wider
+ * than half of a 320px sheet — and it refuses to shrink, so the field spills
+ * out of its grid track to the right. `min-width: 0` lets the track shrink
+ * it; `width: 100%` plus border-box keeps the padding inside the control. */
+.gc-native-datetime {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
 @keyframes gc-shimmer {
   0% { background-position: -200% 0; }
   100% { background-position: 200% 0; }

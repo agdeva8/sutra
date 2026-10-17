@@ -26,11 +26,13 @@ const kindIcon = (Icon) =>
 /** Neutral colour for anything that belongs to no goal (the user's own time). */
 export const NO_GOAL_COLOR = "var(--text-secondary)";
 
+/** `deleteLabel` names the destructive action in the edit form's footer. It says "to-do" for a Task
+ *  because that is what the thing is called on screen, while the kind itself stays `task`. */
 export const KIND_META = {
-  event: { glyph: kindIcon(Lock), label: "Event", hint: "Time taken — nothing to tick" },
-  task: { glyph: kindIcon(CircleCheck), label: "Task", hint: "Something you tick off" },
-  away: { glyph: kindIcon(CalendarOff), label: "Away", hint: "Whole days you are out" },
-  milestone: { glyph: kindIcon(Flag), label: "Milestone", hint: "A checkpoint on a goal" },
+  event: { glyph: kindIcon(Lock), label: "Event", hint: "Time taken — nothing to tick", deleteLabel: "Delete event" },
+  task: { glyph: kindIcon(CircleCheck), label: "Task", hint: "Something you tick off", deleteLabel: "Delete to-do" },
+  away: { glyph: kindIcon(CalendarOff), label: "Away", hint: "Whole days you are out", deleteLabel: "Delete time away" },
+  milestone: { glyph: kindIcon(Flag), label: "Milestone", hint: "A checkpoint on a goal", deleteLabel: "Delete milestone" },
 };
 export const BLOCK_KINDS = Object.keys(KIND_META);
 

@@ -128,12 +128,12 @@ export default function CenteredDialog({
         data-testid={`${testId}-content`}
         className={`relative w-full overscroll-contain ${maxWidth} bg-[var(--bg-secondary)] border border-[color-mix(in_srgb,var(--border-accent)_30%,transparent)] shadow-2xl gc-fade-up outline-none ${
           mobileAnchor === "sheet"
-            ? `rounded-t-[22px] sm:rounded-[18px] ${fullHeightMobile ? "h-[calc(100dvh-1rem)] sm:h-[90dvh] flex flex-col" : "max-h-[88dvh] sm:max-h-none"}`
+            ? `rounded-t-[22px] sm:rounded-[18px] flex flex-col gc-sheet-panel ${fullHeightMobile ? "gc-sheet-panel--full" : ""}`
             : "rounded-[18px]"
         }`}
       >
         {(title || Icon) && (
-          <div className="flex items-start gap-3 px-5 py-4 border-b border-[var(--border)]">
+          <div className="flex shrink-0 items-start gap-3 px-5 py-4 border-b border-[var(--border)]">
             {Icon && <Icon className="w-5 h-5 text-[var(--accent)] mt-0.5 shrink-0" />}
             <div className="min-w-0 flex-1">
               <h2 id={`${testId}-title`} className="font-display text-base font-semibold tracking-tight text-[var(--text-primary)] leading-snug">
@@ -168,12 +168,14 @@ export default function CenteredDialog({
           </button>
         )}
         <div className={`overscroll-contain ${
-          mobileAnchor === "sheet" && fullHeightMobile
-            ? "px-5 pt-4 pb-0 flex-1 min-h-0 flex flex-col overflow-hidden"
+          mobileAnchor === "sheet"
+            ? fullHeightMobile
+              ? "px-5 pt-4 pb-0 flex-1 min-h-0 flex flex-col overflow-hidden"
+              : "px-5 py-4 flex-1 min-h-0 overflow-y-auto sm:max-h-[70vh]"
             : "px-5 py-4 max-h-[70vh] overflow-y-auto"
         }`}>{children}</div>
         {footer && (
-          <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-[var(--border)] bg-[color-mix(in_srgb,var(--bg-primary)_40%,transparent)]">
+          <div className="gc-dialog-footer flex shrink-0 flex-wrap items-center justify-end gap-2 px-5 py-3 border-t border-[var(--border)] bg-[color-mix(in_srgb,var(--bg-primary)_40%,transparent)]">
             {footer}
           </div>
         )}

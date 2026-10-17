@@ -16,6 +16,7 @@ export default function BlockFormDialog({
   open,
   onClose,
   onSave,
+  onDelete,
   editing = null,
   goals = [],
   defaultKind = "event",
@@ -38,6 +39,13 @@ export default function BlockFormDialog({
   const [alertBefore, setAlertBefore] = useState("");
   const [weekdays, setWeekdays] = useState([]);
   const [note, setNote] = useState("");
+  // Delete asks twice, inline — never a browser confirm. The first tap arms it; the second deletes.
+  // Re-armed on every open/edit so a half-confirmed delete never carries to another block.
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+
+  useEffect(() => {
+    if (!open) setConfirmingDelete(false);
+  }, [open, editing]);
 
   // Seed from the edit target, or from whatever the user just tapped on the board.
   useEffect(() => {
@@ -132,6 +140,13 @@ export default function BlockFormDialog({
     onClose?.();
   };
 
+  // Delete is offered only for a saved block. The first tap arms the label; the second removes it.
+  const requestDelete = () => {
+    if (!editing) return;
+    if (!confirmingDelete) { setConfirmingDelete(true); return; }
+    onDelete?.(editing.id);
+  };
+
   const radio = (on) =>
     `flex-1 min-h-11 rounded-xl px-2 text-[12px] font-medium transition-colors ${
       on ? "bg-[var(--accent)] text-[var(--bg-primary)]" : "bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
@@ -150,6 +165,13 @@ export default function BlockFormDialog({
       testId="block-form"
       footer={
         <>
+          {editing && onDelete && (
+            <button type="button" data-testid="block-form-delete" onClick={requestDelete}
+              aria-live="polite"
+              className="mr-auto min-h-11 rounded-xl border border-[color-mix(in_srgb,var(--danger)_40%,transparent)] px-3 text-xs font-medium text-[var(--danger)] hover:bg-[color-mix(in_srgb,var(--danger)_10%,transparent)] transition-colors">
+              {confirmingDelete ? "Delete — tap again to confirm" : KIND_META[kind].deleteLabel}
+            </button>
+          )}
           <button type="button" onClick={onClose}
             className="min-h-11 rounded-xl bg-[var(--bg-tertiary)] px-4 text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors">
             Cancel
@@ -194,11 +216,11 @@ export default function BlockFormDialog({
               </div>
             </div>
             <div className="space-y-2">
-              <input type="date" aria-label="Date" value={day} onChange={(e) => setDay(e.target.value)} className={field} />
+              <input type="date" aria-label="Date" value={day} onChange={(e) => setDay(e.target.value)} className={`${field} gc-native-datetime`} />
               {!allDay && (
                 <div className="grid grid-cols-2 gap-2">
-                  <input type="time" aria-label="Start time" value={start} onChange={(e) => setStart(e.target.value)} className={field} />
-                  <input type="time" aria-label="End time" value={end} onChange={(e) => setEnd(e.target.value)} className={field} />
+                  <input type="time" aria-label="Start time" value={start} onChange={(e) => setStart(e.target.value)} className={`${field} gc-native-datetime`} />
+                  <input type="time" aria-label="End time" value={end} onChange={(e) => setEnd(e.target.value)} className={`${field} gc-native-datetime`} />
                 </div>
               )}
             </div>
@@ -217,14 +239,14 @@ export default function BlockFormDialog({
               </div>
             </div>
             <div className="space-y-2">
-              <input type="date" aria-label="Date" value={day} onChange={(e) => setDay(e.target.value)} className={field} />
+              <input type="date" aria-label="Date" value={day} onChange={(e) => setDay(e.target.value)} className={`${field} gc-native-datetime`} />
               {taskTiming === "at" && (
-                <input type="time" aria-label="At time" value={at} onChange={(e) => setAt(e.target.value)} className={field} />
+                <input type="time" aria-label="At time" value={at} onChange={(e) => setAt(e.target.value)} className={`${field} gc-native-datetime`} />
               )}
               {taskTiming === "range" && (
                 <div className="grid grid-cols-2 gap-2">
-                  <input type="time" aria-label="Start time" value={start} onChange={(e) => setStart(e.target.value)} className={field} />
-                  <input type="time" aria-label="End time" value={end} onChange={(e) => setEnd(e.target.value)} className={field} />
+                  <input type="time" aria-label="Start time" value={start} onChange={(e) => setStart(e.target.value)} className={`${field} gc-native-datetime`} />
+                  <input type="time" aria-label="End time" value={end} onChange={(e) => setEnd(e.target.value)} className={`${field} gc-native-datetime`} />
                 </div>
               )}
             </div>
@@ -237,8 +259,8 @@ export default function BlockFormDialog({
             <div className="grid grid-cols-2 gap-2">
               <input type="date" aria-label="Starts" value={startDate}
                 onChange={(e) => { setStartDate(e.target.value); if (endDate < e.target.value) setEndDate(e.target.value); }}
-                className={field} />
-              <input type="date" aria-label="Ends" min={startDate} value={endDate} onChange={(e) => setEndDate(e.target.value)} className={field} />
+                className={`${field} gc-native-datetime`} />
+              <input type="date" aria-label="Ends" min={startDate} value={endDate} onChange={(e) => setEndDate(e.target.value)} className={`${field} gc-native-datetime`} />
             </div>
           </div>
         )}
@@ -246,7 +268,7 @@ export default function BlockFormDialog({
         {kind === "milestone" && (
           <div>
             <span className={label}>Target date</span>
-            <input type="date" aria-label="Target date" value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className={field} />
+            <input type="date" aria-label="Target date" value={targetDate} onChange={(e) => setTargetDate(e.target.value)} className={`${field} gc-native-datetime`} />
           </div>
         )}
 
