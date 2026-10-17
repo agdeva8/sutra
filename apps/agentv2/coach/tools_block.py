@@ -22,9 +22,12 @@ that actually happened:
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
 from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
 
 #: The sentinels. v1's exact strings — a change here is a protocol change.
 TOOL_START = "[[TOOLS]]"
@@ -143,6 +146,54 @@ def parse_proposals(block: str) -> list[Proposal]:
                 status=str(item.get("status") or "pending"),
             )
         )
+    return keep_one_create_goal(out)
+
+
+def keep_one_create_goal(proposals: list[Proposal]) -> list[Proposal]:
+    """At most one `create_goal` in a reply: the last, which is the most refined.
+
+    A model asked to re-propose (a repeat, or a refined copy beside the original) can return two
+    goal cards in one block. The client confirms a plan in one batch, so both would create a goal.
+    Keeping the last card — the one written after any revision — and dropping the earlier ones is
+    the rule at the source; `AddGoalDialog.confirm` and the `/tools/confirm` batch enforce the same
+    rule for prompts already in flight.
+
+    Milestones attach to a goal by **title** (`args.goal_title`), so milestones aimed at a dropped
+    card are re-pointed at the kept one. Returning a new list rather than mutating keeps the
+    parser's output the model produced except for this one normalisation.
+    """
+    goals = [p for p in proposals if p.action == "create_goal"]
+    if len(goals) < 2:
+        return proposals
+
+    kept = goals[-1]
+    dropped_titles = {
+        str(p.args.get("title") or "").strip() for p in goals[:-1]
+    } - {""}
+    kept_title = str(kept.args.get("title") or "").strip()
+    logger.warning(
+        "Coach reply carried %d create_goal proposals; kept %s and dropped %s",
+        len(goals),
+        kept.id,
+        [p.id for p in goals[:-1]],
+    )
+
+    out: list[Proposal] = []
+    for proposal in proposals:
+        if proposal.action == "create_goal" and proposal is not kept:
+            continue
+        if (
+            proposal.action == "add_milestone"
+            and kept_title
+            and str(proposal.args.get("goal_title") or "").strip() in dropped_titles
+        ):
+            proposal = Proposal(
+                id=proposal.id,
+                action=proposal.action,
+                args={**proposal.args, "goal_title": kept_title},
+                status=proposal.status,
+            )
+        out.append(proposal)
     return out
 
 

@@ -90,6 +90,26 @@ async def _apply_gateway_proposal(session: AsyncSession, *, user_id: str, propos
 BATCH_FIRST_ACTION = "create_goal"
 #: A plan is a goal plus a handful of milestones; this bounds a malicious or buggy client, not a real plan.
 MAX_BATCH_PROPOSALS = 50
+#: The note a second (and later) `create_goal` in one batch leaves in `results`.
+SKIPPED_DUPLICATE_GOAL = "Skipped — this plan already created a goal."
+
+
+def duplicate_goal_ids(rows: list) -> list[str]:
+    """Ids of every `create_goal` in a batch after the first, in batch order.
+
+    One Add-goal plan makes one goal. The coach now returns at most one `create_goal`, and the client
+    confirms only the newest, but a prompt already in flight can still carry two cards — so the batch
+    is the last place the rule is enforced. Pure, so the rule is testable without a database.
+    """
+    ids: list[str] = []
+    seen = False
+    for row in rows:
+        if row.action != BATCH_FIRST_ACTION:
+            continue
+        if seen:
+            ids.append(row.id)
+        seen = True
+    return ids
 
 
 def _with_milestone_dates(rows: list, *, fallback_target=None) -> dict[str, dict]:
@@ -262,6 +282,8 @@ async def _confirm_batch(session: AsyncSession, *, user_id: str, proposal_ids: l
 
     rows = [await _load_pending(session, user_id=user_id, body={"proposal_id": i}) for i in ids]
     rows.sort(key=lambda r: r.action != BATCH_FIRST_ACTION)  # stable: keeps the client's order otherwise
+    # One plan, one goal: every `create_goal` after the first is skipped, not applied.
+    skipped_goals = set(duplicate_goal_ids(rows))
 
     conversation = (
         await session.get(Conversation, rows[0].conversation_id)
@@ -313,6 +335,11 @@ async def _confirm_batch(session: AsyncSession, *, user_id: str, proposal_ids: l
     for row in rows:
         if row.id in handled:
             continue
+        if row.id in skipped_goals:
+            # Left pending: it was never applied, so it must not claim a confirmation. The note in
+            # `results` is how the client (and the audit of this response) sees what happened.
+            results.append(SKIPPED_DUPLICATE_GOAL)
+            continue
         if "change" in (row.args or {}):
             outcome = await _apply_gateway_proposal(session, user_id=user_id, proposal=row)
         else:
@@ -349,7 +376,7 @@ async def _confirm_batch(session: AsyncSession, *, user_id: str, proposal_ids: l
     state = await assemble_state(session, user_id=user_id)
     return {
         "ok": True, "result": "; ".join(results), "results": results,
-        "confirmed": ids, "replanned": False, "job_id": job_id, "state": state,
+        "confirmed": [i for i in ids if i not in skipped_goals], "replanned": False, "job_id": job_id, "state": state,
     }
 
 

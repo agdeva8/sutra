@@ -145,6 +145,16 @@ export default function ScratchScreen() {
     }
   };
 
+  // Re-point everything this entry filed at a goal (or at none), then redraw the card from the server.
+  const linkGoal = async (id, goalId) => {
+    try {
+      await api.linkGoalScratch(id, goalId);
+    } catch (e) {
+      toast.error(typeof e?.message === "string" ? e.message : "Couldn't change that goal link.");
+    }
+    await load();
+  };
+
   const undo = async (id) => {
     try {
       await api.undoScratch(id);
@@ -186,6 +196,9 @@ export default function ScratchScreen() {
     kind: (e.result?.bucket || "filed").replace(/\+/g, " + "),
     lines: e.result?.lines || [],
     proposal: Boolean(e.result?.proposed),
+    // What the entry filed that a goal can be attached to, and the single goal they share now.
+    linkable: e.linkable || 0,
+    goal: e.goal || null,
   });
 
   return (
@@ -193,6 +206,8 @@ export default function ScratchScreen() {
       className={HOST_HEIGHT}
       inbox={[...optimistic, ...data.waiting].map(toWaiting)}
       handled={data.handled.map(toHandled)}
+      goals={data.goals || []}
+      onLinkGoal={linkGoal}
       onSend={send}
       onUpload={upload}
       onAddLink={addLink}

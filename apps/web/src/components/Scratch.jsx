@@ -26,6 +26,14 @@ const COMPOSER_PLACEHOLDER = "Say whatever. It gets filed for you.";
 /** Standalone height; a host screen passes its own through `className`. */
 const DEFAULT_HEIGHT = "h-[calc(100vh-2rem)]";
 
+/** The Handled card's link control: what it says when nothing is linked, and when something is. */
+const LINK_GOAL_LABEL = "Link to a goal";
+const LINKED_GOAL_PREFIX = "Goal:";
+const CHANGE_LINK_LABEL = "Change";
+const NO_GOAL_LABEL = "No goal";
+const PICKER_TITLE = "Link to a goal";
+const NO_ACTIVE_GOALS = "No active goals yet.";
+
 /** The top nav's tabs, in order. Write is first: opening Scratch is for dumping. */
 const TABS = [
   { key: "write", label: "Write" },
@@ -46,6 +54,8 @@ const ATTACH_LABEL = { uploading: "Uploading…", ready: "Attached", error: "Cou
 export default function Scratch({
   inbox = [],
   handled = [],
+  /** The user's active goals, for the Handled card's link picker. The parent owns the request. */
+  goals = [],
   initialTab = "write",
   onSend,
   onUpload,
@@ -55,6 +65,7 @@ export default function Scratch({
   onUndo,
   onDismiss,
   onAccept,
+  onLinkGoal,
   className = DEFAULT_HEIGHT,
 }) {
   const [tab, setTab] = useState(initialTab);
@@ -266,7 +277,15 @@ export default function Scratch({
             {handled.length === 0 && <EmptyNote>Handled entries appear here with what was done.</EmptyNote>}
             <ul>
               {handled.map((h) => (
-                <HandledCard key={h.id} item={h} onUndo={onUndo} onDismiss={onDismiss} onAccept={onAccept} />
+                <HandledCard
+                  key={h.id}
+                  item={h}
+                  goals={goals}
+                  onUndo={onUndo}
+                  onDismiss={onDismiss}
+                  onAccept={onAccept}
+                  onLinkGoal={onLinkGoal}
+                />
               ))}
             </ul>
           </section>
@@ -434,7 +453,7 @@ function ReplyBox({ onSend, busy = false }) {
  * A handled pair: the user's words, then what the agent concluded. `item.proposal`
  * marks the one disposition that changed nothing yet (PRD §10).
  */
-function HandledCard({ item, onUndo, onDismiss, onAccept }) {
+function HandledCard({ item, goals, onUndo, onDismiss, onAccept, onLinkGoal }) {
   return (
     <li className="py-2.5 border-t border-[var(--border)] first:border-t-0">
       <div className="flex gap-2.5 text-[14px] text-[var(--text-primary)]">
@@ -447,6 +466,12 @@ function HandledCard({ item, onUndo, onDismiss, onAccept }) {
           <p key={l}>{l}</p>
         ))}
       </div>
+      {/* Only an entry that filed something a goal can own gets the control; a NOISE entry does not. */}
+      {item.linkable > 0 && (
+        <div className="ml-[3.375rem] mt-2">
+          <LinkGoalControl item={item} goals={goals} onLinkGoal={onLinkGoal} />
+        </div>
+      )}
       <div className="ml-[3.375rem] mt-2 flex gap-1.5">
         {item.proposal ? (
           <>
@@ -461,5 +486,112 @@ function HandledCard({ item, onUndo, onDismiss, onAccept }) {
         )}
       </div>
     </li>
+  );
+}
+
+/**
+ * The Handled card's "Link to a goal" control and its picker.
+ *
+ * The label is the whole state: nothing linked reads as an invitation, and a link reads as the goal
+ * plus a quiet "Change". On a phone the picker is a bottom sheet, so the goals stay under the thumb.
+ */
+function LinkGoalControl({ item, goals = [], onLinkGoal }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const linked = item.goal || null;
+  const label = linked ? `${LINKED_GOAL_PREFIX} ${linked.title} · ${CHANGE_LINK_LABEL}` : LINK_GOAL_LABEL;
+
+  const choose = async (goalId) => {
+    if (busy) return;
+    setBusy(true);
+    setOpen(false);
+    try {
+      await onLinkGoal?.(item.id, goalId);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        disabled={busy}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        className="inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-full border border-[var(--border)] px-4 text-[13px] text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+      >
+        {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />}
+        <span className="truncate">{label}</span>
+      </button>
+      {open && (
+        <GoalPickerSheet
+          goals={goals}
+          selectedId={linked?.id || null}
+          onChoose={choose}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </>
+  );
+}
+
+/** A bottom sheet of the user's active goals plus "No goal". Every row is a 44 px target. */
+function GoalPickerSheet({ goals = [], selectedId, onChoose, onClose }) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex flex-col justify-end bg-black/40"
+      onClick={onClose}
+      onKeyDown={(e) => e.key === "Escape" && onClose()}
+      role="presentation"
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={PICKER_TITLE}
+        onClick={(e) => e.stopPropagation()}
+        className="mx-auto w-full max-w-[560px] rounded-t-2xl border-t border-[var(--border)] bg-[var(--bg-primary)] pb-[env(safe-area-inset-bottom)]"
+      >
+        <div className="flex items-center justify-between px-4 pt-3 pb-1">
+          <p className="text-[13px] font-semibold text-[var(--text-primary)]">{PICKER_TITLE}</p>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="flex h-11 w-11 items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] rounded-full"
+          >
+            <X className="h-4 w-4" aria-hidden="true" />
+          </button>
+        </div>
+        <ul className="max-h-[60vh] overflow-y-auto px-2 pb-3">
+          {goals.length === 0 && <li className="px-2 py-3 text-[13px] text-[var(--text-muted)]">{NO_ACTIVE_GOALS}</li>}
+          {goals.map((g) => (
+            <li key={g.id}>
+              <button
+                type="button"
+                onClick={() => onChoose(g.id)}
+                aria-pressed={g.id === selectedId}
+                className="flex min-h-11 w-full items-center gap-2 rounded-lg px-2 text-left text-[14px] text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+              >
+                <span className="min-w-0 flex-1 truncate">{g.title}</span>
+                {g.id === selectedId && <Check className="h-4 w-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
+              </button>
+            </li>
+          ))}
+          <li>
+            <button
+              type="button"
+              onClick={() => onChoose(null)}
+              aria-pressed={selectedId === null}
+              className="flex min-h-11 w-full items-center gap-2 rounded-lg px-2 text-left text-[14px] text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+            >
+              <span className="min-w-0 flex-1 truncate">{NO_GOAL_LABEL}</span>
+              {selectedId === null && <Check className="h-4 w-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
+            </button>
+          </li>
+        </ul>
+      </div>
+    </div>
   );
 }

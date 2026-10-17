@@ -46,6 +46,29 @@ import { readDraftBucket, writeDraftBucket, clearDraftBucket } from "../hooks/us
  */
 const INITIAL_STEP = "chat";
 
+/**
+ * The newest pending `create_goal` in the conversation, or null.
+ *
+ * One Add-goal plan makes one goal, but a coach reply can carry two goal cards — a repeated
+ * proposal, or a refined copy beside the original. Confirming every pending proposal then creates
+ * two goals. This is the client's half of the rule (the coach drops earlier cards at the source,
+ * and `/tools/confirm` skips extra ones in a batch): the newest goal is the one to confirm, and
+ * older cards are marked superseded instead. Exported so the rule is testable without rendering
+ * the dialog.
+ */
+export function newestPendingCreateGoal(messages) {
+  for (let i = (messages || []).length - 1; i >= 0; i--) {
+    const proposals = messages[i]?.proposals || [];
+    for (let j = proposals.length - 1; j >= 0; j--) {
+      const proposal = proposals[j];
+      if (proposal.action === "create_goal" && (proposal.status || "pending") === "pending") {
+        return proposal;
+      }
+    }
+  }
+  return null;
+}
+
 const CATEGORIES = [
   {
     id: "health",
@@ -749,16 +772,39 @@ export default function AddGoalDialog({
         proposal.action !== "navigate",
     );
     if (pending.length === 0) return;
+    // One Add-goal plan, one goal. When the coach's reply carries more than one `create_goal`
+    // (a repeat, or a refined copy beside the original), only the newest pending one across the
+    // conversation is confirmed. Earlier goal cards are marked "superseded", not confirmed, so
+    // they cannot create a second goal. The coach drops them at the source and the server skips
+    // duplicates in a batch; this is the client's path for a plan already on screen.
+    const newestGoal = newestPendingCreateGoal(messages);
+    const superseded = pending.filter(
+      (proposal) => proposal.action === "create_goal" && proposal.id !== newestGoal?.id,
+    );
+    const toConfirm = pending.filter(
+      (proposal) => !superseded.some((dropped) => dropped.id === proposal.id),
+    );
+    if (superseded.length > 0) {
+      const supersededSet = new Set(superseded.map((proposal) => proposal.id));
+      setMessages((prev) =>
+        prev.map((message) => ({
+          ...message,
+          proposals: (message.proposals || []).map((item) =>
+            supersededSet.has(item.id) ? { ...item, status: "superseded" } : item,
+          ),
+        })),
+      );
+    }
     confirmingRef.current = true;
 
     let freshState = null;
     const confirmedIds = [];
     setSending(true);
-    setFinalStatus(CONFIRM_STATUS.saving(0, pending.length));
+    setFinalStatus(CONFIRM_STATUS.saving(0, toConfirm.length));
     try {
       // One batched, transactional call: the server applies the goal first, then its milestones, and
       // either all of them land or none do (it used to be one request per item, ~7 x 6s).
-      const ordered = [...pending].sort((a, b) =>
+      const ordered = [...toConfirm].sort((a, b) =>
         Number(b.action === "create_goal") - Number(a.action === "create_goal"),
       );
       setBusyProposal(ordered[0].id);
@@ -783,7 +829,7 @@ export default function AddGoalDialog({
         ),
       );
 
-      const createdProposal = plan.find((proposal) => proposal.action === "create_goal");
+      const createdProposal = ordered.find((proposal) => proposal.action === "create_goal");
       const createdGoalTitle = createdProposal?.args?.title || goal?.title || "your new goal";
       let createdGoalId = goal?.id;
       if (!isEdit) {
