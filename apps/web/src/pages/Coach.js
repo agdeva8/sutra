@@ -67,7 +67,7 @@ import ReplanSuggestions from "../components/ReplanSuggestions";
 import ReplanToast from "../components/ReplanToast";
 import ChatModal from "../components/ChatModal";
 import WelcomeToast from "../components/WelcomeToast";
-import ScratchSpotlight from "../components/ScratchSpotlight";
+import FirstRunTour from "../components/FirstRunTour";
 import { setGuideActive } from "../lib/guideActive";
 import { hasOpenedScratch, markScratchOpened, onScratchOpenedChange } from "../lib/scratchIntro";
 import { CalendarSyncPrompt } from "../components/CalendarSync";
@@ -184,6 +184,9 @@ export default function Coach() {
   // Add goal". Overview opens the Add Goal dialog on arrival and
   // calls `onAutoOpenAddGoalHandled` to clear it.
   const [pendingAddGoal, setPendingAddGoal] = useState(false);
+  // Bumped by the Goal screen when the Add-goal dialog closes, however it closed. The first-run tour's
+  // "Your first goal" step waits on it — a step that ends whether or not a goal was added.
+  const [addGoalClosedAt, setAddGoalClosedAt] = useState(0);
   const [devLoginAvailable, setDevLoginAvailable] = useState(false);
 
   const setAutoAnswer = (v) => {
@@ -569,10 +572,14 @@ export default function Coach() {
   // The first-run guide is in progress until Scratch has been opened. While it is, other prompts wait.
   const [scratchOpenedFlag, setScratchOpenedFlag] = useState(hasOpenedScratch);
   useEffect(() => onScratchOpenedChange(() => setScratchOpenedFlag(hasOpenedScratch())), []);
+
+  // The first-run tour has the floor while it runs: no install sheet, no greeting toast, no calendar
+  // prompt until it ends. lib/guideActive.js is the one place all of those read from.
+  const [tourRunning, setTourRunning] = useState(false);
   useEffect(() => {
-    setGuideActive(!!state && !scratchOpenedFlag);
+    setGuideActive(tourRunning);
     return () => setGuideActive(false);
-  }, [state, scratchOpenedFlag]);
+  }, [tourRunning]);
 
   // Showing Scratch *is* opening it — a phone lands here on every fresh load, so without this the
   // guide stays active for a user who is already in it: the install sheet and the welcome toast stay
@@ -630,6 +637,14 @@ export default function Coach() {
     else goPanel(LANDING_SCREEN);
   };
 
+  // The Add-goal dialog belongs to the Goal screen, so opening it from anywhere else means landing
+  // there with the auto-open signal set (see TrackingDashboard's `autoOpenAddGoal`). Both the chat's
+  // "Take me there → Add goal" and the first-run tour's first-goal step come through here.
+  const openAddGoal = () => {
+    setPendingAddGoal(true);
+    goPanel(NAV_TARGETS.add_goal.panel);
+  };
+
   // "Take me there" — close the chat and route to the surface a `navigate`
   // suggestion points at. The general chat never applies edits itself.
   const onChatNavigate = (target) => {
@@ -639,9 +654,11 @@ export default function Coach() {
     setFocusedTask(null);
     const nav = NAV_TARGETS[target];
     if (!nav) return;
-    if (nav.openAddGoal) setPendingAddGoal(true);
-    goPanel(nav.panel);
+    if (nav.openAddGoal) openAddGoal();
+    else goPanel(nav.panel);
   };
+
+  const liveGoalCount = (state?.goals || []).filter((g) => g.status !== "dropped").length;
 
   return (
     <div className="fixed inset-0 flex flex-col bg-[var(--bg-primary)] text-[var(--text-primary)] overflow-hidden">
@@ -813,6 +830,7 @@ export default function Coach() {
                 onOpenChatWith={openChatWith}
                 onOpenToday={() => goPanel("today")}
                 registerCloser={pushCloser}
+                onAddGoalClosed={() => setAddGoalClosedAt((n) => n + 1)}
                 autoAnswer={autoAnswer}
                 grillMe={grillMe}
               />
@@ -882,14 +900,22 @@ export default function Coach() {
         helperText={chatScope?.helperText}
       />
 
-      <WelcomeToast user={user} state={state} signedIn={!isGuest} suppress={!scratchOpenedFlag} />
+      {/* While the tour runs it has the floor, so the greeting waits for it too. */}
+      <WelcomeToast user={user} state={state} signedIn={!isGuest} suppress={!scratchOpenedFlag || tourRunning} />
       {/* Asks once per account; guests are skipped — their account expires. */}
       {user && !isGuest && <CalendarSyncPrompt />}
-      {/* Scratch is now a bottom-bar tab on a phone, so the guide no longer walks
-          anyone to the timeline — the "Meet Scratch" spotlight is the whole thing. */}
-      <ScratchSpotlight
-        goalCount={(state?.goals || []).filter((g) => g.status !== "dropped").length}
-        onOpenScratch={() => goPanel("scratch")}
+      {/* The first-run tour: one screen at a time, every step skippable, and it drives the screens it
+          needs. It replaces the old Scratch spotlight — the walk now starts at sign-in and ends at
+          To-dos, with Scratch as one step in the middle. */}
+      <FirstRunTour
+        ready={!!state}
+        goalCount={liveGoalCount}
+        isGuest={isGuest}
+        goPanel={goPanel}
+        onOpenSignIn={openSignIn}
+        onOpenAddGoal={openAddGoal}
+        addGoalClosedAt={addGoalClosedAt}
+        onRunChange={setTourRunning}
       />
       <ReplanToast
         suggestions={state?.replan_suggestions || []}

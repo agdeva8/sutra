@@ -4,13 +4,15 @@ import { ArrowDown, Camera, ChevronLeft, ChevronRight, Mic, PenLine } from "luci
 /**
  * ScratchExamples — a small carousel of "you dump this, it becomes that".
  *
- * Auto-rotates every `ROTATE_MS`, pauses while the user hovers, focuses or touches
- * it (and for good once they use the arrows or dots), and does not rotate at all
- * for users who prefer reduced motion. Purely illustrative: the examples are
- * fixed copy, not the user's data.
+ * Auto-rotates every `ROTATE_MS`, and stops for good the moment the user takes over with an arrow, the
+ * dots or a swipe. Until then it holds still while they are touching, hovering or focused inside it, and
+ * starts again when they leave. It does not rotate at all for users who prefer reduced motion. Purely
+ * illustrative: the examples are fixed copy, not the user's data.
  */
 
-const ROTATE_MS = 4500;
+const ROTATE_MS = 3000;
+/** A drag this far sideways — and clearly more sideways than up or down — is a swipe, not a scroll. */
+const SWIPE_MIN_PX = 40;
 
 /** Bar heights (0-1) for the voice example's waveform: fixed, so it looks the same each time. */
 const WAVE = [0.3, 0.55, 0.4, 0.8, 0.6, 0.35, 0.9, 0.7, 0.45, 0.6, 1, 0.75, 0.5, 0.85, 0.4, 0.65, 0.3, 0.7, 0.9, 0.55, 0.35, 0.6, 0.8, 0.45, 0.3, 0.5, 0.25];
@@ -100,8 +102,10 @@ function Dumped({ input }) {
 export default function ScratchExamples() {
   const [index, setIndex] = useState(0);
   const [paused, setPaused] = useState(false);
-  // Using the arrows or dots means "I'm reading": stop rotating for good.
+  // Using the arrows, the dots or a swipe means "I'm reading": stop rotating for good.
   const taken = useRef(false);
+  // Where the finger went down, so the lift can tell a swipe from a tap or a scroll.
+  const touchStart = useRef(null);
   const reduced = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const auto = !paused && !taken.current && !reduced;
 
@@ -116,6 +120,25 @@ export default function ScratchExamples() {
     setIndex((next + EXAMPLES.length) % EXAMPLES.length);
   };
 
+  const onTouchStart = (e) => {
+    const t = e.touches[0];
+    touchStart.current = t ? { x: t.clientX, y: t.clientY } : null;
+    setPaused(true);
+  };
+
+  const onTouchEnd = (e) => {
+    setPaused(false);
+    const from = touchStart.current;
+    touchStart.current = null;
+    const t = e.changedTouches[0];
+    if (!from || !t) return;
+    const dx = t.clientX - from.x;
+    const dy = t.clientY - from.y;
+    // Sideways and far enough: a swipe. Anything else (a tap, a vertical scroll) is left alone.
+    if (Math.abs(dx) < SWIPE_MIN_PX || Math.abs(dx) <= Math.abs(dy)) return;
+    go(index + (dx < 0 ? 1 : -1));
+  };
+
   const ex = EXAMPLES[index];
   const Via = VIA_ICON[ex.input.type];
 
@@ -128,15 +151,19 @@ export default function ScratchExamples() {
       onMouseLeave={() => setPaused(false)}
       onFocus={() => setPaused(true)}
       onBlur={() => setPaused(false)}
-      onTouchStart={() => setPaused(true)}
+      onTouchStart={onTouchStart}
+      onTouchEnd={onTouchEnd}
+      onTouchCancel={onTouchEnd}
       className="rounded-2xl border border-[var(--border)] bg-gradient-to-br from-[color-mix(in_srgb,var(--accent)_14%,transparent)] via-[color-mix(in_srgb,var(--accent)_5%,transparent)] to-transparent p-3"
     >
-      <div className="flex items-center gap-1.5">
+      {/* The two arrows are the full height of the carousel's edges, not just the glyph — a 44px zone
+          down each side is what a thumb actually aims at. `items-stretch` gives them that height. */}
+      <div className="flex items-stretch gap-1.5">
         <button
           type="button"
           onClick={() => go(index - 1)}
           aria-label="Previous example"
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+          className="flex w-11 shrink-0 items-center justify-center rounded-xl text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
         >
           <ChevronLeft className="h-5 w-5" aria-hidden="true" />
         </button>
@@ -167,7 +194,7 @@ export default function ScratchExamples() {
           type="button"
           onClick={() => go(index + 1)}
           aria-label="Next example"
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+          className="flex w-11 shrink-0 items-center justify-center rounded-xl text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
         >
           <ChevronRight className="h-5 w-5" aria-hidden="true" />
         </button>

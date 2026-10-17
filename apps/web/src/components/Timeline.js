@@ -780,6 +780,9 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
 
   /* ---------- empty state ---------- */
 
+  // With nothing planned, the empty state is a hint above the calendar, never a replacement for it: a
+  // new user still needs to see their days and add an event, time away or a to-do before any goal exists.
+
   return (
     <div data-testid="timeline-view" className="p-3 sm:p-5 md:p-6 space-y-4">
       <HeaderStrip
@@ -798,9 +801,9 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
         onAddToDay={() => setAddDay(startOfDay(new Date()))}
       />
 
-      {isEmpty ? (
-        <EmptyState onPrefill={onPrefill} onOpenChatWith={onOpenChatWith} />
-      ) : viewType === "drill" ? (
+      {isEmpty && <EmptyState onPrefill={onPrefill} onOpenChatWith={onOpenChatWith} />}
+
+      {viewType === "drill" ? (
         <DrillView
           buckets={buckets}
           itemsIn={itemsIn}
@@ -1618,7 +1621,7 @@ function CalendarNav({ span, setSpan, anchor, setAnchor, today, children, onAddT
 }
 
 /* ============================================================================
- * EmptyState — calmer, more inviting; keeps the prefill CTA.
+ * EmptyState — a compact hint above the calendar (it never replaces it), keeping the prefill CTA.
  * ========================================================================= */
 
 function EmptyState({ onPrefill, onOpenChatWith }) {
@@ -1645,60 +1648,32 @@ function EmptyState({ onPrefill, onOpenChatWith }) {
     }
   };
 
+  // A compact hint, not a landing page: it sits above the calendar, so it must not push the days
+  // off a phone screen. The decorative SVG is gone for that reason.
   return (
-    <div data-testid="timeline-empty-state" className="px-4 sm:px-6 py-5 sm:py-6 max-w-[900px] mx-auto w-full">
-      <div className="relative overflow-hidden rounded-2xl bg-[var(--bg-secondary)] px-6 py-10 sm:py-14 text-center">
-        <svg
-          aria-hidden="true"
-          className="mx-auto mb-5 opacity-90"
-          width="160"
-          height="56"
-          viewBox="0 0 160 56"
-        >
-          <rect x="0.5" y="0.5" width="159" height="55" rx="6" fill="var(--bg-tertiary)" stroke="var(--border)" />
-          {[...Array(30)].map((_, i) => {
-            const x = (i % 10) * 15 + 6;
-            const y = Math.floor(i / 10) * 18 + 10;
-            const isToday = i === 14;
-            return (
-              <rect
-                key={i}
-                x={x}
-                y={y}
-                width="12"
-                height="12"
-                rx="2"
-                fill={isToday ? "var(--accent)" : "var(--bg-secondary)"}
-                stroke={isToday ? "var(--accent)" : "var(--border)"}
-                opacity={isToday ? 1 : 0.7}
-              />
-            );
-          })}
-          <line x1="0" y1="28" x2="160" y2="28" stroke="var(--border-accent)" strokeWidth="0.5" opacity="0.5" />
-        </svg>
-
-        <div className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-[var(--bg-tertiary)] mb-3">
-          <CalendarClock className="w-5 h-5 text-[var(--accent)]" aria-hidden="true" />
-        </div>
-
-        <h2 className="text-base sm:text-lg font-medium text-[var(--text-primary)] font-display">
+    <div
+      data-testid="timeline-empty-state"
+      className="rounded-2xl bg-[var(--bg-secondary)] px-4 py-3.5 sm:px-5 sm:py-4 flex flex-col sm:flex-row sm:items-center gap-3"
+    >
+      <div className="min-w-0 flex-1">
+        <h2 className="text-sm font-medium text-[var(--text-primary)] font-display">
           Nothing on your timeline yet
         </h2>
-        <p className="mt-2 text-sm text-[var(--text-secondary)] leading-relaxed max-w-md mx-auto">
-          Ask the coach to sketch a realistic timeline — it'll propose target dates and a few
-          milestones per goal, with buffer built in.
+        <p className="mt-1 text-[13px] text-[var(--text-secondary)] leading-relaxed">
+          Your calendar works without a goal — tap a day to add an event, time away or a to-do. Or ask
+          the coach to sketch a timeline: target dates and a few milestones per goal, with buffer built in.
         </p>
-
-        {(onOpenChatWith || onPrefill) && (
-          <button
-            data-testid="timeline-prefill-button"
-            onClick={onBuildTimeline}
-            className="font-semibold mt-4 min-h-11 inline-flex items-center gap-1.5 px-5 py-2.5 text-sm text-[var(--bg-primary)] bg-[var(--accent)] hover:opacity-90 transition-opacity rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg-secondary)]"
-          >
-            Ask the coach to build my timeline
-          </button>
-        )}
       </div>
+
+      {(onOpenChatWith || onPrefill) && (
+        <button
+          data-testid="timeline-prefill-button"
+          onClick={onBuildTimeline}
+          className="font-semibold shrink-0 min-h-11 inline-flex items-center justify-center gap-1.5 px-4 text-sm text-[var(--bg-primary)] bg-[var(--accent)] hover:opacity-90 transition-opacity rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg-secondary)]"
+        >
+          Ask the coach to build my timeline
+        </button>
+      )}
     </div>
   );
 }
@@ -2758,11 +2733,6 @@ function CalendarView({
   }, [weeks, allItems]);
 
 
-  
-  if (allItems.length === 0) {
-    return <CalendarEmptyState onAsk={openChat || onPrefill} />;
-  }
-
   // Every zoom shares one nested calendar: goal box ▸ milestone boxes ▸ weekly
   // task boxes. The column unit is the smallest unit of the span — day → day
   // columns, 3 months → week columns, year → month columns.
@@ -2774,6 +2744,9 @@ function CalendarView({
   const selectedGoals = new Set(
     activeGoalIds ? allGoalIds.filter((id) => activeGoalIds.has(id)) : allGoalIds,
   );
+  // With no goals at all there is nothing to filter by, so every dated thing shows — including a block
+  // whose goal has since been dropped (it is the user's own time, not an unselected goal's).
+  const goalVisible = (goalId) => !goalId || allGoalIds.length === 0 || selectedGoals.has(goalId);
   const toggleGoal = (id) => {
     const next = new Set(selectedGoals);
     if (next.has(id)) {
@@ -2789,20 +2762,20 @@ function CalendarView({
   // is the only thing that explains the tiles below it. It belongs on every span. It used to live only
   // inside the nested view, which the spans that have a timetable never reach — so Week and Month drew
   // coloured tiles with nothing on screen saying which goal each colour was.
-  const filterBar = (
+  const filterBar = goalItems.length > 0 ? (
     <GoalFilter
       goals={goalItems}
       selected={selectedGoals}
       onToggle={toggleGoal}
       onAll={() => setActiveGoalIds(new Set(allGoalIds))}
     />
-  );
+  ) : null;
 
   // A block with no goal (a commitment, or an agent block whose goal is gone) is not attributable to any
   // one goal, so the filter leaves it alone rather than hiding it under a goal the user did not pick.
-  const visibleBlocks = (blocks || []).filter((b) => !b.goal_id || selectedGoals.has(b.goal_id));
-  const visibleCards = (cards || []).filter((c) => !c.goalId || selectedGoals.has(c.goalId));
-  const visibleSessionCards = sessionCards.filter((c) => !c.item.goal_id || selectedGoals.has(c.item.goal_id));
+  const visibleBlocks = (blocks || []).filter((b) => goalVisible(b.goal_id));
+  const visibleCards = (cards || []).filter((c) => goalVisible(c.goalId));
+  const visibleSessionCards = sessionCards.filter((c) => goalVisible(c.item.goal_id));
   const renderNested = (rangeStart, rangeEnd, u) => (
     <div className="space-y-2">
       <GoalFilter
@@ -2978,7 +2951,7 @@ function CalendarView({
             const s = weekAt(r, c);
             return `${s.getDate()} ${MONTHS_SHORT[s.getMonth()]}`;
           }}
-          cards={[...planTargets.weekly, ...milestoneCards].filter((c) => !c.item.goal_id || selectedGoals.has(c.item.goal_id))}
+          cards={[...planTargets.weekly, ...milestoneCards].filter((c) => goalVisible(c.item.goal_id))}
           today={today}
           onSelectItem={onSelectItem}
           onSelectDay={onSelectDay}
@@ -3003,9 +2976,7 @@ function CalendarView({
             return [new Date(y, m, 1), new Date(y, m + 1, 1)];
           }}
           cellLabel={(r, c) => MONTHS_FULL[r * YEAR_COLUMNS + c]}
-          cards={[...planTargets.monthly, ...milestoneCards].filter(
-            (c) => !c.item.goal_id || selectedGoals.has(c.item.goal_id),
-          )}
+          cards={[...planTargets.monthly, ...milestoneCards].filter((c) => goalVisible(c.item.goal_id))}
           today={today}
           onSelectItem={onSelectItem}
           onSelectDay={onSelectDay}
@@ -3444,50 +3415,5 @@ export function TimelineItemDetailsDialog({ item, state, verdicts = {}, onClose,
         )}
       </div>
     </CenteredDialog>
-  );
-}
-
-function CalendarEmptyState({ onAsk }) {
-  return (
-    <div
-      data-testid="timeline-calendar-empty-state"
-      className="flex flex-col items-center justify-center text-center px-6 py-16 rounded-2xl bg-[var(--bg-secondary)]"
-    >
-      <div
-        className="w-12 h-12 rounded-full flex items-center justify-center mb-3"
-        style={{ background: "color-mix(in srgb, var(--accent) 15%, var(--bg-secondary))" }}
-      >
-        <CalendarClock size={22} className="text-[var(--accent)]" aria-hidden="true" />
-      </div>
-      <h3 className="font-display text-[18px] font-semibold text-[var(--text-primary)]">
-        Nothing scheduled yet
-      </h3>
-      <p className="text-[13px] text-[var(--text-secondary)] mt-1.5 max-w-sm">
-        Goals and milestones will appear here as colored tiles across the days they cover.
-      </p>
-      {typeof onAsk === "function" && (
-        // Iteration 5 (Issue 8) — empty-state CTA no longer pre-fills a
-        // canned goal prompt. Opens the generic chat so the user can
-        // describe whatever they actually want to talk about.
-        <button
-          type="button"
-          data-testid="timeline-prefill-button"
-          onClick={() =>
-            onAsk("", {
-              scope: "generic",
-              kind: "plan_day",
-              title: "Schedule my goals",
-              helperText:
-                "Goals and milestones will appear here as colored tiles across the days they cover.",
-            })
-          }
-          className="font-medium mt-4 inline-flex items-center gap-1.5 h-11 px-5 rounded-full text-sm font-semibold text-[var(--bg-primary)] hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg-secondary)]"
-          style={{ background: "var(--accent)" }}
-        >
-          <Sparkles size={14} aria-hidden="true" />
-          Ask the coach
-        </button>
-      )}
-    </div>
   );
 }

@@ -41,6 +41,10 @@ export default function TrackingDashboard({
   registerCloser = null,
   autoOpenAddGoal = false,
   onAutoOpenAddGoalHandled = () => {},
+  // Fires when the Add-goal dialog closes, however it closed (confirmed, stepped back, or dismissed).
+  // The first-run tour waits on it: its "Your first goal" step is done either way, so whether a goal
+  // was actually added is deliberately not part of this.
+  onAddGoalClosed = () => {},
 }) {
   const { user } = useAuth();
   const [addGoalOpen, setAddGoalOpen] = useState(false);
@@ -109,6 +113,7 @@ export default function TrackingDashboard({
   const closeAddGoalDialog = () => {
     setAddGoalOpen(false);
     try { localStorage.setItem("gc_first_visit_v1", "done"); } catch { /* ignore */ }
+    onAddGoalClosed();
   };
 
   // The time-aware hello, moved here with the rest of the old Overview header.

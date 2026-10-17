@@ -81,6 +81,17 @@ export function useCalendarFeed() {
 
 const when = (iso) => (iso ? new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
 
+/** The provider's name, as the picker spells it. A calendar the server named after its provider reads
+ *  as "Google Calendar"; one the user renamed keeps its own name and shows the provider beneath. */
+const providerLabel = (key) => PROVIDERS.find((p) => p.key === key)?.label || PROVIDERS[PROVIDERS.length - 1].label;
+
+/**
+ * Only a live subscription is the user's business. Unlinking leaves the row on the server for a month
+ * serving an empty feed, which is what makes the user's calendar app drop Sutra's events — nothing to
+ * show here, and listing it would read as "still linked".
+ */
+const isLinked = (cal) => cal.status === "active";
+
 function AddLinks({ cal }) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
@@ -124,39 +135,45 @@ function AddLinks({ cal }) {
   );
 }
 
-/** One linked calendar: its state, how to add it, and a way to unlink it (alone). */
+/** One linked calendar: its provider, its state, how to add it, and a way to unlink it (alone). */
 function CalendarRow({ cal, state }) {
   const [showAdd, setShowAdd] = useState(false);
   const [unlinking, setUnlinking] = useState(false);
   const [deleteEvents, setDeleteEvents] = useState(true);
-  const clearing = cal.status === "emptied";
+  const provider = providerLabel(cal.provider);
+  // The server names a calendar after its provider unless the user renamed it; when they did, both are
+  // worth showing — the provider says what it is, the name says which one.
+  const renamed = cal.name && cal.name !== provider;
 
   return (
     <li data-testid={`calendar-row-${cal.id}`} className="rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] p-3">
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium text-[var(--text-primary)]">{cal.name}</p>
-          <p className="text-[12px] text-[var(--text-muted)]">
-            {clearing
-              ? "Unlinked — its events clear on the calendar's next refresh"
-              : cal.last_fetched_at
-                ? `Last synced ${when(cal.last_fetched_at)}`
-                : "Waiting for the calendar's first sync"}
+          <p className="flex items-center gap-1.5 text-sm font-medium text-[var(--text-primary)]">
+            <span className="truncate">{provider}</span>
+            <span
+              data-testid={`calendar-linked-${cal.id}`}
+              className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[color-mix(in_srgb,var(--accent)_14%,transparent)] px-2 py-0.5 text-[11px] font-medium text-[var(--accent)]"
+            >
+              <Check className="w-3 h-3" aria-hidden="true" /> Linked
+            </span>
+          </p>
+          <p className="truncate text-[12px] text-[var(--text-muted)]">
+            {renamed && <span className="text-[var(--text-secondary)]">{cal.name} · </span>}
+            {cal.last_fetched_at ? `Last synced ${when(cal.last_fetched_at)}` : "Waiting for the calendar's first sync"}
           </p>
         </div>
-        {!clearing && (
-          <button
-            type="button"
-            onClick={() => setUnlinking((v) => !v)}
-            data-testid={`calendar-unlink-${cal.id}`}
-            className="min-h-11 shrink-0 inline-flex items-center gap-1.5 px-2 text-[13px] text-[var(--text-muted)] hover:text-[var(--danger,#c0392b)]"
-          >
-            <Trash2 className="w-4 h-4" aria-hidden="true" /> Unlink
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={() => setUnlinking((v) => !v)}
+          data-testid={`calendar-unlink-${cal.id}`}
+          className="min-h-11 shrink-0 inline-flex items-center gap-1.5 px-2 text-[13px] text-[var(--text-muted)] hover:text-[var(--danger,#c0392b)]"
+        >
+          <Trash2 className="w-4 h-4" aria-hidden="true" /> Unlink
+        </button>
       </div>
 
-      {!clearing && !unlinking && (
+      {!unlinking && (
         <button
           type="button"
           onClick={() => setShowAdd((v) => !v)}
@@ -166,11 +183,11 @@ function CalendarRow({ cal, state }) {
           How to add it <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showAdd ? "rotate-180" : ""}`} aria-hidden="true" />
         </button>
       )}
-      {showAdd && !unlinking && !clearing && <AddLinks cal={cal} />}
+      {showAdd && !unlinking && <AddLinks cal={cal} />}
 
-      {unlinking && !clearing && (
+      {unlinking && (
         <div className="mt-2 space-y-3 rounded-lg bg-[var(--bg-primary)] p-3" data-testid={`calendar-unlink-panel-${cal.id}`}>
-          <p className="text-[13px] text-[var(--text-primary)]">Stop syncing “{cal.name}”? Your other calendars are not affected.</p>
+          <p className="text-[13px] text-[var(--text-primary)]">Stop syncing “{provider}”? Your other calendars are not affected.</p>
           <label className="flex items-start gap-2.5 text-[13px] text-[var(--text-secondary)]">
             <input type="checkbox" checked={deleteEvents} onChange={(e) => setDeleteEvents(e.target.checked)} className="mt-0.5 h-4 w-4" data-testid="calendar-delete-events" />
             <span>
@@ -199,7 +216,6 @@ function CalendarRow({ cal, state }) {
           </div>
         </div>
       )}
-      {clearing && <p className="mt-1 text-[12px] text-[var(--text-muted)] leading-relaxed">{REMOVE_HELP[cal.provider] || REMOVE_HELP.other}</p>}
     </li>
   );
 }
@@ -210,8 +226,12 @@ function CalendarRow({ cal, state }) {
  */
 export function CalendarSyncDialog({ open, onClose, state }) {
   const { feed, busy, error, link, dismiss } = state;
-  const calendars = feed?.calendars || [];
-  const hasAny = calendars.length > 0;
+  // Only the live subscriptions are listed. An unlinked one keeps serving an empty feed for a month so
+  // the user's calendar app drops Sutra's events — the server's job, and nothing to act on here.
+  const linked = (feed?.calendars || []).filter(isLinked);
+  const hasAny = linked.length > 0;
+  // Providers already linked: the picker is for adding one you do not have.
+  const linkedProviders = new Set(linked.map((c) => c.provider));
   const [adding, setAdding] = useState(false);
 
   const notNow = async () => {
@@ -226,18 +246,30 @@ export function CalendarSyncDialog({ open, onClose, state }) {
 
   const providerPicker = (
     <div className="grid grid-cols-1 gap-2" data-testid="calendar-provider-picker">
-      {PROVIDERS.map((p) => (
-        <button
-          key={p.key}
-          type="button"
-          disabled={busy}
-          onClick={() => linkProvider(p.key)}
-          className="flex min-h-11 items-center justify-between rounded-lg border border-[var(--border)] px-4 text-sm text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
-        >
-          {p.label}
-          {busy ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" /> : <CalendarPlus className="w-4 h-4 text-[var(--text-muted)]" aria-hidden="true" />}
-        </button>
-      ))}
+      {PROVIDERS.map((p) => {
+        const already = linkedProviders.has(p.key);
+        return (
+          <button
+            key={p.key}
+            type="button"
+            disabled={busy || already}
+            onClick={() => linkProvider(p.key)}
+            data-testid={`calendar-provider-option-${p.key}`}
+            className="flex min-h-11 items-center justify-between rounded-lg border border-[var(--border)] px-4 text-sm text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
+          >
+            {p.label}
+            {already ? (
+              <span className="inline-flex items-center gap-1 text-[12px] font-medium text-[var(--accent)]">
+                <Check className="w-3.5 h-3.5" aria-hidden="true" /> Linked
+              </span>
+            ) : busy ? (
+              <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <CalendarPlus className="w-4 h-4 text-[var(--text-muted)]" aria-hidden="true" />
+            )}
+          </button>
+        );
+      })}
     </div>
   );
 
@@ -273,7 +305,7 @@ export function CalendarSyncDialog({ open, onClose, state }) {
     >
       {hasAny && !adding && (
         <ul className="space-y-2.5" data-testid="calendar-list">
-          {calendars.map((c) => (
+          {linked.map((c) => (
             <CalendarRow key={c.id} cal={c} state={state} />
           ))}
         </ul>
@@ -300,31 +332,42 @@ export function CalendarSyncDialog({ open, onClose, state }) {
   );
 }
 
-/** Timeline entry point. Always rendered, so declining the prompt is never final. */
+/** What the button says. The compact form is the phone-width strip: the icon and the accent colour
+ *  carry the linked state, so one short word fits the narrow bar without saying less. */
+const syncLabel = (count, compact) => {
+  if (compact) return count > 0 ? "Synced" : "Sync";
+  if (count === 0) return "Sync calendar";
+  return count > 1 ? `Synced to ${count} calendars` : "Synced to calendar";
+};
+
+/** Timeline entry point. Always rendered with its icon *and* its words — an icon alone does not say what
+ *  the button does on a phone. Declining the prompt is never final. */
 export function CalendarSyncButton({ state: external, compact = false }) {
   const own = useCalendarFeed();
   const state = external || own;
   const [open, setOpen] = useState(false);
-  const count = (state.feed?.calendars || []).filter((c) => c.status === "active").length;
+  const count = (state.feed?.calendars || []).filter(isLinked).length;
   const enabled = count > 0;
   const Icon = enabled ? CalendarCheck : CalendarPlus;
-  const label = enabled ? (count > 1 ? `Synced to ${count} calendars` : "Synced to calendar") : "Sync to calendar";
+  const label = syncLabel(count, compact);
+  // The full wording, whatever the bar had room for: screen readers and hover both get the whole thing.
+  const described = syncLabel(count, false);
   return (
     <>
       <button
         type="button"
         data-testid="calendar-sync-button"
         onClick={() => setOpen(true)}
-        aria-label={label}
-        title={label}
-        className={`inline-flex items-center justify-center gap-2 h-11 sm:h-9 ${compact ? "w-11" : "px-3"} text-xs rounded border transition-colors ${
+        aria-label={described}
+        title={described}
+        className={`inline-flex h-11 shrink-0 items-center justify-center gap-2 px-3 text-xs rounded border transition-colors ${
           enabled
             ? "border-[var(--accent)] text-[var(--accent)]"
             : "border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--accent)]"
         }`}
       >
-        <Icon className="w-4 h-4" aria-hidden="true" />
-        {!compact && label}
+        <Icon className="w-4 h-4 shrink-0" aria-hidden="true" />
+        <span className="whitespace-nowrap">{label}</span>
       </button>
       <CalendarSyncDialog open={open} onClose={() => setOpen(false)} state={state} />
     </>

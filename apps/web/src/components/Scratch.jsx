@@ -181,7 +181,7 @@ export default function Scratch({
         className="flex-1 min-h-0 overflow-y-auto"
       >
         {tab === "write" && (
-          <section aria-label="Capture" className="px-4 py-4 space-y-3">
+          <section aria-label="Capture" data-testid="scratch-composer" className="px-4 py-4 space-y-3">
             <AutoTextarea
               aria-label="Capture a thought"
               value={text}
