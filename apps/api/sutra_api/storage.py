@@ -402,3 +402,45 @@ async def _db_delete(key: str) -> None:
     async with session_scope() as session:
         await session.execute(sql_delete(SourceBlob).where(SourceBlob.key == key))
         await session.commit()
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics, for /ready
+# ---------------------------------------------------------------------------
+
+#: How long the readiness probe waits on Supabase. Short: /ready must answer quickly, and a slow bucket
+#: is reported, not waited out.
+PROBE_TIMEOUT_S = 5.0
+
+MODE_SUPABASE = "supabase"
+MODE_DISK = "disk"
+MODE_DATABASE = "database"
+
+
+def storage_mode() -> str:
+    """Where new uploads go: Supabase Storage when configured, else local disk on a long-lived host, else
+    the `source_blobs` table. Names only, never a secret, so it is safe to report."""
+    if _supabase_configured():
+        return MODE_SUPABASE
+    return MODE_DISK if _use_local_disk() else MODE_DATABASE
+
+
+async def storage_probe() -> str:
+    """One cheap look at the bucket, as a short word for /ready. Never raises.
+
+    "ok" — the key works and the bucket exists; "no bucket yet" — the key works, and the bucket will be
+    created on the first upload; "HTTP 401" and the like — Supabase refused (a wrong key or URL);
+    an exception name — Supabase could not be reached.
+    """
+    if not _supabase_configured():
+        return "not configured"
+    try:
+        async with _client(PROBE_TIMEOUT_S) as client:
+            resp = await client.get(_storage_url(f"{_BUCKET_ENDPOINT}/{settings.supabase_bucket}"), headers=_headers())
+    except Exception as exc:  # noqa: BLE001 — a probe reports, it does not fail
+        return exc.__class__.__name__
+    if resp.status_code == 200:
+        return "ok"
+    if _bucket_missing(resp):
+        return "no bucket yet"
+    return f"HTTP {resp.status_code}"

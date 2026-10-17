@@ -11,6 +11,7 @@ from fastapi import APIRouter, Response
 from sqlalchemy import text
 
 from ..config import settings
+from ..storage import storage_mode, storage_probe
 from ..db import get_session
 from ..llm import provider_status
 from fastapi import Depends
@@ -49,7 +50,9 @@ async def ready(response: Response, session: AsyncSession = Depends(get_session)
         problems.append("llm: REQUIRE_LLM_PROVIDER is set and no provider key resolved")
 
     detail = f"provider={status['provider']} model={status['model'] or '-'}"
+    # Reported, never a failure: an upload falls back to the database when Storage is down or misconfigured.
+    storage = {"mode": storage_mode(), "probe": await storage_probe()}
     if problems:
         response.status_code = 503
-        return {"ready": False, "detail": "; ".join(problems)}
-    return {"ready": True, "detail": detail}
+        return {"ready": False, "detail": "; ".join(problems), "storage": storage}
+    return {"ready": True, "detail": detail, "storage": storage}

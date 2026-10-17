@@ -234,3 +234,42 @@ def test_auth_headers_suit_both_kinds_of_supabase_key(monkeypatch):
     assert storage._headers() == {"apikey": "eyJhbGciOiJIUzI1NiJ9.legacy.sig", "Authorization": "Bearer eyJhbGciOiJIUzI1NiJ9.legacy.sig"}
     monkeypatch.setattr(settings, "supabase_service_key", "sb_secret_abc")
     assert storage._headers() == {"apikey": "sb_secret_abc"}
+
+
+def _probe_with(monkeypatch, handler):
+    import asyncio
+
+    import httpx
+
+    from sutra_api import storage
+    from sutra_api.config import settings
+
+    monkeypatch.setattr(settings, "supabase_url", "https://example.supabase.co")
+    monkeypatch.setattr(settings, "supabase_service_key", "sb_secret_abc")
+    monkeypatch.setattr(storage, "_client", lambda timeout: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    return asyncio.run(storage.storage_probe())
+
+
+def test_the_readiness_probe_names_what_supabase_said(monkeypatch):
+    import httpx
+
+    assert _probe_with(monkeypatch, lambda r: httpx.Response(200, json={"id": "goalcoach"})) == "ok"
+    assert _probe_with(monkeypatch, lambda r: httpx.Response(404, json={"error": "Bucket not found"})) == "no bucket yet"
+    assert _probe_with(monkeypatch, lambda r: httpx.Response(401, json={"message": "Invalid API key"})) == "HTTP 401"
+
+    def unreachable(request):
+        raise httpx.ConnectError("down", request=request)
+
+    assert _probe_with(monkeypatch, unreachable) == "ConnectError"
+
+
+def test_the_storage_mode_never_needs_a_request(monkeypatch):
+    from sutra_api import storage
+    from sutra_api.config import settings
+
+    monkeypatch.setattr(settings, "supabase_url", "")
+    monkeypatch.setattr(settings, "supabase_service_key", "")
+    assert storage.storage_mode() in (storage.MODE_DISK, storage.MODE_DATABASE)
+    monkeypatch.setattr(settings, "supabase_url", "https://example.supabase.co")
+    monkeypatch.setattr(settings, "supabase_service_key", "sb_secret_abc")
+    assert storage.storage_mode() == storage.MODE_SUPABASE
