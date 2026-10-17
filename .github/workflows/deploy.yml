@@ -1,0 +1,320 @@
+# Deploy pipeline for Sutra / GoalCoach v2.
+#
+# `develop_v2` is the production branch: a push to it deploys. Vercel's own Git
+# build is turned off for that branch (`git.deploymentEnabled` in both
+# vercel.json files), so nothing can reach production before the migration below
+# has run — the API and web deploys happen from here, after the database job.
+name: Deploy
+
+on:
+  push:
+    branches: [develop_v2]
+  pull_request:
+    branches: [develop_v2]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: check (dry run), deploy, or backfill only
+        type: choice
+        options: [check, deploy, backfill]
+        default: check
+
+# Nothing here writes through the GitHub API; the only writes are a `vercel
+# deploy` and a database migration.
+permissions:
+  contents: read
+
+# One run per branch at a time, and never cancelled mid-flight: a cancelled run
+# can stop between `alembic upgrade` and the deploy that expects it.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "22"
+  UV_VERSION: "0.12.23"
+  VERCEL_CLI_VERSION: "62.2.0"
+  API_URL: https://sutra-api-neon.vercel.app
+  WEB_URL: https://gurusutra.vercel.app
+  VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+
+jobs:
+  # The mode is settled once, here, rather than in each job's `if`: the `env`
+  # context is not readable in a job-level `if`, `needs.<job>.outputs` is. Every
+  # other job repeats it as `MODE` for its own step-level conditions.
+  mode:
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.pick.outputs.mode }}
+    steps:
+      # The dispatch input reaches the script through env, never spliced into it, and only the
+      # three known modes get through.
+      - id: pick
+        env:
+          INPUT_MODE: ${{ github.event.inputs.mode }}
+        run: |
+          case "$GITHUB_EVENT_NAME" in
+            push) mode=deploy ;;
+            pull_request) mode=check ;;
+            *) mode="${INPUT_MODE:-check}" ;;
+          esac
+          case "$mode" in
+            check|deploy|backfill) ;;
+            *) echo "::error::unknown mode '$mode'"; exit 1 ;;
+          esac
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "resolved mode: $mode"
+
+  test:
+    needs: [mode]
+    # Backfill mode changes nothing but the database, so it has nothing to test.
+    if: needs.mode.outputs.mode != 'backfill'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        run: pip install "uv==$UV_VERSION"
+
+      - name: agentv2 — unit tests
+        working-directory: apps/agentv2
+        run: |
+          uv venv --python "$PYTHON_VERSION" .venv
+          uv pip install --python .venv/bin/python -e . pytest
+          .venv/bin/python -m pytest tests/unit -q
+
+      # `sutra-agentv2` is a sibling path dependency (`[tool.uv.sources]` in
+      # apps/api/pyproject.toml), so this builds the checkout's own agentv2
+      # rather than reaching for a published distribution.
+      - name: api — unit tests
+        working-directory: apps/api
+        run: |
+          uv venv --python "$PYTHON_VERSION" .venv
+          uv pip install --python .venv/bin/python -e ".[dev]"
+          .venv/bin/python -m pytest tests/unit -q
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: web — install
+        working-directory: apps/web
+        run: npm install --legacy-peer-deps
+
+      - name: web — tests
+        working-directory: apps/web
+        run: npm test -- --watchAll=false
+
+      # Actions sets CI=true, which turns CRA's lint warnings into build errors.
+      # The deployed build does not, so match it here or the check and the deploy
+      # disagree about what "builds".
+      - name: web — build
+        working-directory: apps/web
+        run: CI=false npm run build
+
+  database:
+    needs: [mode, test]
+    # Backfill mode skips the tests on purpose, so a *skipped* `test` must not
+    # skip this job — but a *failed* test still must.
+    if: ${{ !cancelled() && (needs.mode.outputs.mode == 'backfill' || needs.test.result == 'success') }}
+    runs-on: ubuntu-latest
+    outputs:
+      backfilled: ${{ steps.backfill.outputs.backfilled }}
+    env:
+      MODE: ${{ needs.mode.outputs.mode }}
+      # The secret is Supabase's session pooler on 5432, not the transaction
+      # pooler on 6543: Alembic reads `ddl_url`, which prefers
+      # DATABASE_URL_UNPOOLED, because DDL must not share a multiplexed session.
+      DATABASE_URL: ${{ secrets.DATABASE_URL_UNPOOLED }}
+      DATABASE_URL_UNPOOLED: ${{ secrets.DATABASE_URL_UNPOOLED }}
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        run: pip install "uv==$UV_VERSION"
+
+      - name: api — install
+        run: |
+          uv venv --python "$PYTHON_VERSION" .venv
+          uv pip install --python .venv/bin/python -e ".[dev]"
+
+      - name: Where the database is
+        run: .venv/bin/python scripts/deploy_checks.py where
+
+      - name: Current revision
+        run: .venv/bin/alembic current
+
+      - name: What deploy mode would run
+        if: env.MODE == 'check'
+        run: |
+          current="$(.venv/bin/alembic current 2>/dev/null | awk 'NR==1 {print $1}')"
+          if [ -n "$current" ]; then
+            .venv/bin/alembic upgrade "${current}:head" --sql
+          else
+            # Nothing is applied yet, so there is no start revision to range
+            # from; show the whole history instead.
+            .venv/bin/alembic upgrade head --sql
+          fi
+
+      - name: Backfill dry run
+        if: env.MODE == 'check'
+        run: .venv/bin/python scripts/backfill_blocks.py
+
+      # Migrations run before the deploys below, always. The new API and web code
+      # reads `calendar_blocks`, which does not exist until these land.
+      - name: Migrate
+        if: env.MODE == 'deploy'
+        run: |
+          .venv/bin/alembic upgrade head
+          .venv/bin/alembic current
+
+      # Guarded by emptiness: this is the one-time copy of the old tables, and
+      # `blocks-empty` only exits 0 while nothing has been written yet, so a
+      # later deploy can never re-run it over live rows.
+      - name: Backfill calendar_blocks
+        id: backfill
+        if: env.MODE == 'deploy' || env.MODE == 'backfill'
+        # `blocks-empty` exits 0 (empty: copy now), 1 (rows already there: skip) or 2 (could not
+        # read the table). Only 1 may skip: an error has to stop the run before the deploy, or new
+        # code would go live reading an empty table.
+        run: |
+          if [ "$MODE" = "backfill" ]; then
+            gate=0
+          else
+            set +e
+            .venv/bin/python scripts/deploy_checks.py blocks-empty
+            gate=$?
+            set -e
+          fi
+          if [ "$gate" -eq 0 ]; then
+            .venv/bin/python scripts/backfill_blocks.py --apply
+            echo "backfilled=true" >> "$GITHUB_OUTPUT"
+          elif [ "$gate" -eq 1 ]; then
+            echo "backfilled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::could not read calendar_blocks; stopping before the deploy"
+            exit 1
+          fi
+
+  api:
+    needs: [mode, database]
+    if: ${{ needs.mode.outputs.mode != 'backfill' && needs.database.result == 'success' }}
+    runs-on: ubuntu-latest
+    env:
+      MODE: ${{ needs.mode.outputs.mode }}
+      VERCEL_PROJECT_ID: ${{ vars.VERCEL_API_PROJECT_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install the Vercel CLI
+        run: npm install --global "vercel@$VERCEL_CLI_VERSION"
+
+      # `pull` first: the build needs the project's own env vars and settings,
+      # and `VERCEL_ORG_ID`/`VERCEL_PROJECT_ID` are what make it non-interactive.
+      - name: vercel pull
+        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+
+      # Prebuilt in two steps so check mode validates the exact artifact a
+      # deploy would upload: `build` writes .vercel/output, `deploy --prebuilt`
+      # sends only that, with no second build on Vercel's side.
+      - name: vercel build
+        run: vercel build --prod --token="$VERCEL_TOKEN"
+
+      - name: vercel deploy
+        if: env.MODE == 'deploy'
+        run: vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
+
+  web:
+    needs: [mode, api]
+    if: ${{ needs.api.result == 'success' }}
+    runs-on: ubuntu-latest
+    env:
+      MODE: ${{ needs.mode.outputs.mode }}
+      VERCEL_PROJECT_ID: ${{ vars.VERCEL_WEB_PROJECT_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+    steps:
+      # Its own job, so this checkout has no `.vercel/` left by the API job: the
+      # two projects would otherwise link into the same directory.
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install the Vercel CLI
+        run: npm install --global "vercel@$VERCEL_CLI_VERSION"
+
+      - name: vercel pull
+        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+
+      # Still run from the repo root: the project's Root Directory setting is
+      # what points the build at apps/web.
+      - name: vercel build
+        run: vercel build --prod --token="$VERCEL_TOKEN"
+
+      - name: vercel deploy
+        if: env.MODE == 'deploy'
+        run: vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
+
+  after:
+    needs: [mode, web, database]
+    if: ${{ needs.mode.outputs.mode == 'deploy' && needs.web.result == 'success' && needs.database.result == 'success' }}
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL_UNPOOLED }}
+      DATABASE_URL_UNPOOLED: ${{ secrets.DATABASE_URL_UNPOOLED }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        run: pip install "uv==$UV_VERSION"
+
+      - name: api — install
+        working-directory: apps/api
+        run: |
+          uv venv --python "$PYTHON_VERSION" .venv
+          uv pip install --python .venv/bin/python -e ".[dev]"
+
+      # Only when the first backfill ran. The old code was serving traffic while
+      # the migration and the copy happened, so rows it wrote in that window are
+      # missing from `calendar_blocks`; this picks them up. The script skips ids
+      # that already exist, so running it again is safe.
+      - name: Catch-up backfill
+        if: needs.database.outputs.backfilled == 'true'
+        working-directory: apps/api
+        run: .venv/bin/python scripts/backfill_blocks.py --apply
+
+      - name: Smoke test the API
+        run: sh apps/api/scripts/smoke.sh "$API_URL"
+
+      - name: Check the web app answers
+        run: curl -fsS -o /dev/null "$WEB_URL"

@@ -33,11 +33,9 @@ import sys
 from datetime import date, time, timedelta
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import create_async_engine
-from tabulate import tabulate
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from sutra_api.config import settings
-from sutra_api.db import get_session_maker
+from sutra_api.db import create_engine
 from sutra_api.ids import new_id
 from sutra_api.models import (
     Blocker,
@@ -329,20 +327,20 @@ async def _run_backfill(session_maker, dry_run: bool = True):
 
     print("Existing calendar_blocks:", existing)
     print("Source rows to backfill:")
-    print(
-        tabulate(
-            [
-                ["Todos", counts["todos"]],
-                ["Goal tasks", counts["goal_tasks"]],
-                ["Committed timetable blocks", counts["committed_blocks"]],
-                ["Recurring blocks", counts["recurring"]],
-                ["Blockers", counts["blockers"]],
-                ["Milestones", counts["milestones"]],
-                ["Reminders", counts["reminders"]],
-            ],
-            headers=["Kind", "Count"],
-        )
-    )
+    # Plain columns rather than `tabulate`, which is not an API dependency, so the script runs in
+    # the API's own venv (locally and against Supabase) without an extra install.
+    rows = [
+        ("Todos", counts["todos"]),
+        ("Goal tasks", counts["goal_tasks"]),
+        ("Committed timetable blocks", counts["committed_blocks"]),
+        ("Recurring blocks", counts["recurring"]),
+        ("Blockers", counts["blockers"]),
+        ("Milestones", counts["milestones"]),
+        ("Reminders", counts["reminders"]),
+    ]
+    width = max(len(kind) for kind, _ in rows)
+    for kind, n in rows:
+        print(f"  {kind:<{width}}  {n}")
 
     if dry_run:
         print("\n(Dry run — no changes written. Pass --apply to write.)")
@@ -524,8 +522,10 @@ def main():
     parser.add_argument("--apply", action="store_true", help="Write changes (default is dry run)")
     args = parser.parse_args()
 
-    engine = create_async_engine(settings.database_url, echo=False)
-    session_maker = get_session_maker(engine)
+    # The app's own engine factory, not a bare one: it carries `statement_cache_size=0`, without
+    # which asyncpg's prepared statements collide on Supabase's transaction pooler.
+    engine = create_engine()
+    session_maker = async_sessionmaker(engine, expire_on_commit=False)
 
     asyncio.run(_run_backfill(session_maker, dry_run=not args.apply))
 
