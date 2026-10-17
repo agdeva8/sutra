@@ -31,7 +31,9 @@ def free_hours_by_day(ctx: Context, now: datetime, week: date) -> dict[date, flo
     for w in free_windows(ctx, now, days=(week - now.date()).days + 8 if week >= now.date() else 8):
         if w.day in out:
             out[w.day] += w.hours
-    return {d: h for d, h in out.items() if d >= now.date()}
+    # Untimed planner work (quotas, multi-day items) uses hours without holding a clock slot.
+    return {d: max(0.0, h - ctx.untimed_hours_by_day.get(d, 0.0))
+            for d, h in out.items() if d >= now.date()}
 
 
 def windows_on(ctx: Context, now: datetime, day: date) -> list[Window]:

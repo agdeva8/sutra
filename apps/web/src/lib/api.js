@@ -86,12 +86,21 @@ async function uploadFile(file, goalId = "", { temporary = false, purpose = "sou
     body: JSON.stringify(details),
   });
   if (ticket?.direct && ticket.upload_url) {
-    await putToUrl(ticket.upload_url, file, onProgress, file.type);
-    return req("/sources/upload/complete", {
-      method: "POST",
-      timeout: LONG_JOB_TIMEOUT_MS,
-      body: JSON.stringify({ ...details, key: ticket.key }),
-    });
+    try {
+      // The exact path the sign step minted — not one rebuilt from the filename, which would no longer
+      // match a key that carries its own unique part.
+      await putToUrl(ticket.upload_url, file, onProgress, file.type);
+      return await req("/sources/upload/complete", {
+        method: "POST",
+        timeout: LONG_JOB_TIMEOUT_MS,
+        body: JSON.stringify({ ...details, key: ticket.key }),
+      });
+    } catch (err) {
+      // The store refused the bytes or the confirm failed. Post them through the API instead: the same
+      // file still attaches, just down the slower route. A direct upload is an optimisation, never the
+      // only way in.
+      console.warn("Direct upload failed, retrying through the API:", err);
+    }
   }
   const fields = { goal_id: goalId, purpose, ...(temporary ? { temporary: "true" } : {}) };
   return postFile(`${API}/sources/upload`, file, fields, onProgress);
@@ -237,6 +246,9 @@ export const api = {
   discardScratch: (id) => req(`/scratch/${id}`, { method: "DELETE" }),
   chatScratch: (id, message) => req(`/scratch/${id}/chat`, { method: "POST", body: JSON.stringify({ message }) }).then(boardChanged),
   undoScratch: (id) => req(`/scratch/${id}/undo`, { method: "POST" }).then(boardChanged),
+  // Point everything an entry filed at a goal, or at none (`goalId === null`).
+  linkGoalScratch: (id, goalId) =>
+    req(`/scratch/${id}/link-goal`, { method: "POST", body: JSON.stringify({ goal_id: goalId ?? null }) }).then(boardChanged),
   // Goal progress: the numbers (always fresh) with the model's verdict when one is current.
   goalProgress: () => req("/agent/progress"),
   judgeProgress: () => req("/agent/progress/judge", { method: "POST" }),

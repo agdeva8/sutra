@@ -2,7 +2,7 @@ import { useState, useRef, useLayoutEffect, useMemo } from "react";
 import { CalendarClock, CalendarDays, MessageSquare, Plus, Send, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { localDateKey } from "../lib/utils";
-import { adjustQuota, toggleDone, upsertPlanItem } from "../lib/todos";
+import { adjustQuota, toggleDone, upsertBlock, upsertPlanItem } from "../lib/todos";
 import { buildAgenda, dayKeys } from "../lib/agenda";
 import { planItemEvent } from "../lib/events";
 import { planningIsLive } from "../lib/goalPlanning";
@@ -189,8 +189,9 @@ export default function Today({ state, onChange, onOpenChat, onOpenTimeline }) {
           {adding ? (
             <TodoForm
               goals={state?.goals || []}
-              onSaved={(row) => {
-                if (row) onChange?.(upsertPlanItem(row));
+              onSaved={(row, block) => {
+                if (block) onChange?.(upsertBlock(block));
+                else if (row) onChange?.(upsertPlanItem(row));
                 setAdding(false);
               }}
               onCancel={() => setAdding(false)}

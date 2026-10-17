@@ -117,6 +117,13 @@ async def assemble_state(session: AsyncSession, *, user_id: str) -> dict:
     block_payload: list[dict] = []
     reminder_payload: list[dict] = []
 
+    # A to-do is a task with `at`, like a reminder, so it must not be classified as one. New to-dos
+    # carry the `todo` marker; a to-do the backfill copied still has its `plan_items` id, which is
+    # how it is recognised (the backfill wrote no marker).
+    from agentv2.config import ITEM_TYPE_TODO
+
+    todo_ids = {i.id for i in items if i.item_type == ITEM_TYPE_TODO}
+
     for row in cal_blocks_rows.scalars().all():
         try:
             blk = BLOCK_ADAPTER.validate_python(row.data)
@@ -133,7 +140,7 @@ async def assemble_state(session: AsyncSession, *, user_id: str) -> dict:
             milestone_payload.append(blk_dict)
         elif row.block_kind == "event":
             block_payload.append(blk_dict)
-        elif row.block_kind == "task" and blk.at is not None:
+        elif row.block_kind == "task" and blk.at is not None and not blk.todo and row.id not in todo_ids:
             reminder_payload.append(blk_dict)
 
     return {

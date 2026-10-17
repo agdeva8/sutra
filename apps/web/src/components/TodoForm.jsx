@@ -30,6 +30,23 @@ function payload(form, original) {
   return Object.fromEntries(Object.entries(clean).filter(([k, v]) => v !== was[k]).map(([k, v]) => [k, v === "" ? null : v]));
 }
 
+/** True when the row being edited is a `TaskBlock` (a to-do filed after the move to `calendar_blocks`). */
+const isBlockTodo = (t) => t?.block_kind === "task" && !!t?.todo;
+
+/** The raw block behind a normalized to-do row, with the form's fields applied. */
+function blockPayload(form, todo) {
+  const { due_date, due_time, status, item_type, note, ...block } = todo;
+  return {
+    ...block,
+    title: form.title.trim(),
+    day: form.day || null,
+    at: form.due_time || null,
+    priority: form.priority || TODO_PRIORITY_NORMAL,
+    description: form.description.trim(),
+    goal_id: form.goal_id || null,
+  };
+}
+
 export default function TodoForm({ todo = null, goals = [], onSaved, onCancel }) {
   const [form, setForm] = useState(() => fromTodo(todo));
   const [busy, setBusy] = useState(false);
@@ -43,9 +60,11 @@ export default function TodoForm({ todo = null, goals = [], onSaved, onCancel })
     if (todo && Object.keys(body).length === 0) return onCancel?.();
     setBusy(true);
     try {
-      const res = todo ? await api.editTodo(todo.id, body) : await api.createTodo(body);
+      let res;
+      if (todo && isBlockTodo(todo)) res = await api.blocks.update(todo.id, { block: blockPayload(form, todo) });
+      else res = todo ? await api.editTodo(todo.id, body) : await api.createTodo(body);
       if (!todo) setForm(fromTodo(null));
-      onSaved?.(res?.plan_item);
+      onSaved?.(res?.plan_item, res?.block);
     } catch (err) {
       toast.error(typeof err?.message === "string" ? err.message : "Couldn't save that to-do.");
     } finally {

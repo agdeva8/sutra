@@ -49,6 +49,9 @@ export function buildAgenda(state, keys, today = new Date()) {
   const title = (goalId) => goals.get(goalId)?.title || "";
   const planItems = state?.plan_items || [];
   const taskById = new Map(planItems.map((p) => [p.id, p]));
+  // To-dos that are still `plan_items` rows: their ids mark the backfill's block copies (which carry
+  // no `todo` field) as to-dos rather than reminders.
+  const todoIds = new Set(planItems.filter(isTodo).map((p) => p.id));
   // The 4-kind board. Its task blocks are what `plan_items` used to carry, so a plan row whose id
   // matches a block (the backfill copied a task's first session with the task's own id) is not listed
   // twice — the block stands for it, and the row's tick marks the block done.
@@ -63,7 +66,7 @@ export function buildAgenda(state, keys, today = new Date()) {
     blocks.forEach((b) => {
       if (b.goal_id && !live(b.goal_id)) return;
       const twinDone = taskById.get(b.id)?.status === STATUS_DONE;
-      blockEvents(b, keys, { goalTitle: title(b.goal_id), todayKey }).forEach((e) => {
+      blockEvents(b, keys, { goalTitle: title(b.goal_id), todayKey, todoIds }).forEach((e) => {
         if (twinDone && !e.done) {
           e.done = true;
           if (e.task) e.task = { ...e.task, status: STATUS_DONE };

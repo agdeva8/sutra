@@ -27,7 +27,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import date, time, timedelta
 
-from agentv2.config import BLOCK_COMMITTED, BLOCK_TENTATIVE, FOUR_KIND_WRITES, ITEM_TYPE_TODO
+from agentv2.config import BLOCK_COMMITTED, BLOCK_TENTATIVE, ITEM_TYPE_TODO
 from agentv2.contracts import (
     AddBlock, AddBlocker, AddRecurring, StopRecurring, ClearGoalPlan, CompleteItem, AddGoal, AddMilestone, ReplaceMilestones, AddPlanMonth, AddPlanWeek, AddReminder, AddTask, AddTodo, EditTodo, Change, ChangeSet, LinkSource, MoveBlock, Origin, Proposal,
 )
@@ -36,7 +36,7 @@ from agentv2.core.milestones import replacement_targets
 from agentv2.contracts import ChangeSet as _ChangeSet
 from agentv2.contracts.planner import MilestoneSpec
 from agentv2.core.calendar import week_start
-from agentv2.core.context import BlockRow, Context, GoalHours, PlanMonthRow, PlanWeekRow, RecurringRow
+from agentv2.core.context import BlockRow, Context, GoalHours, PlanMonthRow, PlanWeekRow, RecurringRow, untimed_load_by_day
 from agentv2.core.profile import UserProfile, to_planner
 from agentv2.core.recurring import occurrences
 from pydantic import TypeAdapter
@@ -229,6 +229,8 @@ class SqlStore:
         # Expanded weeks — start with old tentative, add planner Tasks
         new_expanded_weeks: set[tuple[str, date]] = set(
             (b.goal_id, week_start(b.day)) for b in old_blocks if b.goal_id and b.status == BLOCK_TENTATIVE)
+        # Untimed planner work (quotas, multi-day items) uses hours without holding a clock slot.
+        new_untimed_hours: dict[date, float] = {}
 
         for blk_id, blk in items.items():
             bk = blk.block_kind
@@ -252,6 +254,13 @@ class SqlStore:
                             status=BLOCK_COMMITTED, title=blk.title, goal_id=blk.goal_id
                         ))
             elif bk == "task":
+                # Untimed planner work (a quota or a multi-day item) uses hours without a clock
+                # slot; fold what it asks of each day so capacity checks see it as taken.
+                if (getattr(blk, "placed_by", "user") == "planner" and blk.day is not None
+                        and blk.start is None and blk.end is None and not blk.done):
+                    for d, hours in untimed_load_by_day(
+                            blk, self.today, self.today + timedelta(days=CONTEXT_DAYS_AHEAD)).items():
+                        new_untimed_hours[d] = new_untimed_hours.get(d, 0.0) + hours
                 # Timed task -> BlockRow (tentative if planner, committed if user)
                 if blk.start is not None and blk.end is not None:
                     placed_by = getattr(blk, 'placed_by', 'user')
@@ -328,6 +337,7 @@ class SqlStore:
             goal_weekly_hours={g.id: float(g.weekly_hours) for g in goal_rows if g.weekly_hours},
             goal_milestones={g: tuple(ms) for g, ms in new_goal_milestones.items()},
             blocks=tuple(new_blocks),
+            untimed_hours_by_day=new_untimed_hours,
             items=items,
         )
 
@@ -545,7 +555,7 @@ class SqlStore:
             # A `MilestoneBlock` requires a date. An undated input (a goal with no deadline, and a
             # model that offered no date) keeps the legacy row, which allows one — never a validation
             # error on a confirmed plan.
-            if FOUR_KIND_WRITES and m.target_date is not None:
+            if m.target_date is not None:
                 s.add(CalendarBlock(
                     id=m.id, user_id=uid, block_kind="milestone", title=m.title,
                     data=MilestoneBlock(

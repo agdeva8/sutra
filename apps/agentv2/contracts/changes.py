@@ -13,7 +13,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..config import BLOCK_TENTATIVE, TODO_PRIORITY_NORMAL
-from .blocks import AddItem, EditItem, DeleteItem
+from .blocks import AddItem, EditItem, DeleteItem, TodoPriority
 
 
 class _Strict(BaseModel):
@@ -232,7 +232,6 @@ class LinkSource(_Strict):
     summary: str
 
 
-TodoPriority = Literal["low", "normal", "high"]  # config.TODO_PRIORITIES
 #: Fields of a to-do an edit may set back to empty.
 TodoClearable = Literal["day", "due_time", "description", "goal_id"]
 

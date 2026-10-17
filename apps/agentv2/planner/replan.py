@@ -13,7 +13,7 @@ from ..config import BLOCK_TENTATIVE
 from ..contracts import ChangeSet, ClearGoalPlan, Origin
 from ..contracts.planner import GoalSpec
 from ..core.calendar import week_start
-from ..core.context import Context
+from ..core.context import Context, without_goal_plan
 from .plan import plan_goal
 
 
@@ -28,10 +28,10 @@ def replan_changes(chat, ctx: Context, goal_id: str, now: datetime, progress=Non
     if remaining <= 0:
         return None
 
-    cleared_ctx = replace(ctx, blocks=tuple(
-        b for b in ctx.blocks if not (b.goal_id == goal_id and b.status == BLOCK_TENTATIVE and b.day >= now.date())
-    ))
-    cleared_ctx = replace(cleared_ctx, plan_weeks=tuple(w for w in ctx.plan_weeks if w.goal_id != goal_id))
+    # `ClearGoalPlan` removes the goal's own tentative work from today on; plan as if it is
+    # already gone, so the new sessions may reuse the slots they used to hold.
+    cleared_ctx = without_goal_plan(ctx, goal_id, now.date())
+    cleared_ctx = replace(cleared_ctx, plan_weeks=tuple(w for w in cleared_ctx.plan_weeks if w.goal_id != goal_id))
     spec = GoalSpec(id=goal_id, title=ctx.goal_titles.get(goal_id, goal_id), total_hours=remaining,
                     deadline=ctx.goal_targets.get(goal_id) or now.date() + timedelta(weeks=12),
                     weekly_hours=ctx.goal_weekly_hours.get(goal_id),

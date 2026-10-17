@@ -170,6 +170,14 @@ function blockEventOn(b, day, goalTitle, meta = {}) {
     // A quota is done per day, by its count; other tasks are done as a whole.
     const done = quota ? quotaDone >= quota : blockDone(b);
     const task = { ...b, status: done ? STATUS_DONE : STATUS_OPEN };
+    // A to-do is a task the user placed. A reminder is also a task with `at`, so the explicit marker
+    // decides — or, for a to-do the backfill copied before the marker existed, its `plan_items` id.
+    if (b.todo === true || meta.todo === true) {
+      return base(EVENT_KIND.todo, todoColor(b.priority), {
+        ...common, time: hhmm(b.at), dueTime: hhmm(b.at), priority: b.priority,
+        note: b.description || "", done, task,
+      });
+    }
     // A multi-day item says where in its run this day is ("Day 1 of 2").
     const span = meta.dayCount > 1 ? { dayIndex: meta.dayIndex, dayCount: meta.dayCount, anytime: true } : {};
     if (b.at) {
@@ -191,7 +199,7 @@ function blockEventOn(b, day, goalTitle, meta = {}) {
  * Every occurrence of a 4-kind block inside the agenda's range, as Events. `todayKey` catches a task
  * with no day: it is a list item, and Today lists it on today.
  */
-export function blockEvents(b, keys, { goalTitle = "", todayKey = null } = {}) {
+export function blockEvents(b, keys, { goalTitle = "", todayKey = null, todoIds = null } = {}) {
   if (b?.block_kind === "away") return awayEvents(b, keys);
   if (b?.block_kind === "milestone") return [milestoneEvent(b, goalTitle)];
   const days = repeatDays(b, keys);
@@ -199,10 +207,14 @@ export function blockEvents(b, keys, { goalTitle = "", todayKey = null } = {}) {
   // A multi-day item is one item across several days: number each occurrence so the row can say
   // "Day 2 of 3" rather than pretending the days are separate tasks.
   const span = isMultiDayBlock(b) ? occurrenceDays(b) : null;
+  const todo = b?.todo === true || !!todoIds?.has(b?.id);
   return days
     .map((day) => {
       const index = span ? span.indexOf(day) : -1;
-      return blockEventOn(b, day, goalTitle, span ? { dayIndex: index + 1, dayCount: span.length } : {});
+      return blockEventOn(b, day, goalTitle, {
+        ...(span ? { dayIndex: index + 1, dayCount: span.length } : {}),
+        ...(todo ? { todo: true } : {}),
+      });
     })
     .filter(Boolean);
 }

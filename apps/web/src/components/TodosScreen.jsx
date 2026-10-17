@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { CheckCircle2, Circle, ListTodo, Loader2, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { todoEvent } from "../lib/events";
-import { listTodos, toggleDone, upsertPlanItem, TODO_FILTERS, TODO_SORTS } from "../lib/todos";
+import { listTodos, toggleDone, upsertBlock, upsertPlanItem, TODO_FILTERS, TODO_SORTS } from "../lib/todos";
 import { localDateKey } from "../lib/utils";
 import { cardSurface, TODO_PRIORITY_BY_KEY, TODO_PRIORITY_NORMAL } from "../constants/calendarKinds";
 import TodoForm from "./TodoForm";
@@ -65,7 +65,7 @@ export default function TodosScreen({ state, onChange }) {
   const [savingId, setSavingId] = useState(null);
   const goals = useMemo(() => state?.goals || [], [state]);
   const goalTitle = useMemo(() => Object.fromEntries(goals.map((g) => [g.id, g.title])), [goals]);
-  const todos = useMemo(() => listTodos(state?.plan_items, { sort, filter }), [state, sort, filter]);
+  const todos = useMemo(() => listTodos(state?.plan_items, { blocks: state?.blocks, sort, filter }), [state, sort, filter]);
   const openCount = todos.filter((t) => t.status !== "done").length;
 
   const toggle = async (todo) => {
@@ -78,8 +78,9 @@ export default function TodosScreen({ state, onChange }) {
       setSavingId(null);
     }
   };
-  const saved = (row) => {
-    if (row) onChange?.(upsertPlanItem(row));
+  const saved = (row, block) => {
+    if (block) onChange?.(upsertBlock(block));
+    else if (row) onChange?.(upsertPlanItem(row));
     setEditing(null);
   };
 

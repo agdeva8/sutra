@@ -73,6 +73,26 @@ export const upsertPlanItem = (row) => (prev) => {
   return { ...prev, plan_items: exists ? items.map((p) => (p.id === row.id ? row : p)) : [row, ...items] };
 };
 
+/** Put a saved block into the board in place (new rows first), for a to-do saved as a `TaskBlock`. */
+export const upsertBlock = (block) => (prev) => {
+  const blocks = prev.blocks || [];
+  const exists = blocks.some((b) => b.id === block.id);
+  return { ...prev, blocks: exists ? blocks.map((b) => (b.id === block.id ? block : b)) : [block, ...blocks] };
+};
+
+/**
+ * A to-do `TaskBlock` in the shape the to-do list sorts and renders (the legacy `plan_item` fields).
+ * `block_kind` and `state` stay on it, so the same row still ticks through `PATCH /blocks/:id`.
+ */
+export const blockToTodo = (block) => ({
+  ...block,
+  due_date: block.day || null,
+  due_time: block.at ? String(block.at).slice(0, 5) : null,
+  status: block.done || block.state === STATUS_DONE ? STATUS_DONE : STATUS_OPEN,
+  item_type: "todo",
+  note: block.description || "",
+});
+
 const FAR_FUTURE = "9999-12-31";
 const priorityRank = (p) => (TODO_PRIORITY_BY_KEY[p.priority] || TODO_PRIORITY_BY_KEY[TODO_PRIORITY_NORMAL]).rank;
 const dueKey = (p) => `${p.due_date || FAR_FUTURE}T${p.due_time || "99:99"}`;
@@ -90,11 +110,22 @@ export const TODO_FILTERS = [
   { key: "goal", label: "For a goal", test: (p) => !!p.goal_id },
 ];
 
-/** The to-dos on the board, filtered and sorted, with not-done on top and done sunk to the bottom. */
-export function listTodos(planItems, { sort = TODO_SORTS[0].key, filter = TODO_FILTERS[0].key } = {}) {
+/**
+ * The to-dos on the board, filtered and sorted, with not-done on top and done sunk to the bottom.
+ *
+ * A to-do now lives in `state.blocks` (`TaskBlock` with `todo: true`); the `plan_items` rows are the
+ * ones filed before the move, plus the backfill's copies. The backfill kept ids, so the two lists
+ * are deduplicated by id — the `plan_items` row wins, because `PATCH /todos/:id` still edits it.
+ */
+export function listTodos(planItems, { blocks = [], sort = TODO_SORTS[0].key, filter = TODO_FILTERS[0].key } = {}) {
   const cmp = (TODO_SORTS.find((s) => s.key === sort) || TODO_SORTS[0]).compare;
   const test = (TODO_FILTERS.find((f) => f.key === filter) || TODO_FILTERS[0]).test;
-  return (planItems || [])
-    .filter((p) => isTodo(p) && test(p))
+  const legacy = (planItems || []).filter(isTodo);
+  const legacyIds = new Set(legacy.map((p) => p.id));
+  const fromBlocks = (blocks || [])
+    .filter((b) => b.block_kind === "task" && b.todo && !legacyIds.has(b.id))
+    .map(blockToTodo);
+  return [...fromBlocks, ...legacy]
+    .filter(test)
     .sort((a, b) => (a.status === STATUS_DONE) - (b.status === STATUS_DONE) || cmp(a, b));
 }

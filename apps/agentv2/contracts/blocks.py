@@ -17,6 +17,10 @@ class _Strict(BaseModel):
 
 BlockKind = Literal["event", "task", "away", "milestone"]
 
+#: A to-do's urgency. Kept here (not in `changes`) because a to-do is now a `TaskBlock`,
+#: and both the block shape and the legacy `AddTodo` contract refer to it.
+TodoPriority = Literal["low", "normal", "high"]
+
 
 class Repeat(_Strict):
     """A weekly repeat: which weekdays and when it stops."""
@@ -72,6 +76,13 @@ class TaskBlock(_Strict):
     description: str = ""
     why: str = ""
     placed_by: Literal["planner", "user"] = "user"
+    #: True when this task is the user's to-do rather than goal work or a reminder. A to-do has
+    #: no start/end; it may carry `day` and an `at` due time. The marker is explicit because the
+    #: backfill wrote old to-dos and old reminders with the same fields (`alert_before` is unset
+    #: on both), so no heuristic can tell them apart. Optional so every older row stays valid.
+    todo: bool = False
+    #: A to-do's urgency; `None` on everything that is not a to-do.
+    priority: TodoPriority | None = None
 
 
 class AwayBlock(_Strict):

@@ -10,10 +10,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 
-from ..config import BLOCK_COMMITTED, DEFAULT_BLOCK_MINUTES, FOUR_KIND_WRITES, GOAL_LINK_CONFIDENCE_MIN, MAX_AWAY_DAYS, TRIAGE_CONFIDENCE_MIN
-from ..config import TODO_ID_PREFIX
-from ..contracts import AddBlocker, AddRecurring, StopRecurring, CompleteItem, AddBlock, AddGoal, AddReminder, AddTask, AddTodo, Change, ChangeSet, LinkSource, Origin
-from ..contracts.blocks import AddItem, AwayBlock, EditItem, EventBlock, MilestoneBlock, Repeat, TaskBlock
+from ..config import BLOCK_COMMITTED, DEFAULT_BLOCK_MINUTES, GOAL_LINK_CONFIDENCE_MIN, MAX_AWAY_DAYS, TRIAGE_CONFIDENCE_MIN
+from ..config import TODO_ID_PREFIX, TODO_PRIORITY_NORMAL
+from ..contracts import AddGoal, AddTask, Change, ChangeSet, CompleteItem, LinkSource, Origin, StopRecurring
+from ..contracts.blocks import AddItem, AwayBlock, EditItem, EventBlock, Repeat, TaskBlock
 from ..contracts.triage import ReminderSpec, TriageItem, TriageResult
 from ..core.context import BlockRow, Context
 from ..core.dates import WEEKDAYS, parse_date, parse_hhmm
@@ -70,9 +70,7 @@ def _item(chat, it: TriageItem, ctx: Context, now: datetime, source_id: str | No
             return [], None, f"\"{it.title}\" is on days that have already passed. Which days did you mean?"
         if (last - first).days >= MAX_AWAY_DAYS:
             return [], None, f"That is more than {MAX_AWAY_DAYS} days. When exactly are you away for \"{it.title}\"?"
-        if FOUR_KIND_WRITES:
-            return [AddItem(block=AwayBlock(id=new_id("away"), title=it.title, start_date=first, end_date=last))], None, None
-        return [AddBlocker(id=new_id("away"), title=it.title, start_date=first, end_date=last)], None, None
+        return [AddItem(block=AwayBlock(id=new_id("away"), title=it.title, start_date=first, end_date=last))], None, None
 
     if it.bucket == "recurring":
         r = it.recurring
@@ -86,12 +84,10 @@ def _item(chat, it: TriageItem, ctx: Context, now: datetime, source_id: str | No
         until = parse_date(r.until, now.date()) if r.until else None
         if first is None or (r.until and until is None):
             return [], None, f"From which day, and until when, does \"{it.title}\" repeat?"
-        if FOUR_KIND_WRITES:
-            repeat = Repeat(weekdays=days, until=until)
-            return [AddItem(block=EventBlock(
-                id=new_id("evt"), title=it.title, day=first, start=start, end=end, repeat=repeat
-            ))], None, None
-        return [AddRecurring(id=new_id("rec"), title=it.title, weekdays=days, start=start, end=end, start_date=first, end_date=until)], None, None
+        repeat = Repeat(weekdays=days, until=until)
+        return [AddItem(block=EventBlock(
+            id=new_id("evt"), title=it.title, day=first, start=start, end=end, repeat=repeat
+        ))], None, None
 
     if it.bucket == "stop_recurring":
         match = next((x for x in ctx.recurring if x.id == it.target_id), None)
@@ -99,17 +95,14 @@ def _item(chat, it: TriageItem, ctx: Context, now: datetime, source_id: str | No
             return [], None, "Which repeating commitment should stop?"
         frm = parse_date(it.stop_from, now.date()) if it.stop_from else now.date()
         stop_date = frm or now.date()
-        if FOUR_KIND_WRITES:
-            # Emit EditItem for the repeating Event, setting repeat.until to the day before stop_date
-            # The gateway fills 'before' from context
-            evt = ctx.items.get(match.id) if match else None
-            if evt and evt.block_kind == "event":
-                # Create a copy with updated repeat.until
-                new_repeat = Repeat(weekdays=evt.repeat.weekdays, until=stop_date - timedelta(days=1)) if evt.repeat else Repeat(weekdays=[], until=stop_date - timedelta(days=1))
-                new_evt = evt.model_copy(update={"repeat": new_repeat})
-                return [EditItem(id=match.id, block=new_evt)], None, None
-            # If not in ctx.items, fall back to old behavior
-            return [StopRecurring(rule_id=match.id, from_date=stop_date, title=match.title)], None, None
+        # Emit EditItem for the repeating Event, setting repeat.until to the day before stop_date.
+        # The gateway fills 'before' from context.
+        evt = ctx.items.get(match.id) if match else None
+        if evt and evt.block_kind == "event":
+            new_repeat = Repeat(weekdays=evt.repeat.weekdays, until=stop_date - timedelta(days=1)) if evt.repeat else Repeat(weekdays=[], until=stop_date - timedelta(days=1))
+            new_evt = evt.model_copy(update={"repeat": new_repeat})
+            return [EditItem(id=match.id, block=new_evt)], None, None
+        # Not in ctx.items: the rule exists but its event row is not visible, so stop it by rule id.
         return [StopRecurring(rule_id=match.id, from_date=stop_date, title=match.title)], None, None
 
     if it.bucket == "source":
@@ -125,11 +118,13 @@ def _item(chat, it: TriageItem, ctx: Context, now: datetime, source_id: str | No
         due_time = parse_hhmm(it.due.time) if it.due and it.due.time else None
         if due_day is not None and due_day < now.date():
             due_day = None  # a due date already gone is a misread; file it undated rather than in the past
-        # A to-do stays a `plan_items` row on both paths: the To-dos screen and `POST /todos` still use that
-        # table, so a 4-kind to-do from Scratch would be missing from the To-dos list. It moves to
-        # `calendar_blocks` together with that screen.
-        return [AddTodo(id=new_id(TODO_ID_PREFIX), goal_id=gid, title=it.title,
-                        day=due_day, due_time=due_time if due_day else None)], None, None
+        # A to-do is a TaskBlock the user placed: no start/end, `todo=True`, and only an `at` due time.
+        # The marker is what tells it from a reminder (also a task with `at`, but alerting).
+        return [AddItem(block=TaskBlock(
+            id=new_id(TODO_ID_PREFIX), goal_id=gid, title=it.title,
+            day=due_day, at=due_time if due_day else None,
+            priority=TODO_PRIORITY_NORMAL, todo=True, placed_by="user",
+        ))], None, None
 
     if it.bucket == "task":
         task = AddTask(id=new_id("task"), goal_id=_goal_for(it, ctx), title=it.title, effort_hours=it.effort_hours)
@@ -146,19 +141,17 @@ def _item(chat, it: TriageItem, ctx: Context, now: datetime, source_id: str | No
         if named is not None:
             times = [named]
         gid = _goal_for(it, ctx)
-        if FOUR_KIND_WRITES:
-            # One Task per time of day (D8), alerting at that time. It sits on its first day; a run of days
-            # repeats on those weekdays until the last one, the same shape the backfill gives an old reminder.
-            # Without the day, the reminder would turn into an undated list item.
-            repeat = Repeat(weekdays=sorted({d.weekday() for d in days}), until=days[-1]) if len(days) > 1 else None
-            changes = []
-            for t in times:
-                changes.append(AddItem(block=TaskBlock(
-                    id=new_id("rem"), title=it.title, goal_id=gid, day=days[0],
-                    at=t, alert_before=0, placed_by="user", repeat=repeat,
-                )))
-            return changes, None, None
-        return [AddReminder(id=new_id("rem"), title=it.title, days=days, times=times, goal_id=gid)], None, None
+        # One Task per time of day (D8), alerting at that time. It sits on its first day; a run of days
+        # repeats on those weekdays until the last one, the same shape the backfill gives an old reminder.
+        # Without the day, the reminder would turn into an undated list item.
+        repeat = Repeat(weekdays=sorted({d.weekday() for d in days}), until=days[-1]) if len(days) > 1 else None
+        changes = []
+        for t in times:
+            changes.append(AddItem(block=TaskBlock(
+                id=new_id("rem"), title=it.title, goal_id=gid, day=days[0],
+                at=t, alert_before=0, placed_by="user", repeat=repeat,
+            )))
+        return changes, None, None
 
     # block
     b = it.block
@@ -172,17 +165,15 @@ def _item(chat, it: TriageItem, ctx: Context, now: datetime, source_id: str | No
     end = end or (datetime.combine(day, start) + timedelta(minutes=DEFAULT_BLOCK_MINUTES)).time()
     # A time the user named stays committed (the planner must not move it); a goal on it is colour and progress, not a licence to move.
     gid = _goal_for(it, ctx)
-    if FOUR_KIND_WRITES:
-        # D9: A block with a goal -> Task(placed_by=user). A block without a goal -> Event.
-        if gid:
-            return [AddItem(block=TaskBlock(
-                id=new_id("task"), title=it.title, day=day, start=start, end=end,
-                goal_id=gid, placed_by="user"
-            ))], None, None
-        return [AddItem(block=EventBlock(
-            id=new_id("evt"), title=it.title, day=day, start=start, end=end
+    # D9: A block with a goal -> Task(placed_by=user). A block without a goal -> Event.
+    if gid:
+        return [AddItem(block=TaskBlock(
+            id=new_id("task"), title=it.title, day=day, start=start, end=end,
+            goal_id=gid, placed_by="user"
         ))], None, None
-    return [AddBlock(id=new_id("blk"), title=it.title, day=day, start=start, end=end, status=BLOCK_COMMITTED, goal_id=gid)], None, None
+    return [AddItem(block=EventBlock(
+        id=new_id("evt"), title=it.title, day=day, start=start, end=end
+    ))], None, None
 
 
 def route(chat, r: TriageResult, ctx: Context, now: datetime, origin: Origin, source_id: str | None = None) -> Routed:
@@ -201,12 +192,9 @@ def route(chat, r: TriageResult, ctx: Context, now: datetime, origin: Origin, so
         if question:
             questions.append(question)
         # Later items must see the blocks earlier items just placed, or two tasks could overlap.
-        # For new 4-kind path, also add to ctx.items so later AddItem checks see them
         added = []
         for c in new:
-            if isinstance(c, AddBlock):
-                added.append(BlockRow(c.id, c.day, c.start, c.end, c.status, c.title))
-            elif isinstance(c, AddItem):
+            if isinstance(c, AddItem):
                 blk = c.block
                 if blk.block_kind == "event" and blk.start and blk.end:
                     added.append(BlockRow(blk.id, blk.day, blk.start, blk.end, BLOCK_COMMITTED, blk.title, goal_id=blk.goal_id))

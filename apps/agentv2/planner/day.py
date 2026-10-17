@@ -10,15 +10,15 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 
-from ..config import BLOCK_TENTATIVE, FIX_MAX_LOOPS, FOUR_KIND_WRITES, MAX_GOAL_HOURS_PER_DAY, MIN_GAP_BETWEEN_SESSIONS_MIN, MIN_SESSION_HOURS
-from ..contracts import AddBlock, AddTask, Change
+from ..config import BLOCK_TENTATIVE, FIX_MAX_LOOPS, MAX_GOAL_HOURS_PER_DAY, MIN_GAP_BETWEEN_SESSIONS_MIN, MIN_SESSION_HOURS
+from ..contracts import Change
 from ..contracts.blocks import AddItem, Repeat, TaskBlock
 from ..contracts.planner import DAY_ITEM_FOCUS, DayItem, DayPlan, GoalSpec
 from ..core.budget import check_allocation, even_split
 from ..core.calendar import free_hours_by_day, windows_on
 from ..core.context import BlockRow, Context
 from ..core.ids import new_id
-from ..core.slots import busy_by_day, pad_after, picks_to_blocks, picks_to_task_blocks, validate_picks
+from ..core.slots import busy_by_day, pad_after, validate_picks
 from ..llm import complete_json
 from ..contracts.planner import SessionPlan
 from ..prompts.planner import DAY_SYSTEM, SESSION_SLOT_SYSTEM, day_user, session_slot_user
@@ -92,20 +92,12 @@ def _keeps(item: DayItem) -> bool:
     return item.kind != KIND_FOCUS or item.hours > 0
 
 
-def _first_day(item: DayItem, week: date) -> date:
-    """The day an untimed item hangs off: the first of its quota weekdays or of its days."""
-    if item.kind == KIND_QUOTA:
-        return week + timedelta(days=min(item.weekdays))
-    if item.kind == KIND_MULTI_DAY:
-        return min(_day_id_date(d) for d in item.days)
-    return date.fromisoformat(item.day_id[len(DAY_PREFIX):])
-
-
 def _room(ctx: Context, day: date) -> float:
     """What is left of the user's hours for `day` after what is already planned on it."""
     planned = sum((datetime.combine(day, b.end) - datetime.combine(day, b.start)).total_seconds() / 3600
                   for b in ctx.blocks if b.day == day and b.status == BLOCK_TENTATIVE)
-    return max(0.0, ctx.capacity_on(day) - planned)
+    # Untimed planner work (a quota, a multi-day item) uses hours without holding a clock slot.
+    return max(0.0, ctx.capacity_on(day) - planned - ctx.untimed_hours_by_day.get(day, 0.0))
 
 
 def _clock(d: date, t) -> datetime:
@@ -198,6 +190,7 @@ def plan_day_level(chat, goal: GoalSpec, wk: WeekAlloc, ctx: Context, now: datet
         if placed is None:
             how += f"; times not placed ({slot_problem or 'no reply'})"
     gap_ctx = ctx  # placement view only: the real ctx never gets the gap padding
+    untimed = dict(ctx.untimed_hours_by_day)  # the load this week's items add, for later weeks/goals
     changes: list[Change] = []
     milestone_ids = {m.title: m.id for m in goal.milestones if m.id}
     focus_i = 0
@@ -208,24 +201,17 @@ def plan_day_level(chat, goal: GoalSpec, wk: WeekAlloc, ctx: Context, now: datet
             focus_i += 1
         else:
             placement = None
-        if FOUR_KIND_WRITES:
-            changes.append(_four_kind_change(goal, item, placement, milestone_id, wk.week))
-            rows = _placed_rows(changes[-1])
-        else:
-            # The old path has no way to express a quota or a repeat, so every kind degrades to one
-            # dated focus task ("treat every item as focus"): the first day, and the total hours.
-            day = _first_day(item, wk.week)
-            hours = _quota_effort(item) * len(set(item.weekdays)) if item.kind == KIND_QUOTA else item.hours
-            task = AddTask(id=new_id("task"), goal_id=goal.id, title=item.title, effort_hours=hours, day=day,
-                           description=item.description, why=item.why, milestone_id=milestone_id)
-            blocks: list[AddBlock] = []
-            if placement is not None:
-                window, offset, slot_why = placement
-                blocks = picks_to_blocks([(window.id, hours, offset)], [window], item.title, task_id=task.id, goal_id=goal.id, why=slot_why)
-            changes.append(task)
-            changes += blocks
-            rows = tuple(BlockRow(b.id, b.day, b.start, b.end, BLOCK_TENTATIVE, b.title) for b in blocks)
+        changes.append(_four_kind_change(goal, item, placement, milestone_id, wk.week))
+        rows = _placed_rows(changes[-1])
         ctx = replace(ctx, blocks=ctx.blocks + rows)
+        # Untimed items hold no clock slot, but they do use the user's hours: record what this
+        # item asks of each day so the next week (or goal) in the run sees it as taken.
+        if item.kind != KIND_FOCUS:
+            for day_id, hours in _per_day_effort(item, wk.week).items():
+                day = _day_id_date(day_id)
+                if day is not None:
+                    untimed[day] = untimed.get(day, 0.0) + hours
+            ctx = replace(ctx, untimed_hours_by_day=untimed)
         # The next session may not start until the gap has passed.
         gap_ctx = replace(gap_ctx, blocks=gap_ctx.blocks + rows + pad_after(rows))
     return changes, ctx, how

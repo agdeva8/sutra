@@ -82,23 +82,6 @@ def load_settings() -> Settings:
 
 # --- Gateway / validator (step 1) -------------------------------------------
 
-import os
-
-#: Values that turn a boolean environment flag off. Anything else present in the variable turns
-#: it on, so an existing deployment's `FOUR_KIND_WRITES=0` (or `false`, or `no`) keeps the old path.
-FLAG_OFF_VALUES = frozenset({"0", "false", "no"})
-
-#: Phase 4 rollout switch (D10). When True, agent stages emit the new 4-kind changes that write
-#: `calendar_blocks` instead of `timetable_blocks`/`milestones` (docs/calendar-block-kinds.md).
-#: On by default: the board, the Timeline, Today's agenda, the `.ics` feed, the coach and goal drop all read
-#: `calendar_blocks`. To-dos are the exception and stay in `plan_items` on both paths (triage/route.py),
-#: because the To-dos screen reads that table.
-FOUR_KIND_WRITES_DEFAULT = True
-_FOUR_KIND_WRITES_ENV = os.environ.get("FOUR_KIND_WRITES", "").strip().lower()
-FOUR_KIND_WRITES = (
-    _FOUR_KIND_WRITES_ENV not in FLAG_OFF_VALUES if _FOUR_KIND_WRITES_ENV else FOUR_KIND_WRITES_DEFAULT
-)
-
 #: Change kinds the gateway may apply without asking (HLD §9). Anything else, and
 #: anything that touches a committed block, becomes a proposal.
 AUTO_APPLY_KINDS = frozenset({"add_recurring", "stop_recurring", "clear_goal_plan", "complete_item", "add_goal", "add_milestone", "add_task", "add_reminder", "add_block", "link_source", "add_plan_week", "add_plan_month", "add_blocker", "add_todo", "edit_todo", "add_item", "edit_item", "delete_item"})

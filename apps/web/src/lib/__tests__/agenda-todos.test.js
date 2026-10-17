@@ -95,6 +95,19 @@ describe("the 4-kind board", () => {
     const doneBlock = { ...twin, state: "done" };
     expect(day({ goals, plan_items: [openPlan], blocks: [doneBlock] }, "2026-10-15")[0].done).toBe(true);
   });
+
+  test("a marked to-do block is a to-do, not a reminder, even with an `at`", () => {
+    const e = day({ goals, blocks: [block("td", { title: "Pay rent", at: "17:00", todo: true, priority: "high", goal_id: null })] }, "2026-10-15");
+    expect(e[0]).toMatchObject({ title: "Pay rent", kind: "todo", dueTime: "17:00", priority: "high" });
+  });
+
+  test("a backfilled to-do block is recognised by its plan_items id", () => {
+    const plan = todo("legacy", { title: "Buy milk", due_date: "2026-10-15" });
+    const twin = block("legacy", { title: "Buy milk", at: "17:00", goal_id: null });
+    const e = day({ goals, plan_items: [plan], blocks: [twin] }, "2026-10-15");
+    expect(e).toHaveLength(1);
+    expect(e[0]).toMatchObject({ title: "Buy milk", kind: "todo" });
+  });
 });
 
 describe("the to-do list", () => {
@@ -119,5 +132,20 @@ describe("the to-do list", () => {
 
   test("the not-done filter hides done ones", () => {
     expect(listTodos(items, { filter: "open" }).map((t) => t.id)).not.toContain("doneHigh");
+  });
+
+  test("to-do blocks are listed, and a backfilled twin appears once", () => {
+    const blocks = [
+      { id: "b1", block_kind: "task", title: "Block todo", todo: true, day: "2026-10-15", at: "17:00", priority: "low", state: "open" },
+      { id: "low", block_kind: "task", title: "Backfilled", todo: false, day: "2026-10-16", state: "open" },
+      { id: "session", block_kind: "task", title: "Goal work", day: "2026-10-15", state: "open" },
+    ];
+    const out = listTodos(items, { blocks, sort: "priority" });
+    expect(out.map((t) => t.id)).toContain("b1");
+    // The `low` plan row wins over its backfilled block copy, and the goal session stays out.
+    expect(out.filter((t) => t.id === "low")).toHaveLength(1);
+    expect(out.find((t) => t.id === "low").title).toBe("low");
+    expect(out.map((t) => t.id)).not.toContain("session");
+    expect(out.find((t) => t.id === "b1")).toMatchObject({ due_date: "2026-10-15", due_time: "17:00", status: "open" });
   });
 });

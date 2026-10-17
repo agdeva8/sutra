@@ -98,9 +98,10 @@ def validate(cs: ChangeSet, ctx: Context) -> list[Violation]:
             fail(i, RULE_BLOCKED_DATE, f"{title or bid}: {day} is a day you are unavailable")
         blocks[bid] = BlockRow(id=bid, day=day, start=start, end=end, status=status, title=title, goal_id=goal_id)
         if status == BLOCK_TENTATIVE:
-            planned = ctx.planned_hours.get(day, 0.0) + sum(
-                _hours(b.start, b.end) for b in blocks.values() if b.day == day and b.status == BLOCK_TENTATIVE
-            )
+            # An untimed planner item uses hours without a clock slot, so count it too.
+            planned = (ctx.planned_hours.get(day, 0.0) + ctx.untimed_hours_by_day.get(day, 0.0)
+                       + sum(_hours(b.start, b.end) for b in blocks.values()
+                             if b.day == day and b.status == BLOCK_TENTATIVE))
             if planned > ctx.capacity_on(day):
                 fail(i, RULE_CAPACITY, f"{day}: {planned:.1f}h planned exceeds capacity {ctx.capacity_on(day):.1f}h")
 

@@ -10,8 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
-from ..config import INTAKE_MAX_WEEKS, MAX_INTAKE_TURNS, FOUR_KIND_WRITES
-from ..contracts import AddGoal, AddMilestone, Change
+from ..config import INTAKE_MAX_WEEKS, MAX_INTAKE_TURNS
+from ..contracts import AddGoal, Change
 from ..contracts.blocks import AddItem, MilestoneBlock
 from ..contracts.intake import GoalDraft, IntakeReply, MilestoneDraft, IntakeState, Turn
 from ..contracts.planner import GoalSpec, MilestoneSpec
@@ -63,13 +63,10 @@ def draft_to_changes(draft: GoalDraft, now: datetime, *, priority: int = 1) -> t
     specs = [m.model_copy(update={"id": new_id("mile")}) for m in milestone_tree(draft.milestones, start, weeks)]
     ids = {m.title: m.id for m in specs}
     for m in specs:
-        if FOUR_KIND_WRITES:
-            changes.append(AddItem(block=MilestoneBlock(
-                id=ids[m.title], title=m.title, goal_id=goal_id, target_date=m.due,
-                parent_id=ids.get(m.parent), hours=m.hours
-            )))
-        else:
-            changes.append(AddMilestone(id=ids[m.title], goal_id=goal_id, title=m.title, target_date=m.due, parent_id=ids.get(m.parent), hours=m.hours))
+        changes.append(AddItem(block=MilestoneBlock(
+            id=ids[m.title], title=m.title, goal_id=goal_id, target_date=m.due,
+            parent_id=ids.get(m.parent), hours=m.hours
+        )))
     spec = GoalSpec(id=goal_id, title=draft.title, total_hours=max(draft.total_hours, 1.0), deadline=target, priority=priority, milestones=specs, weekly_hours=draft.weekly_hours or None)
     return spec, changes
 

@@ -10,12 +10,15 @@ proposals. Tasks, time slots, commitments and away ranges are written straight t
 
 ## Writes live in `calendar_blocks`
 
-`FOUR_KIND_WRITES` (`apps/agentv2/config.py`) is **on by default**: the agent's planner, triage, intake
-and the executor write the four kinds to `calendar_blocks`, which is what the board, the Timeline, Today's
-agenda, the `.ics` feed, the coach and goal drop read. Only `0`, `false` or `no` turn it off.
+The agent's planner, triage, intake and the executor write the four kinds to `calendar_blocks`,
+which is what the board, the Timeline, Today's agenda, the `.ics` feed, the coach and goal drop read.
+The old write paths are gone; `FOUR_KIND_WRITES` and its `else` branches were removed.
 
-**To-dos are the exception.** Scratch files a to-do as a `plan_items` row on both paths, like `POST /todos`,
-because the To-dos screen reads `plan_items`. They move to `calendar_blocks` together with that screen.
+**To-dos are tasks too.** A to-do is a `TaskBlock` the user placed: no `start`/`end`, optional `day`,
+optional `at` due time, `todo=True` and a `priority`. Scratch, `POST /todos`, and `POST /plan-items`
+all write it through the gateway. The `todo` marker, not `alert_before`, is what tells a to-do from a
+reminder (a reminder is a task with `at` that alerts) — the backfill gave old to-dos and old reminders
+the same fields. Legacy `plan_items` to-dos are still read and can still be edited by id.
 
 The old tables are legacy, not gone. Rows written before the switch — and rows the backfill copied
 with their original ids — are still read where it matters: `SqlStore.context()` folds their

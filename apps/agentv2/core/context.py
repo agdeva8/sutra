@@ -5,10 +5,11 @@ and testable. It is rebuilt per run and never persisted.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import date, time
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
+from datetime import date, time, timedelta
 
-from ..config import ACTIVE_WINDOW_END, ACTIVE_WINDOW_START, DEFAULT_DAILY_CAPACITY_HOURS
+from ..config import ACTIVE_WINDOW_END, ACTIVE_WINDOW_START, DEFAULT_DAILY_CAPACITY_HOURS, RECURRING_HORIZON_DAYS
 
 
 @dataclass(frozen=True)
@@ -112,6 +113,10 @@ class Context:
     expanded_weeks: frozenset[tuple[str, date]] = frozenset()
     #: Tentative hours already planned per day, outside the blocks list.
     planned_hours: dict[date, float] = field(default_factory=dict)
+    #: Hours the planner's untimed work already asks of each day: a quota's per-day effort, or a
+    #: multi-day item's total split over its days. It holds no time on the clock, but it does use
+    #: up the user's hours, so capacity and free time both count it. Read-only.
+    untimed_hours_by_day: Mapping[date, float] = field(default_factory=dict)
     #: The parts of a day the agent may schedule into (the user's waking hours, from their profile).
     active_spans: tuple[tuple[time, time], ...] = ((ACTIVE_WINDOW_START, ACTIVE_WINDOW_END),)
     #: weekday -> spans the user is busy every week (their work or study hours, from their profile).
@@ -127,3 +132,64 @@ class Context:
 
     def block(self, block_id: str) -> BlockRow | None:
         return next((b for b in self.blocks if b.id == block_id), None)
+
+
+def untimed_load_by_day(blk, first: date, last: date) -> dict[date, float]:
+    """Hours an untimed planner task asks of each day between `first` and `last`.
+
+    A quota's `effort_hours` is already its effort on one day, so it counts on every day the
+    quota falls on. A multi-day item's `effort_hours` is its total, split evenly over all its
+    days: a window that starts partway through must not inflate the remaining days.
+    """
+    if blk.block_kind != "task" or blk.day is None or blk.start is not None or blk.end is not None:
+        return {}
+    effort = blk.effort_hours or 0.0
+    if not effort:
+        return {}
+    repeat = blk.repeat
+    if repeat is None:
+        return {blk.day: effort} if first <= blk.day <= last else {}
+    # An open-ended repeat has no `until`; bound it the way occurrences() does.
+    end = repeat.until if repeat.until is not None else first + timedelta(days=RECURRING_HORIZON_DAYS)
+    days = []
+    d = blk.day
+    while d <= min(end, last):
+        if d.weekday() in repeat.weekdays:
+            days.append(d)
+        d += timedelta(days=1)
+    if not days:
+        return {}
+    each = effort if blk.quota else effort / len(days)
+    return {d: each for d in days if d >= first}
+
+
+def without_goal_plan(ctx: Context, goal_id: str, from_date: date) -> Context:
+    """`ctx` as the planner should see it while re-planning `goal_id` from `from_date`.
+
+    `ClearGoalPlan` deletes this goal's own tentative blocks and untimed planner items from that
+    date on, so they must not look busy to the new plan: the goal may reuse its old slots. Every
+    other goal's work, and the user's own blocks, stay busy.
+    """
+    blocks = tuple(
+        b for b in ctx.blocks
+        if not (b.goal_id == goal_id and b.status == "tentative" and b.day >= from_date)
+    )
+    # Mirrors ClearGoalPlan: an item is the goal's own when the planner placed it, untimed, and
+    # its anchor day is from `from_date` on.
+    dropped = {
+        bid for bid, blk in ctx.items.items()
+        if blk.block_kind == "task" and blk.goal_id == goal_id
+        and getattr(blk, "placed_by", "user") == "planner"
+        and blk.day is not None and blk.day >= from_date
+        and blk.start is None and blk.end is None and not blk.done
+    }
+    load = dict(ctx.untimed_hours_by_day)
+    for bid in dropped:
+        for day, hours in untimed_load_by_day(ctx.items[bid], from_date, date.max).items():
+            load[day] = max(0.0, load.get(day, 0.0) - hours)
+    return replace(
+        ctx,
+        blocks=blocks,
+        items={bid: blk for bid, blk in ctx.items.items() if bid not in dropped},
+        untimed_hours_by_day={d: h for d, h in load.items() if h > 0},
+    )

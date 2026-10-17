@@ -29,11 +29,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.blast_radius import radius_for
 from ..ids import new_id
-from ..models import BLOCKER_KINDS, CalendarBlock, GOAL_HORIZONS, Milestone, TimetableBlock, User
+from ..models import CalendarBlock, GOAL_HORIZONS, Milestone, User
 from . import goal_drop, repo, staleness
 
-from agentv2.config import FOUR_KIND_WRITES
-from agentv2.contracts.blocks import AwayBlock, Block, BLOCK_ADAPTER, EventBlock, TaskBlock
+from agentv2.contracts.blocks import AwayBlock, BLOCK_ADAPTER, EventBlock, TaskBlock
 
 #: v1's cap on how many attached sources a confirmed goal adopts.
 MAX_LINKED_SOURCES = 10
@@ -481,35 +480,16 @@ async def _add_blocker(session: AsyncSession, *, user_id: str, args: dict) -> Ex
     start = _as_date(args.get("start_date")) or datetime.now(UTC).date()
     end = _as_date(args.get("end_date")) or start
 
-    if FOUR_KIND_WRITES:
-        # §4f: Write AwayBlock to calendar_blocks
-        blk = AwayBlock(id=new_id("away"), title=title, start_date=start, end_date=end)
-        session.add(CalendarBlock(
-            id=blk.id, user_id=user_id, block_kind="away", title=blk.title,
-            data=blk.model_dump(mode="json")))
-        await session.flush()
-        summary = f"Away '{title}' {start.isoformat()}..{end.isoformat()}"
-        await repo.write_audit(
-            session, user_id=user_id, type="confirm:add_blocker",
-            summary=summary, payload={"block_id": blk.id, "args": _safe(args)},
-        )
-        return _ok(summary)
-
-    row = await repo.create_blocker(
-        session,
-        user_id=user_id,
-        title=title,
-        start_date=start,
-        end_date=end,
-        note=str(args.get("note") or ""),
-    )
-    summary = f"Blocker '{title}' {start.isoformat()}..{end.isoformat()}"
+    # §4f: Write AwayBlock to calendar_blocks
+    blk = AwayBlock(id=new_id("away"), title=title, start_date=start, end_date=end)
+    session.add(CalendarBlock(
+        id=blk.id, user_id=user_id, block_kind="away", title=blk.title,
+        data=blk.model_dump(mode="json")))
+    await session.flush()
+    summary = f"Away '{title}' {start.isoformat()}..{end.isoformat()}"
     await repo.write_audit(
-        session,
-        user_id=user_id,
-        type="confirm:add_blocker",
-        summary=summary,
-        payload={"blocker_id": row.id, "args": _safe(args)},
+        session, user_id=user_id, type="confirm:add_blocker",
+        summary=summary, payload={"block_id": blk.id, "args": _safe(args)},
     )
     return _ok(summary)
 
@@ -548,76 +528,34 @@ async def _add_block(session: AsyncSession, *, user_id: str, args: dict) -> Exec
 
     from datetime import time as _t
 
-    if FOUR_KIND_WRITES:
-        # §4f: Write EventBlock or TaskBlock to calendar_blocks
-        s_time = _t.fromisoformat(start)
-        e_time = _t.fromisoformat(end)
-        blk_id = new_id("evt")
-        if goal_id:
-            blk = TaskBlock(
-                id=blk_id, title=label, day=block_date, start=s_time, end=e_time,
-                goal_id=goal_id, placed_by="user"
-            )
-            block_kind = "task"
-        else:
-            blk = EventBlock(
-                id=blk_id, title=label, day=block_date, start=s_time, end=e_time
-            )
-            block_kind = "event"
-        session.add(CalendarBlock(
-            id=blk.id, user_id=user_id, block_kind=block_kind, title=blk.title,
-            data=blk.model_dump(mode="json")))
-        await session.flush()
-        summary = f"Scheduled '{label}' {block_date.isoformat()} {start}-{end}"
-        await repo.write_audit(
-            session, user_id=user_id, type="confirm:add_block",
-            summary=summary, payload={"block_id": blk.id, "args": _safe(args)},
+    # §4f: Write EventBlock or TaskBlock to calendar_blocks
+    s_time = _t.fromisoformat(start)
+    e_time = _t.fromisoformat(end)
+    blk_id = new_id("evt")
+    if goal_id:
+        blk = TaskBlock(
+            id=blk_id, title=label, day=block_date, start=s_time, end=e_time,
+            goal_id=goal_id, placed_by="user"
         )
-        if goal_id:
-            await staleness.record_change(
-                session, user_id=user_id, goal_id=goal_id, kind="timetable",
-                horizons_moved=radius_for("timetable.add")[0], summary=summary,
-            )
-        return _ok(summary)
-
-    if kind not in BLOCKER_KINDS:
-        return _fail("Invalid timetable block details.")
-
-    row = TimetableBlock(
-        id=new_id("blk"),
-        user_id=user_id,
-        block_date=block_date,
-        start_time=_t.fromisoformat(start),
-        end_time=_t.fromisoformat(end),
-        label=label,
-        kind=kind,
-        # `plan`, not `manual`: a confirmed proposal wrote this, and the
-        # difference tells a later replan which blocks it may move.
-        source="plan",
-        source_id=None,
-        goal_id=goal_id,
-        goal_title=goal_title,
-        note=str(args.get("note") or ""),
-    )
-    session.add(row)
+        block_kind = "task"
+    else:
+        blk = EventBlock(
+            id=blk_id, title=label, day=block_date, start=s_time, end=e_time
+        )
+        block_kind = "event"
+    session.add(CalendarBlock(
+        id=blk.id, user_id=user_id, block_kind=block_kind, title=blk.title,
+        data=blk.model_dump(mode="json")))
     await session.flush()
-
     summary = f"Scheduled '{label}' {block_date.isoformat()} {start}-{end}"
     await repo.write_audit(
-        session,
-        user_id=user_id,
-        type="confirm:add_block",
-        summary=summary,
-        payload={"block_id": row.id, "args": _safe(args)},
+        session, user_id=user_id, type="confirm:add_block",
+        summary=summary, payload={"block_id": blk.id, "args": _safe(args)},
     )
     if goal_id:
         await staleness.record_change(
-            session,
-            user_id=user_id,
-            goal_id=goal_id,
-            kind="timetable",
-            horizons_moved=radius_for("timetable.add")[0],
-            summary=summary,
+            session, user_id=user_id, goal_id=goal_id, kind="timetable",
+            horizons_moved=radius_for("timetable.add")[0], summary=summary,
         )
     return _ok(summary)
 
@@ -628,75 +566,44 @@ async def _edit_block(session: AsyncSession, *, user_id: str, args: dict) -> Exe
     if not block_id:
         return _fail("edit_block requires block_id.")
 
-    if FOUR_KIND_WRITES:
-        # §4g: Edit CalendarBlock
-        row = await session.get(CalendarBlock, block_id)
-        if row is None or row.user_id != user_id:
-            return _fail(f"No matching block for '{block_id}'")
-        blk_dict = row.data
-        blk = BLOCK_ADAPTER.validate_python(blk_dict)
-        # Update fields provided in args
-        if args.get("title"):
-            blk.title = str(args["title"])
-        if args.get("block_date"):
-            parsed = _as_date(args["block_date"])
-            if parsed:
-                # Event/Task use 'day', Away uses 'start_date'/'end_date', Milestone uses 'target_date'
-                if hasattr(blk, 'day') and blk.day is not None:
-                    blk.day = parsed
-                elif hasattr(blk, 'start_date'):
-                    blk.start_date = parsed
-                    if hasattr(blk, 'end_date') and (blk.end_date is None or blk.end_date < parsed):
-                        blk.end_date = parsed
-                elif hasattr(blk, 'target_date'):
-                    blk.target_date = parsed
-        if args.get("start_time"):
-            from datetime import time as _t
-            if hasattr(blk, 'start'):
-                blk.start = _t.fromisoformat(str(args["start_time"]))
-        if args.get("end_time"):
-            from datetime import time as _t
-            if hasattr(blk, 'end'):
-                blk.end = _t.fromisoformat(str(args["end_time"]))
-        if args.get("goal_title"):
-            ref = await goal_drop.resolve_goal_ref(session, user_id=user_id, goal_title=str(args["goal_title"]))
-            if ref is None:
-                return _fail(f"No matching goal for '{args['goal_title']}'")
-            blk.goal_id = ref.goal_id
-        row.data = blk.model_dump(mode="json")
-        row.title = blk.title
-        await session.flush()
-        summary = f"Updated block '{blk.title}'"
-        await repo.write_audit(
-            session, user_id=user_id, type="confirm:edit_block",
-            summary=summary, payload={"block_id": block_id, "args": _safe(args)},
-        )
-        return _ok(summary)
-
-    # Old path: update TimetableBlock
-    stmt = select(TimetableBlock).where(TimetableBlock.id == block_id, TimetableBlock.user_id == user_id)
-    row = (await session.execute(stmt)).scalar_one_or_none()
-    if row is None:
+    # §4g: Edit CalendarBlock
+    row = await session.get(CalendarBlock, block_id)
+    if row is None or row.user_id != user_id:
         return _fail(f"No matching block for '{block_id}'")
-    if args.get("label"):
-        row.label = str(args["label"])
+    blk_dict = row.data
+    blk = BLOCK_ADAPTER.validate_python(blk_dict)
+    # Update fields provided in args
+    if args.get("title"):
+        blk.title = str(args["title"])
     if args.get("block_date"):
         parsed = _as_date(args["block_date"])
         if parsed:
-            row.block_date = parsed
+            # Event/Task use 'day', Away uses 'start_date'/'end_date', Milestone uses 'target_date'
+            if hasattr(blk, 'day') and blk.day is not None:
+                blk.day = parsed
+            elif hasattr(blk, 'start_date'):
+                blk.start_date = parsed
+                if hasattr(blk, 'end_date') and (blk.end_date is None or blk.end_date < parsed):
+                    blk.end_date = parsed
+            elif hasattr(blk, 'target_date'):
+                blk.target_date = parsed
     if args.get("start_time"):
         from datetime import time as _t
-        row.start_time = _t.fromisoformat(str(args["start_time"]))
+        if hasattr(blk, 'start'):
+            blk.start = _t.fromisoformat(str(args["start_time"]))
     if args.get("end_time"):
         from datetime import time as _t
-        row.end_time = _t.fromisoformat(str(args["end_time"]))
+        if hasattr(blk, 'end'):
+            blk.end = _t.fromisoformat(str(args["end_time"]))
     if args.get("goal_title"):
         ref = await goal_drop.resolve_goal_ref(session, user_id=user_id, goal_title=str(args["goal_title"]))
         if ref is None:
             return _fail(f"No matching goal for '{args['goal_title']}'")
-        row.goal_id, row.goal_title = ref.goal_id, ref.goal_title
+        blk.goal_id = ref.goal_id
+    row.data = blk.model_dump(mode="json")
+    row.title = blk.title
     await session.flush()
-    summary = f"Updated block '{row.label}'"
+    summary = f"Updated block '{blk.title}'"
     await repo.write_audit(
         session, user_id=user_id, type="confirm:edit_block",
         summary=summary, payload={"block_id": block_id, "args": _safe(args)},
@@ -710,30 +617,13 @@ async def _delete_block(session: AsyncSession, *, user_id: str, args: dict) -> E
     if not block_id:
         return _fail("delete_block requires block_id.")
 
-    if FOUR_KIND_WRITES:
-        # §4g: Delete from CalendarBlock
-        row = await session.get(CalendarBlock, block_id)
-        if row is None or row.user_id != user_id:
-            return _fail(f"No matching block for '{block_id}'")
-        title = row.title
-        await session.execute(
-            delete(CalendarBlock).where(CalendarBlock.id == block_id, CalendarBlock.user_id == user_id))
-        await session.flush()
-        summary = f"Deleted block '{title}'"
-        await repo.write_audit(
-            session, user_id=user_id, type="confirm:delete_block",
-            summary=summary, payload={"block_id": block_id, "args": _safe(args)},
-        )
-        return _ok(summary)
-
-    # Old path: delete from TimetableBlock
-    stmt = select(TimetableBlock).where(TimetableBlock.id == block_id, TimetableBlock.user_id == user_id)
-    row = (await session.execute(stmt)).scalar_one_or_none()
-    if row is None:
+    # §4g: Delete from CalendarBlock
+    row = await session.get(CalendarBlock, block_id)
+    if row is None or row.user_id != user_id:
         return _fail(f"No matching block for '{block_id}'")
-    title = row.label
+    title = row.title
     await session.execute(
-        delete(TimetableBlock).where(TimetableBlock.id == block_id, TimetableBlock.user_id == user_id))
+        delete(CalendarBlock).where(CalendarBlock.id == block_id, CalendarBlock.user_id == user_id))
     await session.flush()
     summary = f"Deleted block '{title}'"
     await repo.write_audit(

@@ -3,10 +3,6 @@ No model: planner calls get a fake chat that replays canned JSON."""
 import json
 from datetime import date, datetime, timedelta
 
-import pytest
-
-import agentv2.intake.turn as intake_turn
-import agentv2.planner.day as planner_day
 from agentv2.contracts import AddItem
 from agentv2.contracts.intake import GoalDraft, MilestoneDraft
 from agentv2.contracts.planner import GoalSpec, MilestoneSpec
@@ -14,13 +10,6 @@ from agentv2.core.context import Context
 from agentv2.intake.turn import draft_to_changes, milestone_tree
 from agentv2.planner.day import DAY_PREFIX, plan_day_level
 from agentv2.planner.week import WeekAlloc, plan_weeks
-
-
-@pytest.fixture(autouse=True)
-def _four_kind_writes(monkeypatch):
-    """Pin the 4-kind path, the one the app is moving to, whatever the deployed default is."""
-    monkeypatch.setattr(intake_turn, "FOUR_KIND_WRITES", True)
-    monkeypatch.setattr(planner_day, "FOUR_KIND_WRITES", True)
 
 
 START = date(2026, 10, 15)
