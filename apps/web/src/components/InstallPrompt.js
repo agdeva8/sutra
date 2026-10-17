@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import useInstallPrompt from "../hooks/use-install-prompt";
+import { INSTALL_PLATFORM, useInstallPrompt } from "../lib/install";
 import { useGuideActive } from "../lib/guideActive";
 import InstallPromptDialog from "./InstallPromptDialog";
 
@@ -21,14 +21,18 @@ function useOtherDialogOpen() {
 }
 
 /**
- * InstallPrompt — thin container: owns useInstallPrompt (the platform
- * detection + beforeinstallprompt plumbing) and drives InstallPromptDialog.
- * Mounted once in App.js so it's live on both routes.
+ * InstallPrompt — thin container: drives InstallPromptDialog from the shared
+ * install store (lib/install.js) — the platform detection and the held
+ * `beforeinstallprompt` live there now, because the top-bar InstallButton reads
+ * the same event. Mounted once in App.js so it's live on both routes.
  *
- * Rendered as null whenever the hook says nothing to show (already
- * installed, dismissed within 14 days, unsupported browser, or the
- * show-delay hasn't elapsed) — so it costs one listener on every load
- * and zero UI in the common case.
+ * The InstallButton is the main way in; this automatic sheet is the gentle
+ * nudge for someone who hasn't gone looking.
+ *
+ * Rendered as null whenever the store says nothing to show (already installed,
+ * dismissed within a day, unsupported browser, or the show-delay hasn't
+ * elapsed) — so it costs one listener on every load and zero UI in the common
+ * case.
  */
 export default function InstallPrompt() {
   const { open, platform, promptInstall, dismiss } = useInstallPrompt();
@@ -47,8 +51,8 @@ export default function InstallPrompt() {
 
   return (
     <InstallPromptDialog
-      open={open && platform !== "none" && !guideActive && !otherDialogOpen}
-      platform={platform === "ios" ? "ios" : "chromium"}
+      open={open && platform !== INSTALL_PLATFORM.NONE && !guideActive && !otherDialogOpen}
+      platform={platform === INSTALL_PLATFORM.IOS ? INSTALL_PLATFORM.IOS : INSTALL_PLATFORM.CHROMIUM}
       onClose={dismiss}
       onInstall={handleInstall}
       installing={installing}

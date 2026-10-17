@@ -1,4 +1,5 @@
 import { useRef, useEffect, useLayoutEffect, useState } from "react";
+import { mergeTranscript, IS_ANDROID } from "../lib/speech";
 import { useWebcamCapture } from "./WebcamCaptureDialog";
 import { ArrowUp, Paperclip, Link2, X, FileText, Trash2, Mic, Square, Camera, Check, Send } from "lucide-react";
 import { useReopenLink } from "./ReopenableLink";
@@ -512,8 +513,11 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
   // user can still type — no broken UI.
   //
   // Iteration 9+ voice behaviour:
-  //   1. continuous: TRUE so the model keeps listening after the first
-  //      final result (the default `false` cut off after one pause).
+  //   1. continuous: TRUE on desktop and iOS so the model keeps listening
+  //      after the first final result (the default `false` cut off after
+  //      one pause). Android is the exception — there `continuous` makes
+  //      the engine re-emit whole phrases, so it runs one utterance at a
+  //      time and is restarted on each `onend` instead (see `IS_ANDROID`).
   //   2. interimResults: TRUE so the user sees partial words while
   //      speaking.
   //   3. Auto-pause = 60s with NO onresult event. The previous
@@ -529,6 +533,9 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
   //      add gold" duplication bug where the browser cut off, the user
   //      saw the stop, and the next tap replayed the buffer.
   const expectedStopRef = useRef(false);
+  // The pending auto-restart timer. Held so a stop (or unmount) during the 250ms gap can cancel it —
+  // nothing is running then, so without this a tap there is a no-op and the mic comes back on.
+  const restartTimerRef = useRef(null);
   // Where the live transcript goes: the composer by default, or a clarification's free-text box.
   const inputRef = useRef(input);
   inputRef.current = input;
@@ -536,6 +543,9 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
   draftsRef.current = drafts;
   const voiceTargetRef = useRef(null); // null = composer, else the question index
   const voiceBaseRef = useRef("");
+  // Finished phrases heard in the session now running, in order. Only the tail of each `onresult` is new
+  // (`event.resultIndex`), so the earlier ones are kept here and the whole line is rebuilt each time.
+  const voiceFinalsRef = useRef([]);
   const listeningRef = useRef(false);
   listeningRef.current = voiceListening;
   const voiceSink = () => {
@@ -553,7 +563,9 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
     }
     setVoiceSupported(true);
     const recognition = new SR();
-    recognition.continuous = true;
+    // Android cannot be trusted in continuous mode (see `IS_ANDROID`); everywhere else the session stays
+    // open so a long thought is not cut at the first pause.
+    recognition.continuous = !IS_ANDROID;
     recognition.interimResults = true;
     recognition.lang = (typeof navigator !== "undefined" && navigator.language) || "en-US";
 
@@ -575,14 +587,19 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
       // Reset the 60s timer on every result — the user is still active.
       armSilenceTimer();
 
-      // The text box shows the live transcript: what was there when listening began, plus everything
-      // heard so far (final words and the still-forming interim words), rewritten on every result.
-      let heard = "";
-      for (let i = 0; i < event.results.length; i++) heard += event.results[i][0].transcript;
-      const base = voiceBaseRef.current;
-      const spoken = heard.trim();
-      const joined = !base ? spoken : !spoken ? base : `${base.replace(/\s+$/, "")} ${spoken}`;
-      voiceSink().set(joined);
+      // The text box shows the live transcript: what was there when listening began, the phrases finished
+      // this session, and the one still forming — rebuilt on every result by `mergeTranscript`, which also
+      // joins them with single spaces and drops the repeated phrases Android sends. Read only from
+      // `event.resultIndex`: the results before it were already folded into `voiceFinalsRef` on an earlier
+      // event, and re-reading them is what put the same words in the box twice. Android runs one utterance
+      // per session (see `IS_ANDROID`), so its whole list is new and is read from the top.
+      let interim = "";
+      for (let i = IS_ANDROID ? 0 : event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        if (result.isFinal) voiceFinalsRef.current.push(result[0].transcript);
+        else interim += result[0].transcript;
+      }
+      voiceSink().set(mergeTranscript(voiceBaseRef.current, voiceFinalsRef.current, interim));
     };
 
     recognition.onerror = (event) => {
@@ -615,9 +632,25 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
       // the founder's "voice stops in the middle" report.
       // `listeningRef` mirrors the voiceListening state, so this long-lived listener sees intent.
       if (listeningRef.current) {
+        // The line as last shown becomes the new starting text, so the session about to start continues
+        // from it rather than overwriting it. Android lands here after every utterance by design; desktop
+        // and iOS only when Chromium stops on its own. `voiceFinalsRef` is cleared with it, so the phrases
+        // already in that line are not counted twice.
         voiceBaseRef.current = voiceSink().get();
-        setTimeout(() => {
-          try { recognition.start(); } catch { /* still in flight */ }
+        voiceFinalsRef.current = [];
+        restartTimerRef.current = setTimeout(() => {
+          restartTimerRef.current = null;
+          // The user may have tapped stop (or the console unmounted) during the gap, and nothing is
+          // running then — so this is the only place that can honour it.
+          if (expectedStopRef.current || !listeningRef.current) {
+            expectedStopRef.current = false;
+            setVoiceListening(false);
+            return;
+          }
+          try {
+            recognition.start();
+            armSilenceTimer(); // the restarted session needs its own silence guard, or a silent loop never ends
+          } catch { /* still in flight */ }
         }, 250);
       } else {
         setVoiceListening(false);
@@ -627,6 +660,7 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
     recognitionRef.current = recognition;
     return () => {
       if (silenceTimerId) clearTimeout(silenceTimerId);
+      if (restartTimerRef.current) { clearTimeout(restartTimerRef.current); restartTimerRef.current = null; }
       expectedStopRef.current = true;
       try { recognition.stop(); } catch { /* ignore */ }
       recognitionRef.current = null;
@@ -641,6 +675,7 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
     if (voiceListening && voiceTargetRef.current !== target) {
       // Tapped a different box's mic while listening: stop here, the next tap starts there.
       expectedStopRef.current = true;
+      if (restartTimerRef.current) { clearTimeout(restartTimerRef.current); restartTimerRef.current = null; }
       try { r.stop(); } catch { /* ignore */ }
       setVoiceListening(false);
       return;
@@ -649,6 +684,7 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
       // Manual stop — set the expected flag so the onend path takes
       // the "user wanted to stop" branch and doesn't auto-restart.
       expectedStopRef.current = true;
+      if (restartTimerRef.current) { clearTimeout(restartTimerRef.current); restartTimerRef.current = null; }
       try { r.stop(); } catch { /* ignore */ }
       setVoiceListening(false);
     } else {
@@ -656,6 +692,7 @@ export default function ChatConsole({ messages, onSend, sending, input, setInput
       expectedStopRef.current = false;
       voiceTargetRef.current = target;
       voiceBaseRef.current = voiceSink().get();
+      voiceFinalsRef.current = [];
       try {
         r.start();
         setVoiceListening(true);

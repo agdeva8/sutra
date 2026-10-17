@@ -68,25 +68,23 @@ export const SCREENS = [
  * Screens pinned to the mobile bottom tab bar, in order. The rest of
  * `SCREENS` collapses behind the bar's trailing "More" button, so the bar
  * stays at five targets (four pinned + More) however many screens exist.
- * Timeline lives in More: Today's day/week/month views cover the daily look-ahead on a phone.
+ *
+ * These four are the product's main surfaces. To-dos is not among them: it is
+ * reachable from More and from Today's day view, which carries its own "+ To-do".
  */
-export const MOBILE_TAB_KEYS = ["scratch", "state", "today", "todos"];
+export const MOBILE_TAB_KEYS = ["scratch", "state", "today", "timeline"];
 
 /** Screens drawn in the desktop tab strip: everything not flagged `mobileOnly`. */
 export const DESKTOP_SCREENS = SCREENS.filter((s) => !s.mobileOnly);
 
 /**
- * Which screen a fresh phone-width open lands on. With at least one goal the
- * user lands on Scratch; with none, on the Goal screen, where they add one
- * (Scratch can only file against existing goals). Desktop keeps Overview.
+ * Which screen a fresh phone-width open lands on: always Scratch, whether or not
+ * the user has a goal. It is the phone's front door and the one screen that does
+ * not need a goal to be useful — it files to-dos, reminders and photos on its own.
+ * The desktop's landing screen (Goal) is `LANDING_SCREEN` below.
  */
-export const MOBILE_LANDING_WITH_GOALS = "scratch";
-export const MOBILE_LANDING_NO_GOALS = "state";
+export const MOBILE_LANDING_SCREEN = "scratch";
 export const MOBILE_MAX_WIDTH_PX = 639; // Tailwind `sm` starts at 640
-
-export function mobileLandingKey(goalCount) {
-  return goalCount > 0 ? MOBILE_LANDING_WITH_GOALS : MOBILE_LANDING_NO_GOALS;
-}
 
 /**
  * Every routable screen — the lookup `?panel=` resolves through.

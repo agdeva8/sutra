@@ -1,8 +1,11 @@
 import { useState, useRef, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { LogOut, Info, LogIn, Settings, Sun, Moon, UserCircle2 } from "lucide-react";
+import { LogOut, Info, LogIn, Settings, Sun, Moon, UserCircle2, Download } from "lucide-react";
+import { createPortal } from "react-dom";
 import Logo from "./Logo";
 import { saveDisplayPrefs } from "../lib/displayPrefs";
+import { INSTALL_PLATFORM, useInstall } from "../lib/install";
+import InstallPromptDialog from "./InstallPromptDialog";
 import PersonaMenu from "./PersonaMenu";
 import {
   DropdownMenu,
@@ -27,6 +30,68 @@ import {
 // Mobile (< sm): no tab strip; the Goals dropdown lives next to the
 // active screen title bar; the avatar / Guest chip opens a profile menu
 // (Settings / Theme / About / Sign out | Sign in).
+
+/**
+ * InstallButton — the persistent way into the install flow, sitting left of the
+ * profile control. The automatic sheet (InstallPrompt) still exists, but the
+ * user who dismissed it — or whose browser never fired `beforeinstallprompt` —
+ * had no way back in; this is it.
+ *
+ * A tap does one of three things, decided by the shared store (lib/install.js):
+ *   - a native prompt is held → open it (Chrome / Edge);
+ *   - Android Chromium without one → the ⋮ menu steps;
+ *   - iOS → Share → Add to Home Screen steps.
+ *
+ * Renders nothing once the app is installed, or in a browser with no install
+ * path at all (Firefox desktop and the like). Labelled on phones, icon-only
+ * from `sm` up. Label and icon are both named "Install" so the accessible name
+ * doesn't change with the viewport.
+ */
+function InstallButton() {
+  const { installed, canPrompt, platform, prompt } = useInstall();
+  const [sheet, setSheet] = useState(null); // INSTALL_PLATFORM.IOS | .ANDROID while the sheet is open
+  const [installing, setInstalling] = useState(false);
+
+  if (installed || platform === INSTALL_PLATFORM.NONE) return null;
+
+  const onTap = async () => {
+    if (canPrompt) {
+      setInstalling(true);
+      try {
+        await prompt();
+      } finally {
+        setInstalling(false);
+      }
+      return;
+    }
+    setSheet(platform);
+  };
+
+  return (
+    <>
+      <button
+        data-testid="header-install-button"
+        onClick={onTap}
+        disabled={installing}
+        title="Install Sutra"
+        aria-label="Install Sutra"
+        className="h-11 px-3 sm:px-0 sm:w-11 inline-flex items-center justify-center gap-1.5 border border-[var(--border)] hover:border-[var(--border-accent)] text-[var(--text-secondary)] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] rounded text-xs font-medium disabled:opacity-60 shrink-0"
+      >
+        <Download className="w-4 h-4" aria-hidden="true" />
+        <span className="sm:hidden">Install</span>
+      </button>
+      {/* The header carries `backdrop-filter` (backdrop-blur-xl), which makes it
+          the containing block for fixed descendants — a dialog rendered inline
+          would be clipped to the 4rem bar. Portal it to the body instead. */}
+      {sheet &&
+        createPortal(
+          <InstallPromptDialog open platform={sheet} onClose={() => setSheet(null)} />,
+          document.body,
+        )}
+    </>
+  );
+}
+
 export default function Header({ user, authLoading, onOpenChat, onOpenAbout, onSignIn, onLogout, devLoginAvailable = false, currentUserId }) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -146,6 +211,9 @@ export default function Header({ user, authLoading, onOpenChat, onOpenAbout, onS
             the body header bar holds the only GoalMenu trigger on
             mobile. Desktop stays unchanged (horizontal tab strip only). */}
         {/* GoalMenu removed from top header on mobile — see Coach.js */}
+
+        {/* Persistent install affordance — left of the Guest chip / avatar. */}
+        <InstallButton />
 
         {authLoading ? (
           <div className="h-11 w-11" aria-hidden="true" />

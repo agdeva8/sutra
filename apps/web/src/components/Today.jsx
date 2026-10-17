@@ -1,5 +1,5 @@
 import { useState, useRef, useLayoutEffect, useMemo } from "react";
-import { CalendarDays, MessageSquare, Plus, Send, Sparkles } from "lucide-react";
+import { CalendarClock, CalendarDays, MessageSquare, Plus, Send, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { localDateKey } from "../lib/utils";
 import { toggleDone, upsertPlanItem } from "../lib/todos";
@@ -55,7 +55,7 @@ function readRange() {
  * the empty state doesn't end with a half-empty input that looks
  * broken.
  */
-export default function Today({ state, onChange, onOpenChat }) {
+export default function Today({ state, onChange, onOpenChat, onOpenTimeline }) {
   const [text, setText] = useState("");
   const [range, setRangeState] = useState(readRange);
   const [savingId, setSavingId] = useState(null);
@@ -109,17 +109,31 @@ export default function Today({ state, onChange, onOpenChat }) {
 
   return (
     <div data-testid="today-view" className="px-4 sm:px-6 py-5 sm:py-6 space-y-5 max-w-[820px] mx-auto w-full">
-      <header className="space-y-1">
-        <div className="inline-flex items-center gap-1.5 text-xs text-[var(--text-muted)]">
-          <CalendarDays className="w-3 h-3 text-[var(--accent)]" aria-hidden="true" />
-          <span>Today, {localDateKey()}</span>
+      <header className="flex items-start justify-between gap-3">
+        <div className="space-y-1 min-w-0">
+          <div className="inline-flex items-center gap-1.5 text-xs text-[var(--text-muted)]">
+            <CalendarDays className="w-3 h-3 text-[var(--accent)]" aria-hidden="true" />
+            <span>Today, {localDateKey()}</span>
+          </div>
+          <h2 className="font-display text-2xl sm:text-3xl font-semibold text-[var(--text-primary)] tracking-tight">
+            What's on the docket?
+          </h2>
+          <p className="text-sm text-[var(--text-secondary)] leading-relaxed">
+            Tick off tasks as you finish them, or ask the coach to renegotiate / break one down. Each kind keeps its calendar look: goal sessions, reminders, repeating and fixed commitments, to-dos, milestones and time away.
+          </p>
         </div>
-        <h2 className="font-display text-2xl sm:text-3xl font-semibold text-[var(--text-primary)] tracking-tight">
-          What's on the docket?
-        </h2>
-        <p className="text-sm text-[var(--text-secondary)] leading-relaxed">
-          Tick off tasks as you finish them, or ask the coach to renegotiate / break one down. Each kind keeps its calendar look: goal sessions, reminders, repeating and fixed commitments, to-dos, milestones and time away.
-        </p>
+        {/* The way across to the zoomable calendar. Today answers "what now"; this is
+            how you look further out without hunting through the More menu. */}
+        <button
+          type="button"
+          data-testid="today-open-timeline"
+          onClick={onOpenTimeline}
+          aria-label="Open the full timeline"
+          title="Full timeline"
+          className="shrink-0 h-11 w-11 inline-flex items-center justify-center rounded-full border border-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--accent)] hover:border-[var(--border-accent)] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+        >
+          <CalendarClock className="h-4 w-4" aria-hidden="true" />
+        </button>
       </header>
 
       <RangeTabs value={range} onChange={setRange} />

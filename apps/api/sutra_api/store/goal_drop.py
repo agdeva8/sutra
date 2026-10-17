@@ -167,6 +167,31 @@ async def compute_goal_drop_impact(
                 })
         except Exception:
             continue
+    # The planner's placed sessions go with the goal too (see `apply_goal_drop_cascade`), so the
+    # same predicate selects them here: a preview that stayed quiet about blocks the delete
+    # removes is the confirm card lying. A Task may be undated or unplaced, so `day`, `start`
+    # and `end` can each be None.
+    task_result = await session.execute(
+        select(CalendarBlock).where(
+            CalendarBlock.user_id == user_id,
+            CalendarBlock.block_kind == "task",
+        )
+    )
+    for row in task_result.scalars().all():
+        data = row.data or {}
+        if data.get("goal_id") != ref.goal_id or data.get("placed_by") != "planner":
+            continue
+        try:
+            blk = BLOCK_ADAPTER.validate_python(data)
+        except Exception:
+            continue
+        blocks.append({
+            "id": row.id,
+            "label": blk.title,
+            "block_date": blk.day.isoformat() if blk.day else None,
+            "start_time": _hhmm(blk.start),
+            "end_time": _hhmm(blk.end),
+        })
     all_goals = list(
         (
             await session.execute(
@@ -202,16 +227,9 @@ async def compute_goal_drop_impact(
             }
             for m in miles[:MAX_LIST]
         ],
-        timetable_blocks=[
-            {
-                "id": b.id,
-                "label": b.label,
-                "block_date": b.block_date.isoformat(),
-                "start_time": _hhmm(b.start_time),
-                "end_time": _hhmm(b.end_time),
-            }
-            for b in blocks[:MAX_LIST]
-        ],
+        # Both loops above already build the wire shape, so the list is passed through — the
+        # previous version re-mapped it as ORM rows and crashed on every goal that had a block.
+        timetable_blocks=blocks[:MAX_LIST],
         counts={"milestones": len(miles), "timetable_blocks": len(blocks)},
         freed_weekly_hours=freed,
         load_before=load_before,

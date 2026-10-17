@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { mergeTranscript, IS_ANDROID } from "../lib/speech";
 
 /**
  * useSpeechCapture — tap to start, tap to stop, transcribing as you talk.
@@ -19,6 +20,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
  *    An `onend` we did not ask for restarts the session, so a long thought is never cut off.
  * 3. A silence timer ends the session after a long gap with no words at all — the one case where
  *    restarting would loop forever.
+ *
+ * The transcript itself is rebuilt each event by `mergeTranscript` (lib/speech.js), which is where the
+ * space-joining and the drop of Android's repeated phrases live. Android runs one utterance per session
+ * (see `IS_ANDROID`); desktop and iOS keep a continuous session and read each event from `e.resultIndex`.
  */
 
 /** Recognition language. Indian English; change here, not at the call site. */
@@ -38,6 +43,12 @@ export function useSpeechCapture({ onTranscript, lang = SPEECH_LANG, maxChars = 
   const [error, setError] = useState(null);
   const rec = useRef(null);
   const base = useRef(""); // what was in the box when the session began
+  //: Finished phrases heard in the session now running, in order. Only the tail of each `onresult` is
+  //: new (`e.resultIndex`), so the earlier ones are kept here and the whole line is rebuilt each time.
+  const finals = useRef([]);
+  //: The line as last put in the box, interim words included. A restart continues from this, so a cut
+  //: mid-phrase loses nothing.
+  const shown = useRef("");
   const cb = useRef(onTranscript);
   cb.current = onTranscript;
   //: Mirrors `listening` for the long-lived recogniser callbacks, which close over one render.
@@ -45,19 +56,22 @@ export function useSpeechCapture({ onTranscript, lang = SPEECH_LANG, maxChars = 
   listeningRef.current = listening;
   //: True while we are stopping on purpose, so `onend` does not treat it as an unexpected cut-off.
   const stopping = useRef(false);
+  //: The pending restart timer. Held so `stop()` and unmount can cancel a restart that has not fired
+  //: yet — nothing is running during that gap, so without this a tap there is a no-op and the mic
+  //: comes back on by itself.
+  const restartTimer = useRef(null);
 
   const emit = useCallback(
-    (heard) => {
-      const spoken = (heard || "").trim();
-      const start = base.current;
-      const joined = !start ? spoken : !spoken ? start : `${start.replace(/\s+$/, "")} ${spoken}`;
-      cb.current?.(joined.slice(0, maxChars));
-    },
+    (text) => cb.current?.(text.slice(0, maxChars)),
     [maxChars],
   );
 
   const stop = useCallback(() => {
     stopping.current = true;
+    if (restartTimer.current) {
+      clearTimeout(restartTimer.current);
+      restartTimer.current = null;
+    }
     try {
       rec.current?.stop();
     } catch {
@@ -71,9 +85,13 @@ export function useSpeechCapture({ onTranscript, lang = SPEECH_LANG, maxChars = 
       if (!Recognition || rec.current) return;
       setError(null);
       base.current = currentText || "";
+      finals.current = [];
+      shown.current = base.current;
       const r = new Recognition();
       r.lang = lang;
-      r.continuous = true;
+      // Android can only be trusted one utterance at a time (see `IS_ANDROID`); everywhere else the
+      // session stays open so a long thought is not cut at the first pause.
+      r.continuous = !IS_ANDROID;
       r.interimResults = true;
 
       let silenceTimer = null;
@@ -84,11 +102,20 @@ export function useSpeechCapture({ onTranscript, lang = SPEECH_LANG, maxChars = 
 
       r.onresult = (e) => {
         armSilence();
-        // Every result rewrites the whole transcript — final words plus the ones still forming — so the
-        // box always shows what was heard, not an append-only pile of fragments.
-        let heard = "";
-        for (let i = 0; i < e.results.length; i++) heard += e.results[i][0].transcript;
-        emit(heard);
+        // Rebuild the whole line — what was already in the box, the phrases finished this session, and
+        // the one still forming — so the box always shows what was heard. Read only from `e.resultIndex`
+        // on a continuous session: the results before it were folded into `finals` on an earlier event,
+        // and re-reading them is how the same words end up in the line twice. Android starts a fresh
+        // session per utterance, so the whole (single-utterance) list is new and is read from the top.
+        let interim = "";
+        for (let i = IS_ANDROID ? 0 : e.resultIndex; i < e.results.length; i++) {
+          const result = e.results[i];
+          if (result.isFinal) finals.current.push(result[0].transcript);
+          else interim += result[0].transcript;
+        }
+        const merged = mergeTranscript(base.current, finals.current, interim);
+        shown.current = merged;
+        emit(merged);
       };
       r.onerror = (e) => {
         if (silenceTimer) clearTimeout(silenceTimer);
@@ -110,12 +137,25 @@ export function useSpeechCapture({ onTranscript, lang = SPEECH_LANG, maxChars = 
           setListening(false);
           return;
         }
-        // The browser ended us, not the user: pick the session back up where it left off.
-        base.current = base.current; // unchanged — `emit` already folded the words in
-        setTimeout(() => {
+        // The browser ended us, not the user. The line as last shown becomes the new starting text, so
+        // the session about to start continues from it — keeping the stale `base` let the next utterance
+        // overwrite everything said before the cut, losing the beginning of a long dictation. Android
+        // lands here after every utterance by design; desktop and iOS only when Chromium stops on its own.
+        base.current = shown.current;
+        finals.current = [];
+        restartTimer.current = setTimeout(() => {
+          restartTimer.current = null;
+          // The user may have stopped (or the screen unmounted) during the gap, and nothing is
+          // running then — so this is the only place that can honour it.
+          if (stopping.current || !listeningRef.current) {
+            stopping.current = false;
+            setListening(false);
+            return;
+          }
           try {
             r.start();
             rec.current = r;
+            armSilence(); // a restarted session needs its own silence guard, or a silent loop never ends
           } catch {
             setListening(false);
           }
@@ -145,10 +185,15 @@ export function useSpeechCapture({ onTranscript, lang = SPEECH_LANG, maxChars = 
     [start, stop],
   );
 
-  // Leaving the screen mid-sentence must not leave the microphone open.
+  // Leaving the screen mid-sentence must not leave the microphone open — nor a pending restart
+  // timer that would start it after the unmount.
   useEffect(
     () => () => {
       stopping.current = true;
+      if (restartTimer.current) {
+        clearTimeout(restartTimer.current);
+        restartTimer.current = null;
+      }
       try {
         rec.current?.abort();
       } catch {

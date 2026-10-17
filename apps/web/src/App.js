@@ -26,7 +26,16 @@ function ToasterBridge() {
   return (
     <>
       <CoachActivityToast />
-      <Toaster theme={theme} position="bottom-right" toastOptions={{ style: { fontFamily: "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace", fontSize: "12px" } }} />
+      <Toaster
+        theme={theme}
+        position="bottom-right"
+        // The phone's tab bar owns the bottom edge, so a toast has to clear it: bar height + the
+        // browser's safe-area inset + a gap. Every term is a custom property from index.css, so the
+        // offset follows the bar rather than restating its height here. On a wider screen the bar is
+        // hidden and Sonner's desktop offset applies instead.
+        mobileOffset={{ bottom: "calc(var(--gc-tab-bar-h) + var(--gc-nav-inset) + var(--gc-toast-gap))" }}
+        toastOptions={{ style: { fontFamily: "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace", fontSize: "12px" } }}
+      />
     </>
   );
 }

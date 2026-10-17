@@ -80,6 +80,24 @@ html {
   font-size: var(--sutra-font-scale);
 }
 
+/* The phone's bottom navigation, declared once because three things have to agree on it: the tab
+ * bar's own height and padding, the toaster's offset above it, and anything else pinned to the
+ * bottom of the shell. A hard-coded number in any of them drifts the moment the bar changes.
+ *
+ * All three are in `rem`, not `px`, so they scale with `--sutra-font-scale` exactly as the bar's
+ * `min-h-14` targets do — a px value here would leave the toasts overlapping the bar for a user on
+ * the 18px text setting.
+ *
+ * `--gc-nav-inset` falls back to a real inset when the browser reports none. Android Chrome can draw
+ * the page under the system navigation bar while `env(safe-area-inset-bottom)` still resolves to 0
+ * (installed mode, and 3-button navigation), so `max()` is what keeps the bar above the buttons
+ * instead of under them. */
+:root {
+  --gc-tab-bar-h: 3.5rem;
+  --gc-nav-inset: max(env(safe-area-inset-bottom), 0.5rem);
+  --gc-toast-gap: 0.5rem;
+}
+
 /* The app is one full-height column (fixed top bar, scrolling middle, fixed bottom nav), so the
  * document itself must never scroll: otherwise a zoom or the on-screen keyboard pans the whole page
  * and carries the nav buttons off screen. Each screen scrolls inside its own container. */

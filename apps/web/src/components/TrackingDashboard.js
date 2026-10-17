@@ -54,15 +54,10 @@ export default function TrackingDashboard({
   const visibleGoals = (state?.goals || []).filter((g) => g.status !== "dropped");
   const milestones = state?.milestones || [];
 
-  // The first goal is the first step of the guide: with no goals the dialog opens by itself. It is
-  // closable like any other — a guest has to be able to reach sign-in — and the empty state's "Add
-  // your first goal" opens it again, so closing it never strands anyone.
-  const firstGoalRequired = !!state && visibleGoals.length === 0;
-  useEffect(() => {
-    if (!firstGoalRequired) return;
-    const t = setTimeout(() => setAddGoalOpen(true), 300);
-    return () => clearTimeout(t);
-  }, [firstGoalRequired]);
+  // The empty state offers a goal and a chat, and neither is forced: with no goals the Add Goal dialog
+  // stays shut and "Or just chat with the coach" is a real alternative, so a user who came here to talk
+  // is never held on this screen. The dialog is closable like any other — a guest has to be able to
+  // reach sign-in — and clicking a goal-mutating action opens it deliberately.
 
   // "Take me there → Add goal" from the general chat. Coach.js routes to
   // this screen with `autoOpenAddGoal=true`; open the dialog once on
@@ -179,13 +174,13 @@ export default function TrackingDashboard({
               <Plus className="h-4 w-4" aria-hidden="true" /> Add your first goal
               <ArrowRight className="h-4 w-4" aria-hidden="true" />
             </button>
-            {!firstGoalRequired && <button
+            <button
               data-testid="empty-state-open-chat"
               onClick={onOpenChat}
               className="min-h-11 inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-[var(--bg-tertiary)] text-[var(--text-secondary)] text-sm font-medium hover:text-[var(--text-primary)] active:scale-[0.98] transition-[color,transform] duration-150 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg-primary)]"
             >
               <MessageSquare className="h-4 w-4" aria-hidden="true" /> Or just chat with the coach
-            </button>}
+            </button>
           </div>
         </div>
       ) : (

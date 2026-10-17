@@ -11,9 +11,9 @@ import { api } from "../lib/api";
 import {
   DESKTOP_SCREENS,
   LANDING_SCREEN,
+  MOBILE_LANDING_SCREEN,
   MOBILE_MAX_WIDTH_PX,
   SCREEN_BY_KEY,
-  mobileLandingKey,
   screenKeyFromSearch,
   searchForScreen,
 } from "../constants/screens";
@@ -60,6 +60,7 @@ import AboutModal from "../components/AboutModal";
 import ActionPromptModal, { FRAMES } from "../components/ActionPromptModal";
 import SourceActionDialog from "../components/SourceActionDialog";
 import GoalBoundaryConfirmDialog from "../components/GoalBoundaryConfirmDialog";
+import ConfirmDropGoalDialog from "../components/ConfirmDropGoalDialog";
 import FocusedTaskChatDialog from "../components/FocusedTaskChatDialog";
 import PlanWorkspace from "../components/PlanWorkspace";
 import ReplanSuggestions from "../components/ReplanSuggestions";
@@ -67,9 +68,8 @@ import ReplanToast from "../components/ReplanToast";
 import ChatModal from "../components/ChatModal";
 import WelcomeToast from "../components/WelcomeToast";
 import ScratchSpotlight from "../components/ScratchSpotlight";
-import TimelineGuide from "../components/TimelineGuide";
 import { setGuideActive } from "../lib/guideActive";
-import { hasOpenedScratch, onScratchOpenedChange } from "../lib/scratchIntro";
+import { hasOpenedScratch, markScratchOpened, onScratchOpenedChange } from "../lib/scratchIntro";
 import { CalendarSyncPrompt } from "../components/CalendarSync";
 
 /**
@@ -92,8 +92,7 @@ import { CalendarSyncPrompt } from "../components/CalendarSync";
  * allowed `navigate` targets when you add a surface.
  *
  * The goal targets point at `state` (the Goal tab), which is the landing screen and the one that
- * reads and edits goals. `timeline` points at `plan`: the Timeline tab's calendar is Plan's Calendar
- * view.
+ * reads and edits goals.
  */
 const NAV_TARGETS = {
   add_goal: { panel: "state", openAddGoal: true },
@@ -101,7 +100,7 @@ const NAV_TARGETS = {
   pause_goal: { panel: "state" },
   edit_goal: { panel: "state" },
   today: { panel: "today" },
-  timeline: { panel: "plan" },
+  timeline: { panel: "timeline" },
   sources: { panel: "sources" },
   memories: { panel: "memories" },
   motivation: { panel: "motivation" },
@@ -155,6 +154,11 @@ export default function Coach() {
     return false;
   }, []);
   const [actionModal, setActionModal] = useState(null);
+  // The drop flow's own dialog, not an ActionPromptModal frame. Dropping is the one
+  // action whose whole flow is deterministic — the server runs the cascade on a
+  // DELETE — so it asks the one question that has a consequence ("what goes?") and
+  // skips the reason chat, which collected a why and then discarded it.
+  const [dropConfirm, setDropConfirm] = useState(null);
   // Focused-task dialog (per-action isolated chat). When set, opens
   // a fresh chat scoped to a single goal-edit / pause / drop /
   // add_step / source-replan action. The global ChatModal stays for
@@ -297,8 +301,25 @@ export default function Coach() {
     setChatOpen(true);
   };
 
-  const openAction = (goal, type) =>
+  // One place to change: the goal card, the goal's ⋮ menu and the Plan screen all
+  // call this, so routing by `type` here covers every entry point. Drop goes to its
+  // own confirm dialog; everything else keeps the action prompt → focused chat.
+  const openAction = (goal, type) => {
+    if (type === "drop") {
+      setDropConfirm({ id: goal?.id || null, title: goal?.title || "" });
+      return;
+    }
     setActionModal({ goalId: goal?.id || null, goalTitle: goal?.title || "", type });
+  };
+
+  // The cascade has already run server-side by the time this fires, so the toast
+  // states the outcome rather than asking for confirmation. The board is re-read
+  // because a drop moves the freed capacity, which /state turns into a replan
+  // suggestion the Goal tab surfaces on its own.
+  const onGoalDropped = async (goal) => {
+    await refreshState();
+    toast.success(`Dropped "${goal?.title || "goal"}"`);
+  };
 
   // When the user clicks "Ask the coach" inside ActionPromptModal,
   // open an ISOLATED focused-task chat (instead of the global
@@ -314,14 +335,17 @@ export default function Coach() {
         ? FRAMES[act.type || "edit"].title(act.goalTitle)
         : `Add steps for the "${act?.goalTitle || "goal"}" goal`;
     // Map the goal action to its real conversation kind so the follow-up
-    // chat is NON-generic and drop/pause/edit-aware instead of a free-form
+    // chat is NON-generic and pause/edit-aware instead of a free-form
     // plan_day bucket (founder feedback: the drop flow opened a generic
     // chat). The server already supports these kinds (SCOPE_TO_KIND /
     // CONV_KINDS in chat/stream). `refId` is intentionally NOT passed — the
-    // dialog mints a fresh per-open bucket so each drop/pause starts clean;
-    // the goal identity travels via the intent title ("Drop \"X\"?").
+    // dialog mints a fresh per-open bucket so each pause/edit starts clean;
+    // the goal identity travels via the intent title ("Pause \"X\"?").
+    //
+    // Drop is absent on purpose: it has its own confirm dialog and never
+    // reaches this dialog (`openAction` routes it away), so there is no chat
+    // to kind-map it into.
     const ACTION_KIND = {
-      drop: "drop_goal",
       pause: "edit_goal",
       edit: "edit_goal",
       add_step: "plan_day",
@@ -330,7 +354,6 @@ export default function Coach() {
     // Plain-chat empty line per action — keeps the follow-up a simple
     // back-and-forth instead of the "About this / scoped" boilerplate.
     const ACTION_EMPTY_PROMPT = {
-      drop: "Tell me why. If it makes sense, I'll drop it.",
       pause: "Tell me why you want to pause, and for how long.",
       edit: "What should change?",
       add_step: "What step should I add?",
@@ -342,8 +365,6 @@ export default function Coach() {
       emptyPrompt: ACTION_EMPTY_PROMPT[act?.type] || "Talk it through with me.",
       // Send the reason on open so the coach replies immediately.
       autoSend: true,
-      // Drop flow: the coach proposes the drop with a deterministic impact
-      // preview on the card; the user confirms it there (no silent apply).
       prefillMessage: msg,
       icon: Sparkles,
       // Spec §10.7 — focused-task chat runs in its own bucket; the dialog
@@ -528,39 +549,37 @@ export default function Coach() {
   const [searchParams, setSearchParams] = useSearchParams();
   const panelView = screenKeyFromSearch(searchParams.toString());
 
-  // Landing: on a fresh open with no `?panel=`, go to the Goal screen (add a goal)
-  // when the user has none, and on a phone to Scratch when they have one.
-  // Runs once, after the first state load, and replaces the entry so Back does
-  // not bounce through "/". 
+  // Landing: on a fresh open with no `?panel=`, a phone goes to Scratch and every wider width stays
+  // on the Goal screen (LANDING_SCREEN). Runs once, after the first state load, and replaces the
+  // entry so Back does not bounce through "/".
+  //
+  // Neither landing depends on having a goal. Scratch files to-dos, reminders and photos with no goal
+  // at all, and desktop Goal carries an empty state that offers a goal *and* a chat — the app never
+  // redirects anyone into adding one.
   const landedRef = useRef(false);
   useEffect(() => {
     if (landedRef.current || !state) return;
     landedRef.current = true;
-    const isPhone = window.matchMedia(`(max-width: ${MOBILE_MAX_WIDTH_PX}px)`).matches;
     if (searchParams.has("panel")) return;
-    const goals = (state.goals || []).filter((g) => g.status !== "dropped");
-    // No goals: every width goes to the Goal screen, whose empty state and
-    // auto-opened dialog walk the user through adding one. With goals, only
-    // the phone changes its landing (to Scratch); desktop lands on Goal, which
-    // is the landing screen.
-    if (!isPhone && goals.length > 0) return;
-    setSearchParams(searchForScreen(mobileLandingKey(goals.length)), { replace: true });
+    const isPhone = window.matchMedia(`(max-width: ${MOBILE_MAX_WIDTH_PX}px)`).matches;
+    if (!isPhone) return;
+    setSearchParams(searchForScreen(MOBILE_LANDING_SCREEN), { replace: true });
   }, [state, searchParams, setSearchParams]);
-
-  // First step of the guide: with no goals the app is held on the Goal screen, where the Add Goal
-  // dialog is required. The tabs and chat are disabled until a goal exists.
-  const noGoals = !!state && (state.goals || []).filter((g) => g.status !== "dropped").length === 0;
-  useEffect(() => {
-    if (noGoals && panelView !== "state") setSearchParams(searchForScreen("state"), { replace: true });
-  }, [noGoals, panelView, setSearchParams]);
 
   // The first-run guide is in progress until Scratch has been opened. While it is, other prompts wait.
   const [scratchOpenedFlag, setScratchOpenedFlag] = useState(hasOpenedScratch);
   useEffect(() => onScratchOpenedChange(() => setScratchOpenedFlag(hasOpenedScratch())), []);
   useEffect(() => {
-    setGuideActive(!!state && (noGoals || !scratchOpenedFlag));
+    setGuideActive(!!state && !scratchOpenedFlag);
     return () => setGuideActive(false);
-  }, [state, noGoals, scratchOpenedFlag]);
+  }, [state, scratchOpenedFlag]);
+
+  // Showing Scratch *is* opening it — a phone lands here on every fresh load, so without this the
+  // guide stays active for a user who is already in it: the install sheet and the welcome toast stay
+  // held back, and the "Meet Scratch" overlay covers the screen. Same marking a tab tap makes.
+  useEffect(() => {
+    if (panelView === "scratch" && !hasOpenedScratch()) markScratchOpened();
+  }, [panelView]);
 
   // Push a screen onto history so browser/system back steps
   // screen-by-screen. Clicking the screen you're already on is a no-op —
@@ -578,6 +597,7 @@ export default function Coach() {
     chatOpen ||
     focusedTask ||
     actionModal ||
+    dropConfirm ||
     sourceDialogMode ||
     boundaryConfirm ||
     signInOpen ||
@@ -592,6 +612,7 @@ export default function Coach() {
     if (chatOpen) { setChatOpen(false); setChatPrefill(""); setChatScope(null); return true; }
     if (focusedTask) { setFocusedTask(null); return true; }
     if (actionModal) { setActionModal(null); return true; }
+    if (dropConfirm) { setDropConfirm(null); return true; }
     if (sourceDialogMode || sourceDialogSource) { closeSourceDialog(); return true; }
     if (boundaryConfirm) { setBoundaryConfirm(null); return true; }
     if (signInOpen) { setSignInOpen(false); return true; }
@@ -623,7 +644,7 @@ export default function Coach() {
   };
 
   return (
-    <div className="h-[100dvh] flex flex-col bg-[var(--bg-primary)] text-[var(--text-primary)] overflow-hidden">
+    <div className="fixed inset-0 flex flex-col bg-[var(--bg-primary)] text-[var(--text-primary)] overflow-hidden">
       <a
         href="#main"
         data-testid="skip-link"
@@ -703,7 +724,7 @@ export default function Coach() {
           <h1 data-testid="desktop-screen-title" className="sr-only hidden sm:block">
             {SCREEN_BY_KEY[panelView]?.label || "Overview"}
           </h1>
-          <nav aria-label="Screens" className={`hidden sm:flex items-center${noGoals ? " pointer-events-none opacity-40" : ""}`} aria-disabled={noGoals}>
+          <nav aria-label="Screens" className="hidden sm:flex items-center">
             {DESKTOP_SCREENS.map((s) => {
               const Icon = s.Icon;
               const active = s.key === panelView;
@@ -808,7 +829,12 @@ export default function Coach() {
             ) : panelView === "todos" ? (
               <TodosScreen state={state} onChange={refreshState} />
             ) : panelView === "today" ? (
-              <Today state={state} onChange={refreshState} onOpenChat={openChatWith} />
+              <Today
+                state={state}
+                onChange={refreshState}
+                onOpenChat={openChatWith}
+                onOpenTimeline={() => goPanel("timeline")}
+              />
             ) : panelView === "sources" ? (
               <Sources state={state} onChange={refreshState} />
             ) : (
@@ -818,7 +844,7 @@ export default function Coach() {
         </div>
       </main>
 
-      <MobileTabBar activeKey={panelView} locked={noGoals} onOpenChat={noGoals ? null : () => setChatOpen(true)} />
+      <MobileTabBar activeKey={panelView} onOpenChat={() => setChatOpen(true)} />
 
       {/* Floating chat button — tablet and up. On a phone, chat lives in the tab bar's menu. */}
       <button
@@ -826,7 +852,7 @@ export default function Coach() {
         onClick={() => setChatOpen(true)}
         title="Chat with your coach"
         aria-label="Chat with your coach"
-        className={`fixed right-[max(1.5rem,env(safe-area-inset-right))] bottom-[calc(1.5rem+env(safe-area-inset-bottom))] z-40 h-14 w-14 rounded-full bg-[var(--accent)] text-[var(--bg-primary)] shadow-2xl ${noGoals ? "hidden" : "hidden sm:flex"} items-center justify-center hover:opacity-90 transition-opacity`}
+        className={`fixed right-[max(1.5rem,env(safe-area-inset-right))] bottom-[calc(1.5rem+env(safe-area-inset-bottom))] z-40 h-14 w-14 rounded-full bg-[var(--accent)] text-[var(--bg-primary)] shadow-2xl hidden sm:flex items-center justify-center hover:opacity-90 transition-opacity`}
       >
         <MessageSquare className="w-6 h-6" />
       </button>
@@ -856,14 +882,11 @@ export default function Coach() {
         helperText={chatScope?.helperText}
       />
 
-      <WelcomeToast user={user} state={state} signedIn={!isGuest} suppress={noGoals || !scratchOpenedFlag} />
+      <WelcomeToast user={user} state={state} signedIn={!isGuest} suppress={!scratchOpenedFlag} />
       {/* Asks once per account; guests are skipped — their account expires. */}
       {user && !isGuest && <CalendarSyncPrompt />}
-      <TimelineGuide
-        goalCount={(state?.goals || []).filter((g) => g.status !== "dropped").length}
-        panelView={panelView}
-        onShowTimeline={() => goPanel("timeline")}
-      />
+      {/* Scratch is now a bottom-bar tab on a phone, so the guide no longer walks
+          anyone to the timeline — the "Meet Scratch" spotlight is the whole thing. */}
       <ScratchSpotlight
         goalCount={(state?.goals || []).filter((g) => g.status !== "dropped").length}
         onOpenScratch={() => goPanel("scratch")}
@@ -880,6 +903,12 @@ export default function Coach() {
         action={actionModal}
         onClose={() => setActionModal(null)}
         onSend={onGoalAction}
+      />
+      <ConfirmDropGoalDialog
+        open={!!dropConfirm}
+        onClose={() => setDropConfirm(null)}
+        goal={dropConfirm}
+        onDropped={onGoalDropped}
       />
       <SourceActionDialog
         open={!!sourceDialogMode}

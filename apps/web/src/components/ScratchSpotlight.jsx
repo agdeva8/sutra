@@ -1,17 +1,22 @@
 import { useEffect, useLayoutEffect, useState } from "react";
-import { ArrowRight, PenLine } from "lucide-react";
+import { ArrowRight, PenLine, X } from "lucide-react";
 import { hasOpenedScratch, markScratchOpened, onScratchOpenedChange } from "../lib/scratchIntro";
-import { hasSeenTimeline, onTimelineSeenChange } from "../lib/timelineIntro";
 import ScratchIntroDialog from "./ScratchIntroDialog";
 
 /**
- * ScratchSpotlight — the first-goal nudge toward Scratch.
+ * ScratchSpotlight — the first-goal nudge toward Scratch, and the whole guide.
  *
  * Once the user has a goal and has not opened Scratch, the app blurs behind a
  * dark veil with one bright circle on the Scratch tab and a centred "Meet Scratch" card. The
- * card's "Take me to Scratch" button (or the lit tab) opens Scratch and ends the spotlight. There is no close button on purpose, so the feature is
- * not missed; closing the app ends it for that session, and it returns next time
- * until Scratch has been opened once. "What can I do here?" opens the explainer.
+ * card's "Take me to Scratch" button (or the lit tab) opens Scratch and ends the spotlight.
+ *
+ * It is the only step left: the goal and timeline steps went with the forced first
+ * goal (they could only fire once a goal existed), which is why it no longer waits
+ * on `hasSeenTimeline` — nothing would ever set it. It therefore has a close button:
+ * the veil covers every screen, so without one the app is unusable until the user
+ * taps through. Closing hides it for the session — and, like closing the tab, it
+ * returns next time until Scratch has been opened once. "What can I do here?" opens
+ * the explainer.
  *
  * Works on phone and desktop: it points at whichever Scratch tab is on screen (the
  * bottom bar on a phone, the top strip on desktop) and puts the message on the
@@ -66,11 +71,12 @@ export default function ScratchSpotlight({ goalCount, onOpenScratch }) {
   const [tourOpen, setTourOpen] = useState(false);
   useEffect(() => onScratchOpenedChange(() => setOpened(hasOpenedScratch())), []);
 
-  const [timelineSeen, setTimelineSeen] = useState(hasSeenTimeline);
-  useEffect(() => onTimelineSeenChange(() => setTimelineSeen(hasSeenTimeline())), []);
+  // Dismissal is deliberately session-only (component state, not storage, next to
+  // the ones `scratchIntro` owns): a close is "not now", not "never". A reload
+  // brings it back, which is the same deal the tab-close route already had.
+  const [dismissed, setDismissed] = useState(false);
 
-  // The third step of the first-run guide: only after the timeline has been seen.
-  const active = goalCount > 0 && timelineSeen && !opened;
+  const active = goalCount > 0 && !opened && !dismissed;
   const rect = useTargetRect(active);
 
   const go = () => {
@@ -107,7 +113,16 @@ export default function ScratchSpotlight({ goalCount, onOpenScratch }) {
       {/* The message, centred on every width, with its own way through. The ring on the tab stays lit
           so the user sees where Scratch lives. */}
       <div className="absolute inset-0 flex items-center justify-center px-5 pointer-events-none">
-        <div className="pointer-events-auto w-full max-w-md rounded-2xl border border-[var(--accent)] bg-[var(--bg-secondary)] px-5 py-6 text-center shadow-xl">
+        <div className="pointer-events-auto relative w-full max-w-md rounded-2xl border border-[var(--accent)] bg-[var(--bg-secondary)] px-5 py-6 text-center shadow-xl">
+          <button
+            type="button"
+            onClick={() => setDismissed(true)}
+            aria-label="Close"
+            data-testid="scratch-spotlight-close"
+            className="absolute right-2 top-2 flex h-11 w-11 items-center justify-center rounded-full text-[var(--text-muted)] hover:text-[var(--text-primary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+          >
+            <X className="h-5 w-5" aria-hidden="true" />
+          </button>
           <span className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-full bg-[var(--accent)] text-white">
             <PenLine className="h-5 w-5" aria-hidden="true" />
           </span>

@@ -230,6 +230,13 @@ export const api = {
     ),
   goalIntake: (message, state) => req("/goals/intake", { method: "POST", body: JSON.stringify({ message, state }), timeout: 90000 }),
   goalIntakeConfirm: (draft) => req("/goals/intake/confirm", { method: "POST", body: JSON.stringify({ draft }), timeout: 180000 }),
+  // Dropping a goal, direct — no chat. `goalDropImpact` prices the drop so the
+  // confirm dialog can name what goes and what comes back; the server computes
+  // both from the same function the cascade uses, so the preview cannot disagree
+  // with the result. `dropGoal` then runs the full cascade (status → dropped,
+  // milestones and planned blocks deleted, audit row written).
+  goalDropImpact: (id) => req(`/goals/${id}/drop-impact`),
+  dropGoal: (id) => req(`/goals/${id}`, { method: "DELETE" }),
   // Calendar subscriptions — each linked calendar app has its own .ics URL and is unlinked on its own.
   calendarFeeds: () => req("/calendar/feeds"),
   linkCalendar: (body) => req("/calendar/feeds", { method: "POST", body: JSON.stringify(body || {}) }),

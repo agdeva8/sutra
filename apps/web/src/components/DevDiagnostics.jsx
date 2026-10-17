@@ -14,7 +14,7 @@ import {
   getDebugEntries,
   onDebugEntry,
 } from "../lib/debug";
-import { isIosSafari, isStandalone } from "../hooks/use-install-prompt";
+import { isIosSafari, isStandalone } from "../lib/install";
 import pkg from "../../package.json";
 
 // Same iOS grouped-inset vocabulary as the rest of Settings (see

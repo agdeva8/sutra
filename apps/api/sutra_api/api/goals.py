@@ -5,12 +5,12 @@
 at all. Neither alone is the whole surface, so both are here. See
 `CONTRACT-RECONCILIATION.md` #34.
 
-Worth knowing before reading: **the frontend calls none of these.** `api.js` has
-no `updateGoal` or `dropGoal`, and `GoalActionsMenu.jsx` says so in a comment —
-goal and milestone writes reach the database through the chat confirm flow, via
-the executor. These routes exist because the contract declares them and because
-the executor's behaviour is worth having an HTTP spelling of, not because a
-screen calls them.
+Worth knowing before reading: **the frontend calls only two of these.** `DELETE /goals/{id}`
+(and its `GET /goals/{id}/drop-impact` preview) are the direct, chat-free abandon path the drop
+confirm dialog uses. Every other goal and milestone write reaches the database through the chat
+confirm flow, via the executor — `api.js` has no `updateGoal`, and `GoalActionsMenu.jsx` says so in
+a comment. Those routes exist because the contract declares them and because the executor's
+behaviour is worth having an HTTP spelling of, not because a screen calls them.
 """
 from __future__ import annotations
 
@@ -230,6 +230,37 @@ async def update_goal(
     )
     await session.commit()
     return {"goal": goal_row(goal)}
+
+
+@router.get("/goals/{id}/drop-impact")
+async def goal_drop_impact(
+    id: str,
+    session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(require_user),
+) -> dict:
+    """Price a drop **before** it happens. Read-only; writes nothing.
+
+    The confirm dialog needs to name the milestones and sessions that would go and
+    the hours that would come back, and it needs those numbers *before* the user
+    commits — this is `compute_goal_drop_impact` and its sentence, which the
+    cascade itself uses, so the preview and the result can never disagree.
+
+    `drop_impact_sentence` is ported verbatim from v1 and is shown to the user; a
+    re-worded one is a silent product change, which is why the route returns the
+    cascade's own string rather than letting the client compose one.
+    """
+    goal = await repo.get_goal(session, user_id=user.user_id, goal_id=id)
+    if goal is None:
+        raise HTTPException(status_code=404, detail="Goal not found")
+
+    ref = goal_drop.GoalRef(goal_id=goal.id, goal_title=goal.title)
+    impact = await goal_drop.compute_goal_drop_impact(
+        session, user_id=user.user_id, ref=ref
+    )
+    return {
+        "impact": impact.as_wire(),
+        "sentence": goal_drop.drop_impact_sentence(impact),
+    }
 
 
 @router.delete("/goals/{id}")
