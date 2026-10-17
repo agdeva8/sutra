@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from datetime import datetime
+from uuid import uuid4
 
 from sqlalchemy import DateTime, MetaData, func
 from sqlalchemy.ext.asyncio import (
@@ -64,6 +65,23 @@ _sessionmaker: async_sessionmaker[AsyncSession] | None = None
 POOL_RECYCLE_S = 300
 
 
+def pooler_safe_connect_args() -> dict:
+    """asyncpg settings that work through Supabase's transaction pooler as well as a session or direct
+    connection: no statement cache on either side, and a unique name for every prepared statement.
+
+    The pooler hands one server connection to many clients in turn. asyncpg's default names
+    (`__asyncpg_stmt_1__`, `_2__`, …) restart in every client, so two clients meeting on one server
+    connection collide: "prepared statement __asyncpg_stmt_1__ already exists". That is the
+    deploy failure of 2026-10-17, when the migration's URL pointed at the transaction pooler.
+    This is SQLAlchemy's documented recipe for PgBouncer.
+    """
+    return {
+        "statement_cache_size": 0,
+        "prepared_statement_cache_size": 0,
+        "prepared_statement_name_func": lambda: f"__asyncpg_{uuid4()}__",
+    }
+
+
 def create_engine(url: str | None = None) -> AsyncEngine:
     """Build the engine.
 
@@ -83,7 +101,7 @@ def create_engine(url: str | None = None) -> AsyncEngine:
         pool_recycle=POOL_RECYCLE_S,
         pool_size=5,
         max_overflow=5,
-        connect_args={"statement_cache_size": 0},
+        connect_args=pooler_safe_connect_args(),
     )
 
 

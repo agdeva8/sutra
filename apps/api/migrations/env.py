@@ -24,7 +24,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from sutra_api.config import settings
-from sutra_api.db import Base
+from sutra_api.db import Base, pooler_safe_connect_args
 
 # Imported for its side effect: registering every table on `Base.metadata`.
 # Autogenerate without this produces a migration that drops the whole schema.
@@ -70,6 +70,9 @@ async def run_async_migrations() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        # The same pooler-safe settings as the app: a migration URL may point at Supabase's
+        # transaction pooler, where asyncpg's default statement names collide between clients.
+        connect_args=pooler_safe_connect_args(),
     )
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)
