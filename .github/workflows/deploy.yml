@@ -274,25 +274,35 @@ jobs:
       - name: Install the Vercel CLI
         run: npm install --global "vercel@$VERCEL_CLI_VERSION"
 
+      # The web project lives in apps/web. Vercel's own Git builds reach it through the project's Root
+      # Directory setting, but a local `vercel build` run from the repo root does not apply it (the
+      # dry run ran `npm install` against the root). So link, build and deploy from apps/web itself,
+      # with that setting cleared in the pulled copy. A prebuilt deploy uploads only the output, so
+      # the setting on Vercel's side is left as it is.
       - name: vercel pull
-        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+        working-directory: apps/web
+        run: |
+          vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+          jq '.settings.rootDirectory = null' .vercel/project.json > .vercel/project.next.json
+          mv .vercel/project.next.json .vercel/project.json
 
       # `pull` writes "[SENSITIVE]" for any value marked Sensitive in Vercel, and a CRA build bakes
       # REACT_APP_* values into the bundle. A placeholder there would ship to every browser, so stop.
       - name: No placeholder in build-time variables
+        working-directory: apps/web
         run: |
           if grep -E '^REACT_APP_[A-Z0-9_]*="?\[SENSITIVE\]' .vercel/.env.production.local; then
             echo "::error::a REACT_APP_ variable is marked Sensitive in Vercel, so its real value can't be built in; unmark it (it is public in the bundle anyway)"
             exit 1
           fi
 
-      # Still run from the repo root: the project's Root Directory setting is
-      # what points the build at apps/web.
       - name: vercel build
+        working-directory: apps/web
         run: vercel build --prod --token="$VERCEL_TOKEN"
 
       - name: vercel deploy
         if: env.MODE == 'deploy'
+        working-directory: apps/web
         run: vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
 
   after:
