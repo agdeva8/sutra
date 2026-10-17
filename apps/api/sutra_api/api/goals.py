@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..core.blast_radius import radius_for
 from ..db import get_session
 from ..deps import CurrentUser, require_user
-from ..models import GOAL_HORIZONS, GOAL_STATUSES
+from ..models import GOAL_HORIZONS, GOAL_STATUSES, CalendarBlock
 from ..store import goal_drop, repo, staleness
 from ..wire import goal_row, milestone_row
 
@@ -336,53 +336,96 @@ async def update_milestone(
         raise HTTPException(status_code=400, detail="No fields to update")
 
     ms = await repo.get_milestone(session, user_id=user.user_id, milestone_id=id)
-    if ms is None:
+    cal = await session.get(CalendarBlock, id)
+    if cal is not None and cal.user_id != user.user_id:
+        cal = None
+    if cal is not None and cal.block_kind != "milestone":
+        cal = None
+    if ms is None and cal is None:
         raise HTTPException(status_code=404, detail="Milestone not found")
 
-    if "title" in body:
-        ms.title = str(body["title"]).strip()
-    if "status" in body:
-        ms.status = str(body["status"])
-    if "target_date" in body:
-        ms.target_date = _as_date(body["target_date"])
-    if "goal_id" in body:
-        new_goal_id = body["goal_id"]
-        if new_goal_id:
-            goal = await repo.get_goal(
-                session, user_id=user.user_id, goal_id=new_goal_id
-            )
-            if goal is None:
-                raise HTTPException(status_code=404, detail="Goal not found")
-            ms.goal_id = goal.id
-            ms.goal_title = goal.title
-        else:
-            # Clearing the parent clears the denormalised title with it, so the
-            # row cannot claim a goal it no longer belongs to.
-            ms.goal_id = None
-            ms.goal_title = ""
+    goal_id = ms.goal_id if ms is not None else None
+    title = ms.title if ms is not None else cal.title
+
+    if ms is not None:
+        if "title" in body:
+            ms.title = str(body["title"]).strip()
+            title = ms.title
+        if "status" in body:
+            ms.status = str(body["status"])
+        if "target_date" in body:
+            ms.target_date = _as_date(body["target_date"])
+        if "goal_id" in body:
+            new_goal_id = body["goal_id"]
+            if new_goal_id:
+                goal = await repo.get_goal(
+                    session, user_id=user.user_id, goal_id=new_goal_id
+                )
+                if goal is None:
+                    raise HTTPException(status_code=404, detail="Goal not found")
+                ms.goal_id = goal.id
+                ms.goal_title = goal.title
+                goal_id = goal.id
+            else:
+                # Clearing the parent clears the denormalised title with it, so the
+                # row cannot claim a goal it no longer belongs to.
+                ms.goal_id = None
+                ms.goal_title = ""
+                goal_id = None
+
+    # The backfill kept ids, so the same milestone can also live in `calendar_blocks`. Keep the
+    # two copies agreeing; a row that exists only there is updated there.
+    if cal is not None:
+        from agentv2.contracts.blocks import BLOCK_ADAPTER
+        blk = BLOCK_ADAPTER.validate_python(cal.data or {})
+        if "title" in body:
+            blk.title = str(body["title"]).strip()
+            title = blk.title
+        if "status" in body:
+            blk.reached = str(body["status"]) == "done"
+        if "target_date" in body and _as_date(body["target_date"]) is not None:
+            blk.target_date = _as_date(body["target_date"])
+        if "goal_id" in body:
+            new_goal_id = body["goal_id"]
+            if new_goal_id:
+                goal = await repo.get_goal(
+                    session, user_id=user.user_id, goal_id=new_goal_id
+                )
+                if goal is None:
+                    raise HTTPException(status_code=404, detail="Goal not found")
+                blk.goal_id = goal.id
+                goal_id = goal.id
+            else:
+                blk.goal_id = ""
+                goal_id = None
+        cal.title = blk.title
+        cal.data = blk.model_dump(mode="json")
 
     # Only a milestone that belongs to a goal can make that goal stale. One with
     # no parent — `goal_id` is `SET NULL`, so a milestone outlives its goal — has
     # nothing to mark, and recording a change against an empty `goal_id` would
     # violate the FK.
-    if ms.goal_id:
+    if goal_id:
         horizons, milestone_moved = radius_for("milestone.edit")
         await staleness.record_change(
             session,
             user_id=user.user_id,
-            goal_id=ms.goal_id,
+            goal_id=goal_id,
             kind="milestone",
             horizons_moved=horizons,
             milestone_moved=milestone_moved,
-            summary=f"Updated milestone '{ms.title}'",
+            summary=f"Updated milestone '{title}'",
         )
 
     await repo.write_audit(
         session,
         user_id=user.user_id,
         type="update:milestone",
-        summary=f"Updated milestone '{ms.title}'",
-        payload={"milestone_id": ms.id, "fields": list(body)},
+        summary=f"Updated milestone '{title}'",
+        payload={"milestone_id": id, "fields": list(body)},
     )
     await session.commit()
-    return {"milestone": milestone_row(ms)}
+    if ms is not None:
+        return {"milestone": milestone_row(ms)}
+    view = repo.milestone_from_block(cal)
+    return {"milestone": milestone_row(view)}

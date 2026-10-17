@@ -231,27 +231,24 @@ def _build_tasks_from_reminder(r: Reminder) -> list[TaskBlock]:
                 )
             )
         else:
-            # Multi-day: one repeating task per time
-            first_day = None
-            all_weekdays = set()
+            # Multi-day: one repeating task per time, stopping on the reminder's last day. Without
+            # `until`, a reminder for three days would repeat on those weekdays forever.
+            parsed = []
             for day in days:
                 try:
-                    d = date.fromisoformat(str(day))
+                    parsed.append(date.fromisoformat(str(day)))
                 except ValueError:
                     continue
-                if first_day is None:
-                    first_day = d
-                all_weekdays.add(d.weekday())
 
-            if first_day:
+            if parsed:
                 tasks.append(
                     TaskBlock(
                         id=task_id,
                         title=r.title,
-                        day=first_day,
+                        day=parsed[0],
                         at=t,
                         goal_id=r.goal_id,
-                        repeat=Repeat(weekdays=sorted(all_weekdays)),
+                        repeat=Repeat(weekdays=sorted({d.weekday() for d in parsed}), until=max(parsed)),
                     )
                 )
     return tasks

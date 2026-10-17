@@ -45,6 +45,20 @@ def _overlaps(a_start, a_end, b_start, b_end) -> bool:
     return a_start < b_end and b_start < a_end
 
 
+def _timed(blk) -> bool:
+    """A block that occupies hours on one day. Repeating items are laid out as occurrences
+    elsewhere, so they are not checked as a single block."""
+    return (blk.block_kind in ("event", "task") and blk.day is not None
+            and blk.start is not None and blk.end is not None and blk.repeat is None)
+
+
+def _item_status(blk) -> str:
+    """A task the planner placed is tentative; an event, or a task the user placed, is committed."""
+    if blk.block_kind == "task" and getattr(blk, "placed_by", "user") == "planner":
+        return BLOCK_TENTATIVE
+    return BLOCK_COMMITTED
+
+
 def validate(cs: ChangeSet, ctx: Context) -> list[Violation]:
     """Check `cs` against `ctx` and against itself. Empty list means well-formed."""
     out: list[Violation] = []
@@ -58,7 +72,14 @@ def validate(cs: ChangeSet, ctx: Context) -> list[Violation]:
     def fail(i: int, rule: str, msg: str) -> None:
         out.append(Violation(rule=rule, change_index=i, message=msg))
 
-    def check_block(i: int, bid: str, day, start, end, status: str, title: str = "", goal_id: str | None = None) -> None:
+    def check_block(i: int, bid: str, day, start, end, status: str, title: str = "", goal_id: str | None = None,
+                    *, allow_committed_overlap: bool = False) -> None:
+        """Check a block against the ones already there.
+
+        `allow_committed_overlap` is for a block the user committed themselves (an event, or a task
+        they placed): people double-book, and every calendar app allows it. It never lets a
+        *tentative* block clash — the planner's own placement still has to fit.
+        """
         if start >= end:
             fail(i, RULE_BLOCK_ORDER, f"block {bid}: start {start} is not before end {end}")
             return
@@ -68,6 +89,8 @@ def validate(cs: ChangeSet, ctx: Context) -> list[Violation]:
                 if status == BLOCK_COMMITTED and other.status == BLOCK_TENTATIVE:
                     displaced.append(other.id)  # a fixed block wins; the agent's planned time gives way
                     continue
+                if allow_committed_overlap and status == BLOCK_COMMITTED and other.status == BLOCK_COMMITTED:
+                    continue  # two things the user committed may overlap
                 fail(i, RULE_NO_OVERLAP, f"block {bid} overlaps {other.id} ({other.status}) on {day}")
         for gone in displaced:
             blocks.pop(gone, None)
@@ -80,6 +103,14 @@ def validate(cs: ChangeSet, ctx: Context) -> list[Violation]:
             )
             if planned > ctx.capacity_on(day):
                 fail(i, RULE_CAPACITY, f"{day}: {planned:.1f}h planned exceeds capacity {ctx.capacity_on(day):.1f}h")
+
+    def check_item(i: int, bid: str, blk) -> None:
+        """A timed 4-kind item goes through the same check as an `AddBlock`."""
+        if not _timed(blk):
+            return
+        status = _item_status(blk)
+        check_block(i, bid, blk.day, blk.start, blk.end, status, blk.title, blk.goal_id,
+                    allow_committed_overlap=status == BLOCK_COMMITTED)
 
     for i, c in enumerate(cs.changes):
         new_id = getattr(c, "id", None)
@@ -179,9 +210,15 @@ def validate(cs: ChangeSet, ctx: Context) -> list[Violation]:
                     fail(i, RULE_GOAL_EXISTS, f"milestone: goal {blk.goal_id} does not exist")
                 if ctx.today is not None and blk.target_date < ctx.today:
                     fail(i, RULE_NOT_IN_PAST, f"milestone: {blk.target_date} has already passed")
-        elif isinstance(c, (EditItem, DeleteItem)):
-            if c.id not in ctx.open_items and c.id not in {b.id for b in ctx.blocks}:
-                # We don't have a ctx.blocks4 yet; accept for now and let the store validate
-                pass
+            check_item(i, blk.id or f"new:{i}", blk)
+        elif isinstance(c, DeleteItem):
+            # Kept permissive: the store removes what it can see by id.
+            pass
+        elif isinstance(c, EditItem):
+            current = ctx.items.get(c.id)
+            if current is not None:
+                # A known 4-kind row: the new time is checked exactly like a create of the same item.
+                check_item(i, c.id, c.block)
+            # An id the context does not hold stays permissive; the store validates it.
 
     return out

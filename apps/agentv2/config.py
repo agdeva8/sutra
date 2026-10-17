@@ -84,8 +84,20 @@ def load_settings() -> Settings:
 
 import os
 
-#: Phase 4 rollout switch (D10). When True, agent stages emit the new 4-kind changes.
-FOUR_KIND_WRITES = os.environ.get("FOUR_KIND_WRITES", "").lower() in ("1", "true", "yes")
+#: Values that turn a boolean environment flag off. Anything else present in the variable turns
+#: it on, so an existing deployment's `FOUR_KIND_WRITES=0` (or `false`, or `no`) keeps the old path.
+FLAG_OFF_VALUES = frozenset({"0", "false", "no"})
+
+#: Phase 4 rollout switch (D10). When True, agent stages emit the new 4-kind changes that write
+#: `calendar_blocks` instead of `timetable_blocks`/`milestones` (docs/calendar-block-kinds.md).
+#: Still off by default: the web's Today agenda (`apps/web/src/lib/agenda.js`) reads the old shapes,
+#: so a plan written only to `calendar_blocks` would vanish from Today. Flip it once Today reads
+#: `state.blocks`; `FOUR_KIND_WRITES=1` turns it on for one deployment in the meantime.
+FOUR_KIND_WRITES_DEFAULT = False
+_FOUR_KIND_WRITES_ENV = os.environ.get("FOUR_KIND_WRITES", "").strip().lower()
+FOUR_KIND_WRITES = (
+    _FOUR_KIND_WRITES_ENV not in FLAG_OFF_VALUES if _FOUR_KIND_WRITES_ENV else FOUR_KIND_WRITES_DEFAULT
+)
 
 #: Change kinds the gateway may apply without asking (HLD §9). Anything else, and
 #: anything that touches a committed block, becomes a proposal.

@@ -197,8 +197,15 @@ class SqlStore:
                 pass  # Log parse failures instead of swallowing them silently
 
         # §5: Context folding — fold items into planner structures
-        # Block rows for the hour grid
-        new_blocks: list[BlockRow] = list(blocks)  # start with old timetable_blocks
+        # Block rows for the hour grid. The old rows are converted to `BlockRow` here: the fold
+        # downstream assumes that shape, and `calendar_blocks` is the table still being written.
+        old_blocks = [
+            BlockRow(id=b.id, day=b.block_date, start=b.start_time, end=b.end_time,
+                     status=BLOCK_TENTATIVE if b.kind == KIND_TENTATIVE else BLOCK_COMMITTED,
+                     title=b.label, goal_id=b.goal_id)
+            for b in blocks
+        ]
+        new_blocks: list[BlockRow] = list(old_blocks)
         # Blocked dates — start with old blockers, add Away
         new_blocked_dates = set(blocked)
         # Open items — start with old tasks/milestones, add open Tasks and Milestones
@@ -208,7 +215,8 @@ class SqlStore:
         # Goal hours done — start with old done, add done Tasks
         new_goal_hours_done = dict(done)
         # Expanded weeks — start with old tentative, add planner Tasks
-        new_expanded_weeks: set[tuple[str, date]] = set((b.goal_id, week_start(b.block_date)) for b in blocks if b.goal_id and b.kind == KIND_TENTATIVE)
+        new_expanded_weeks: set[tuple[str, date]] = set(
+            (b.goal_id, week_start(b.day)) for b in old_blocks if b.goal_id and b.status == BLOCK_TENTATIVE)
 
         for blk_id, blk in items.items():
             bk = blk.block_kind
@@ -275,6 +283,12 @@ class SqlStore:
                     )
                     new_goal_milestones.setdefault(blk.goal_id, []).append(spec)
                     new_open_items[blk_id] = blk.title
+
+        # The backfill kept ids, so a row can exist in both tables. The `calendar_blocks` row is
+        # appended last and therefore wins, while the dict keeps the id's first position.
+        new_blocks = list({b.id: b for b in new_blocks}.values())
+        for goal_id, specs in list(new_goal_milestones.items()):
+            new_goal_milestones[goal_id] = tuple({s.id: s for s in specs}.values())
 
         return Context(
             active_spans=planner.active_spans,
@@ -363,6 +377,7 @@ class SqlStore:
                     row.status = STATUS_SKIPPED
                 else:  # part done: the row stays open, with how much of its hours is finished
                     row.done_hours = round((change.fraction or 0) * _note_hours(row.note), 2)
+            await self._mark_calendar_block_done(change.item_id, outcome=change.outcome, fraction=change.fraction)
         elif isinstance(change, CompleteItem):
             # Ids are prefixed by table, so one id names exactly one row.
             await s.execute(update(PlanItem).where(PlanItem.id == change.item_id, PlanItem.user_id == self.user_id).values(status=STATUS_DONE, done_at=func.now()))
@@ -371,6 +386,9 @@ class SqlStore:
             await s.execute(delete(TimetableBlock).where(
                 TimetableBlock.user_id == self.user_id, TimetableBlock.source_id == change.item_id,
                 TimetableBlock.kind == KIND_TENTATIVE, TimetableBlock.block_date >= self.today))
+            # The 4-kind path: the same item may be a `calendar_blocks` row (a planner session is
+            # one task row whose id is the task's own id), so it is marked done there too.
+            await self._mark_calendar_block_done(change.item_id)
         elif isinstance(change, AddBlocker):
             s.add(Blocker(id=change.id, user_id=self.user_id, title=change.title, start_date=change.start_date, end_date=change.end_date))
         elif isinstance(change, AddMilestone):
@@ -445,6 +463,37 @@ class SqlStore:
                 CalendarBlock.id == change.id, CalendarBlock.user_id == self.user_id))
         await s.flush()
 
+    async def _mark_calendar_block_done(self, item_id: str, *, outcome: str = "full", fraction: float | None = None) -> None:
+        """Mirror `CompleteItem` onto a `calendar_blocks` row of the same id.
+
+        The old writer updates `plan_items` and `milestones`; on the 4-kind path the same item
+        lives in `calendar_blocks`, so it has to change there too. A milestone becomes reached.
+        A task keeps its row and records the outcome: the row is the session itself, so deleting
+        it would take a finished session off the board and its hours out of the goal's done total
+        (`context()` counts done tasks).
+        """
+        row = await self.session.get(CalendarBlock, item_id)
+        if row is None or row.user_id != self.user_id:
+            return
+        try:
+            blk = BLOCK_ADAPTER.validate_python(row.data)
+        except Exception:
+            return
+        if blk.block_kind == "milestone":
+            if outcome != "full":
+                return  # a milestone is reached or not; part-done and skip apply to tasks
+            blk.reached = True
+        elif blk.block_kind == "task":
+            if outcome == "skip":
+                blk.state = "skip"
+            elif outcome == "full":
+                blk.done, blk.state, blk.done_fraction = True, "done", 1.0
+            else:  # part done: still open, with how much of it is finished
+                blk.state, blk.done_fraction = "partial", fraction or 0.0
+        else:
+            return
+        row.data = blk.model_dump(mode="json")
+
     async def _lay_out(self, rule_id, title, weekdays, start, end, start_date, end_date, today) -> int:
         """Insert the rule's occurrences that are not there yet. Returns how many were added."""
         have = set((await self.session.execute(
@@ -500,6 +549,19 @@ class SqlStore:
         if isinstance(change, CompleteItem):
             await s.execute(update(PlanItem).where(PlanItem.id == change.item_id, PlanItem.user_id == uid).values(status=STATUS_OPEN, done_hours=None, done_at=None))
             await s.execute(update(Milestone).where(Milestone.id == change.item_id, Milestone.user_id == uid).values(status=STATUS_OPEN))
+            # The 4-kind copy of the same milestone, when there is one (the backfill kept ids).
+            row = await s.get(CalendarBlock, change.item_id)
+            if row is not None and row.user_id == uid:
+                try:
+                    blk = BLOCK_ADAPTER.validate_python(row.data)
+                except Exception:
+                    blk = None
+                if blk is not None and blk.block_kind == "milestone":
+                    blk.reached = False
+                    row.data = blk.model_dump(mode="json")
+                elif blk is not None and blk.block_kind == "task":
+                    blk.done, blk.state, blk.done_fraction = False, "open", None
+                    row.data = blk.model_dump(mode="json")
         elif isinstance(change, AddRecurring):
             await s.execute(delete(TimetableBlock).where(TimetableBlock.user_id == uid, TimetableBlock.source_id == change.id))
             await s.execute(delete(RecurringBlock).where(RecurringBlock.id == change.id, RecurringBlock.user_id == uid))

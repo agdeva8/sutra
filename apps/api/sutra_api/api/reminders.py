@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
 from ..deps import CurrentUser, require_user
-from ..models import Reminder
+from ..models import CalendarBlock, Reminder
 from ..store import repo
 
 router = APIRouter(tags=["reminders"])
@@ -22,6 +22,18 @@ async def delete_reminder(
     session: AsyncSession = Depends(get_session),
     user: CurrentUser = Depends(require_user),
 ) -> dict:
+    # A reminder written on the 4-kind path is a `calendar_blocks` task; one written before it is
+    # a `reminders` row. The id names exactly one of them, so try the new table first.
+    block = await session.get(CalendarBlock, id)
+    if block is not None:
+        if block.user_id != user.user_id:
+            raise HTTPException(status_code=404, detail="Reminder not found")
+        title = block.title
+        await session.delete(block)
+        await repo.write_audit(session, user_id=user.user_id, type="delete:reminder", summary=f"Deleted reminder '{title}'", payload={"reminder_id": id})
+        await session.commit()
+        return {"ok": True}
+
     row = await session.get(Reminder, id)
     # Ownership is part of the lookup: someone else's id is simply not found.
     if row is None or row.user_id != user.user_id:

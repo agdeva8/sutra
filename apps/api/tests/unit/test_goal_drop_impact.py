@@ -30,12 +30,23 @@ class Result:
     def scalars(self):
         return Rows(self.rows)
 
+    def all(self):
+        return list(self.rows)
+
 
 class FakeSession:
-    """Answers, in order: goal, milestones, event blocks, task blocks, all goals."""
+    """Answers, in order: goal, old milestones, calendar milestones, goal titles, event blocks,
+    task blocks, all goals.
 
-    def __init__(self, *, goal, milestones=(), events=(), tasks=(), goals=()):
-        self.results = [[goal], list(milestones), list(events), list(tasks), list(goals)]
+    `list_milestones` reads both tables and resolves goal titles, which is why the merge adds two
+    queries after the old rows.
+    """
+
+    def __init__(self, *, goal, milestones=(), cal_milestones=(), goal_titles=(), events=(), tasks=(), goals=()):
+        self.results = [
+            [goal], list(milestones), list(cal_milestones), list(goal_titles),
+            list(events), list(tasks), list(goals),
+        ]
 
     async def execute(self, *_a, **_k):
         return Result(self.results.pop(0))

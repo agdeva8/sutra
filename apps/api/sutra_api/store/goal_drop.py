@@ -23,8 +23,9 @@ from datetime import UTC, datetime
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import CalendarBlock, Goal, Milestone, TimetableBlock, User
+from ..models import Blocker, CalendarBlock, Goal, Milestone, TimetableBlock, User
 from agentv2.contracts.blocks import BLOCK_ADAPTER
+from . import repo
 from .repo import write_audit
 
 #: Cap on the item lists returned for display / prompt injection.
@@ -137,15 +138,7 @@ async def compute_goal_drop_impact(
         )
     ).scalar_one_or_none()
 
-    miles = list(
-        (
-            await session.execute(
-                select(Milestone)
-                .where(Milestone.user_id == user_id, Milestone.goal_id == ref.goal_id)
-                .limit(500)
-            )
-        ).scalars()
-    )
+    miles = [m for m in await repo.list_milestones(session, user_id=user_id) if m.goal_id == ref.goal_id]
     # Phase 5: Read timetable blocks from CalendarBlock
     cal_result = await session.execute(
         select(CalendarBlock).where(
@@ -323,12 +316,33 @@ async def apply_goal_drop_cascade(
             Milestone.user_id == user_id, Milestone.goal_id == ref.goal_id
         )
     )
+    # The old tables are no longer written, but rows from before the switch are still there.
+    # A `timetable_blocks.source_id` points at a blocker by convention, so those blockers go too.
+    old_rows = list((await session.execute(
+        select(TimetableBlock.id, TimetableBlock.source_id).where(
+            TimetableBlock.user_id == user_id, TimetableBlock.goal_id == ref.goal_id)
+    )).all())
+    if old_rows:
+        await session.execute(delete(TimetableBlock).where(TimetableBlock.id.in_([r.id for r in old_rows])))
+    blocker_ids = {r.source_id for r in old_rows if r.source_id}
+    if blocker_ids:
+        await session.execute(delete(Blocker).where(
+            Blocker.user_id == user_id, Blocker.id.in_(blocker_ids)))
     # Phase 5: Delete goal's timetable blocks from CalendarBlock
     from sqlalchemy import text
     await session.execute(
         delete(CalendarBlock).where(
             CalendarBlock.user_id == user_id,
             CalendarBlock.block_kind == "event",
+            text(f"data->>'goal_id' = :gid"),
+        ),
+        {"gid": ref.goal_id}
+    )
+    # A milestone's `calendar_blocks` copy is counted in the impact, so it goes with the goal too.
+    await session.execute(
+        delete(CalendarBlock).where(
+            CalendarBlock.user_id == user_id,
+            CalendarBlock.block_kind == "milestone",
             text(f"data->>'goal_id' = :gid"),
         ),
         {"gid": ref.goal_id}

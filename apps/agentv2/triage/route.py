@@ -138,12 +138,15 @@ def _item(chat, it: TriageItem, ctx: Context, now: datetime, source_id: str | No
             times = [named]
         gid = it.goal_id if it.goal_id in ctx.goal_ids else None
         if FOUR_KIND_WRITES:
-            # One Task per time of day (D8), with at=time, alert_before=0
+            # One Task per time of day (D8), alerting at that time. It sits on its first day; a run of days
+            # repeats on those weekdays until the last one, the same shape the backfill gives an old reminder.
+            # Without the day, the reminder would turn into an undated list item.
+            repeat = Repeat(weekdays=sorted({d.weekday() for d in days}), until=days[-1]) if len(days) > 1 else None
             changes = []
             for t in times:
                 changes.append(AddItem(block=TaskBlock(
-                    id=new_id("rem"), title=it.title, goal_id=gid,
-                    at=t, alert_before=0, placed_by="user"
+                    id=new_id("rem"), title=it.title, goal_id=gid, day=days[0],
+                    at=t, alert_before=0, placed_by="user", repeat=repeat,
                 )))
             return changes, None, None
         return [AddReminder(id=new_id("rem"), title=it.title, days=days, times=times, goal_id=gid)], None, None

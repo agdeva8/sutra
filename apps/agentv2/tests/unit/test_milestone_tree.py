@@ -3,13 +3,25 @@ No model: planner calls get a fake chat that replays canned JSON."""
 import json
 from datetime import date, datetime, timedelta
 
-from agentv2.contracts import AddMilestone, AddTask
+import pytest
+
+import agentv2.intake.turn as intake_turn
+import agentv2.planner.day as planner_day
+from agentv2.contracts import AddItem
 from agentv2.contracts.intake import GoalDraft, MilestoneDraft
 from agentv2.contracts.planner import GoalSpec, MilestoneSpec
 from agentv2.core.context import Context
 from agentv2.intake.turn import draft_to_changes, milestone_tree
 from agentv2.planner.day import DAY_PREFIX, plan_day_level
 from agentv2.planner.week import WeekAlloc, plan_weeks
+
+
+@pytest.fixture(autouse=True)
+def _four_kind_writes(monkeypatch):
+    """Pin the 4-kind path, the one the app is moving to, whatever the deployed default is."""
+    monkeypatch.setattr(intake_turn, "FOUR_KIND_WRITES", True)
+    monkeypatch.setattr(planner_day, "FOUR_KIND_WRITES", True)
+
 
 START = date(2026, 10, 15)
 NOW = datetime(2026, 10, 15, 8, 0)
@@ -71,7 +83,7 @@ def test_draft_to_changes_links_sub_milestones_to_their_facet_and_carries_the_pa
     draft = GoalDraft(title="Switch jobs", total_hours=100, deadline_weeks=12, weekly_hours=10,
                       milestones=[m(RESUME, 6), m("Resume rewritten", 2, RESUME)])
     spec, changes = draft_to_changes(draft, NOW)
-    miles = [c for c in changes if isinstance(c, AddMilestone)]
+    miles = [c.block for c in changes if isinstance(c, AddItem) and c.block.block_kind == "milestone"]
     assert miles[1].parent_id == miles[0].id and miles[0].parent_id is None
     assert spec.weekly_hours == 10 and [s.id for s in spec.milestones] == [c.id for c in miles]
 
@@ -90,5 +102,5 @@ def test_a_session_is_linked_to_the_milestone_it_works_toward():
     day_plan = json.dumps({"sessions": [{"day_id": day_id, "title": "Read caching", "hours": 1, "milestone": "Fundamentals read"}]})
     week = WeekAlloc(START, "Fundamentals", 1, milestones=["Fundamentals read"])
     changes, _ctx, _how = plan_day_level(ReplayChat(day_plan, "not json"), goal, week, Context(goal_ids=frozenset({"g"}), today=START), NOW)
-    task = next(c for c in changes if isinstance(c, AddTask))
+    task = next(c.block for c in changes if isinstance(c, AddItem) and c.block.block_kind == "task")
     assert task.milestone_id == "mile_1"

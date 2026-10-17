@@ -8,6 +8,20 @@ proposals. Tasks, time slots, commitments and away ranges are written straight t
 `apps/agentv2/gateway/apply.py:apply` -> validate (`core/validate.py`) -> auto-apply or propose ->
 `SqlStore.write` (`apps/api/sutra_api/agent_store.py`) -> audit row in the same transaction.
 
+## Writes live in `calendar_blocks`
+
+`FOUR_KIND_WRITES` (`apps/agentv2/config.py`) switches the agent's planner, triage, intake and the
+executor to writing the four kinds to `calendar_blocks`, which is what the board, the Timeline, the
+`.ics` feed, the coach and goal drop read. It is **still off by default**, because the web's Today
+agenda (`apps/web/src/lib/agenda.js`) reads the old shapes; it flips once Today reads `state.blocks`.
+Set it to any value but `0`, `false` or `no` to turn it on for one deployment.
+
+The old tables are legacy, not gone. Rows written before the switch — and rows the backfill copied
+with their original ids — are still read where it matters: `SqlStore.context()` folds their
+`timetable_blocks` in as busy time, the milestone readers merge `milestones` with the
+`calendar_blocks` copy (deduplicated by id, the `calendar_blocks` row winning), and a write to an
+old row mirrors onto its `calendar_blocks` twin. Nothing new is written to them.
+
 ## Target model: four kinds
 
 Not built yet. This is the smallest set of kinds the calendar needs. **The rule:** something is its

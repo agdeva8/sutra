@@ -1,14 +1,28 @@
 """Scratch routing for the buckets added with the goal-less to-do, the away range and partial ticks.
 `route` is pure given a TriageResult, so no model is involved."""
 import asyncio
-from datetime import date, datetime
+from datetime import date, datetime, time
 
-from agentv2.contracts import AddBlocker, AddReminder, AddTodo, CompleteItem, Origin
+import importlib
+
+import pytest
+
+# The package re-exports the `route` function under the module's own name, so the module is
+# fetched by path: that is where `route()` reads the flag.
+triage_route = importlib.import_module("agentv2.triage.route")
+from agentv2.contracts import AddBlocker, AddItem, CompleteItem, Origin
 from agentv2.contracts.triage import AwaySpec, ReminderSpec, TriageItem, TriageResult
 from agentv2.core.context import Context
 from agentv2.gateway import apply
 from agentv2.gateway.memory import InMemoryStore
 from agentv2.triage.route import route
+
+
+@pytest.fixture(autouse=True)
+def _four_kind_writes(monkeypatch):
+    """Pin the 4-kind path, the one the app is moving to, whatever the deployed default is."""
+    monkeypatch.setattr(triage_route, "FOUR_KIND_WRITES", True)
+
 
 NOW = datetime(2026, 10, 14, 10, 0)
 ORIGIN = Origin(source="scratch")
@@ -21,25 +35,41 @@ def _route(*items, ctx=None):
 def test_a_todo_needs_no_goal_and_no_hours():
     routed = _route(TriageItem(bucket="todo", title="Reply to Mohit on Slack"))
     task = routed.changeset.changes[0]
-    assert isinstance(task, AddTodo) and task.goal_id is None and routed.waiting is None
+    assert isinstance(task, AddItem) and task.block.block_kind == "task"
+    assert task.block.goal_id is None and routed.waiting is None
 
 
 def test_a_task_that_cannot_be_tied_to_a_goal_becomes_a_todo_instead_of_a_question():
     routed = _route(TriageItem(bucket="task", title="Buy milk"))
-    assert routed.waiting is None and isinstance(routed.changeset.changes[0], AddTodo)
+    assert routed.waiting is None and isinstance(routed.changeset.changes[0], AddItem)
+    assert routed.changeset.changes[0].block.block_kind == "task"
 
 
 def test_a_bare_reminder_gets_defaults_and_an_explicit_time_is_honoured():
     bare = _route(TriageItem(bucket="reminder", title="Drink water")).changeset.changes[0]
-    assert isinstance(bare, AddReminder) and bare.days == [date(2026, 10, 14)]
+    assert isinstance(bare, AddItem) and bare.block.block_kind == "task"
+    assert bare.block.at == time(9, 0)
+    assert bare.block.day == NOW.date() and bare.block.repeat is None
     timed = _route(TriageItem(bucket="reminder", title="Call mom", reminder=ReminderSpec(at_time="18:00", date="2026-10-15"))).changeset.changes[0]
-    assert timed.days == [date(2026, 10, 15)] and [t.strftime("%H:%M") for t in timed.times] == ["18:00"]
+    assert timed.block.at == time(18, 0)
+    assert timed.block.day == date(2026, 10, 15)
+
+
+def test_a_reminder_over_several_days_repeats_until_its_last_day_once_per_time():
+    spec = ReminderSpec(times_per_day=3, duration_days=3, date="2026-10-15")
+    changes = _route(TriageItem(bucket="reminder", title="Eye drops", reminder=spec)).changeset.changes
+    assert [c.block.at for c in changes] == [time(9, 0), time(14, 0), time(21, 0)]
+    for c in changes:
+        assert c.block.day == date(2026, 10, 15)
+        assert c.block.repeat.until == date(2026, 10, 17)
+        assert c.block.repeat.weekdays == sorted({date(2026, 10, d).weekday() for d in (15, 16, 17)})
 
 
 def test_a_trip_is_one_away_range_not_a_block_per_day():
     routed = _route(TriageItem(bucket="away", title="Delhi trip", away=AwaySpec(start_date="2026-10-21", end_date="2026-10-25")))
     (change,) = routed.changeset.changes
-    assert isinstance(change, AddBlocker) and (change.start_date, change.end_date) == (date(2026, 10, 21), date(2026, 10, 25))
+    assert isinstance(change, AddItem) and change.block.block_kind == "away"
+    assert (change.block.start_date, change.block.end_date) == (date(2026, 10, 21), date(2026, 10, 25))
 
 
 def test_an_away_range_in_the_past_or_missing_dates_asks_instead_of_guessing():
@@ -68,15 +98,14 @@ def test_an_away_range_blocks_planning_and_clears_planned_time_on_those_days():
 
 
 def test_a_timed_block_keeps_its_goal_when_the_goal_is_real_and_none_otherwise():
-    from agentv2.contracts import AddBlock
     from agentv2.contracts.triage import BlockSpec
     spec = BlockSpec(date="2026-10-15", start_time="18:00", end_time="20:00")
     linked = _route(TriageItem(bucket="block", title="LLD prep", goal_id="g", block=spec)).changeset.changes[0]
-    assert isinstance(linked, AddBlock) and linked.goal_id == "g" and linked.status == "committed"
+    assert linked.block.block_kind == "task" and linked.block.goal_id == "g"
     plain = _route(TriageItem(bucket="block", title="Dentist", block=spec)).changeset.changes[0]
-    assert plain.goal_id is None
+    assert plain.block.block_kind == "event" and plain.block.goal_id is None
     invented = _route(TriageItem(bucket="block", title="Dentist", goal_id="g_made_up", block=spec)).changeset.changes[0]
-    assert invented.goal_id is None
+    assert invented.block.goal_id is None
 
 
 def test_a_goal_task_placed_from_scratch_gives_its_slots_the_goal(monkeypatch):

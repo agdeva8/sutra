@@ -11,16 +11,20 @@ and "scoped to whoever I name".
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any, Sequence
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from agentv2.contracts.blocks import BLOCK_ADAPTER
+
 from ..ids import new_id
 from ..models import (
     AuditEntry,
     Blocker,
+    CalendarBlock,
     Conversation,
     DailyLog,
     Goal,
@@ -164,16 +168,112 @@ async def update_goal(
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class MilestoneView:
+    """A milestone as every reader sees it, whichever table holds it.
+
+    The attributes match the `milestones` columns the readers and `wire.milestone_row` already
+    use, so moving a milestone into `calendar_blocks` changes no wire shape.
+    """
+    id: str
+    user_id: str
+    goal_id: str | None
+    goal_title: str
+    title: str
+    target_date: date | None
+    phase: str
+    status: str
+    parent_id: str | None = None
+    hours: float | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+def _from_milestone_row(m: Any) -> MilestoneView:
+    return MilestoneView(
+        id=m.id,
+        user_id=getattr(m, "user_id", ""),
+        goal_id=getattr(m, "goal_id", None),
+        goal_title=getattr(m, "goal_title", "") or "",
+        title=m.title,
+        target_date=getattr(m, "target_date", None),
+        phase=getattr(m, "phase", "") or "",
+        status=getattr(m, "status", "open") or "open",
+        parent_id=getattr(m, "parent_id", None),
+        hours=getattr(m, "hours", None),
+        created_at=getattr(m, "created_at", None),
+        updated_at=getattr(m, "updated_at", None),
+    )
+
+
+def _from_calendar_block(row: Any, goal_titles: dict[str, str]) -> MilestoneView | None:
+    """A `CalendarBlock` milestone in the same shape, or None if it is not a valid milestone block."""
+    try:
+        blk = BLOCK_ADAPTER.validate_python(row.data or {})
+    except Exception:
+        return None
+    if blk.block_kind != "milestone":
+        return None
+    return MilestoneView(
+        id=row.id,
+        user_id=getattr(row, "user_id", ""),
+        goal_id=blk.goal_id or None,
+        goal_title=goal_titles.get(blk.goal_id, ""),
+        title=blk.title,
+        target_date=blk.target_date,
+        phase="",
+        status="done" if blk.reached else "open",
+        parent_id=blk.parent_id,
+        hours=blk.hours or None,
+        created_at=getattr(row, "created_at", None),
+        updated_at=getattr(row, "updated_at", None),
+    )
+
+
+def milestone_from_block(row: Any, goal_titles: dict[str, str] | None = None) -> MilestoneView | None:
+    """One `calendar_blocks` milestone row in the shape readers use, or None if it is not one."""
+    return _from_calendar_block(row, goal_titles or {})
+
+
+def merge_milestones(
+    old: Sequence[Any], blocks: Sequence[Any], goal_titles: dict[str, str] | None = None
+) -> list[MilestoneView]:
+    """The old `milestones` rows and `calendar_blocks` milestones as one list, by id.
+
+    The backfill kept ids, so a row present in both tables is one milestone: the
+    `calendar_blocks` row wins, because that is the table still written. Pure — no I/O — so the
+    merge rules are unit-testable.
+    """
+    titles = goal_titles or {}
+    merged: dict[str, MilestoneView] = {m.id: _from_milestone_row(m) for m in old}
+    for row in blocks:
+        view = _from_calendar_block(row, titles)
+        if view is not None:
+            merged[view.id] = view
+    # The old query ordered by target date; keep that order with the block rows folded in.
+    return sorted(merged.values(), key=lambda m: (m.target_date is None, m.target_date or date.max, m.id))
+
+
 async def list_milestones(
     session: AsyncSession, *, user_id: str, limit: int = 1000
-) -> list[Milestone]:
-    stmt = (
+) -> list[MilestoneView]:
+    """Every milestone, from both tables, deduplicated by id."""
+    old = list((await session.execute(
         select(Milestone)
         .where(Milestone.user_id == user_id)
         .order_by(Milestone.target_date.asc().nulls_last())
         .limit(limit)
-    )
-    return list((await session.execute(stmt)).scalars())
+    )).scalars())
+    blocks = list((await session.execute(
+        select(CalendarBlock)
+        .where(CalendarBlock.user_id == user_id, CalendarBlock.block_kind == "milestone")
+        .limit(limit)
+    )).scalars())
+    titles = dict((await session.execute(
+        select(Goal.id, Goal.title).where(Goal.user_id == user_id)
+    )).all())
+    # Each table was capped on its own; the merged list honours the caller's cap too, earliest first.
+    return merge_milestones(old, blocks, titles)[:limit]
 
 
 async def get_milestone(

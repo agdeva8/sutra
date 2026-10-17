@@ -21,7 +21,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.drift import compute_drift
-from ..models import Goal, Milestone
+from ..models import Goal
+from . import repo
 from .repo import write_audit
 
 #: `user_id -> last checked on` (a UTC date). Process-local: at worst a second
@@ -62,13 +63,7 @@ async def recompute_goal_drift(
     if not goals:
         return []
 
-    ms_rows = list(
-        (
-            await session.execute(
-                select(Milestone).where(Milestone.user_id == user_id)
-            )
-        ).scalars()
-    )
+    ms_rows = await repo.list_milestones(session, user_id=user_id)
 
     transitions: list[dict] = []
     for goal in goals:

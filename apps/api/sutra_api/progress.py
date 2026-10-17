@@ -18,7 +18,8 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import Goal, GoalProgress, Milestone, PlanItem
+from .models import Goal, GoalProgress, PlanItem
+from .store import repo
 
 STATUS_DONE = "done"
 GOAL_ACTIVE = "active"
@@ -42,7 +43,7 @@ def _row(item: PlanItem) -> PlanRow:
 async def load_facts(session: AsyncSession, user_id: str, today: date) -> list[GoalFacts]:
     goals = list((await session.execute(select(Goal).where(Goal.user_id == user_id, Goal.status == GOAL_ACTIVE).order_by(Goal.created_at))).scalars())
     items = list((await session.execute(select(PlanItem).where(PlanItem.user_id == user_id, PlanItem.goal_id.is_not(None)))).scalars())
-    miles = list((await session.execute(select(Milestone).where(Milestone.user_id == user_id, Milestone.goal_id.is_not(None)))).scalars())
+    miles = [m for m in await repo.list_milestones(session, user_id=user_id) if m.goal_id is not None]
     return [
         build_goal_facts(
             g.id, g.title, g.target_date,
