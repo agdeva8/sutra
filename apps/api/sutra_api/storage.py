@@ -2,7 +2,8 @@
 
 v1 used a proprietary object-store proxy. This is a plain Supabase Storage
 client: the bucket is reached over its REST API with a service key, and the path
-convention is `sources/<user_id>/<filename>`.
+convention is `sources/<user_id>/<unique>-<filename>` — one object per upload,
+never one object per name.
 
 **The fallback is not a stub.** With `SUPABASE_URL` unset, objects land in
 `LOCAL_STORAGE_DIR` and are served from there. That keeps the whole service
@@ -18,6 +19,7 @@ path — so the sanitised form is what is stored, and the original is kept in th
 from __future__ import annotations
 
 import re
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -37,6 +39,18 @@ _MAX_NAME = 200
 #: The prefix every key shares, so a bucket can hold other things later.
 PREFIX = "sources"
 
+#: Random hex characters that make one upload's key distinct from another's. 12 hex is 48 bits —
+#: the same budget `ids.new_id` spends, and far more than enough for a single user's uploads.
+UNIQUE_KEY_HEX = 12
+
+#: Separates the unique part from the readable filename in a minted key.
+KEY_SEPARATOR = "-"
+
+#: What a minted key's filename component looks like, as opposed to a filename-derived key written
+#: before uploads were unique. The confirm step checks this *shape* rather than re-deriving the key,
+#: so a key the sign step minted is still accepted when a client sends it back.
+_MINTED_NAME = re.compile(rf"[0-9a-f]{{{UNIQUE_KEY_HEX}}}-[A-Za-z0-9._-]+")
+
 #: What a store answers when it has no type of its own — local disk cannot record what it received, so
 #: it says this for everything. Callers that need to *render* an object must treat it as "unknown" and
 #: fall back to the type recorded on the row; serving it verbatim makes a browser download a photo.
@@ -51,9 +65,31 @@ def sanitize_filename(name: str) -> str:
 
 
 def object_key(*, user_id: str, filename: str) -> str:
-    """The storage path. Namespaced by user, so one user's name cannot collide
-    with another's — and so a bucket listing is readable by owner."""
-    return f"{PREFIX}/{sanitize_filename(user_id)}/{sanitize_filename(filename)}"
+    """A fresh storage path for one upload.
+
+    Namespaced by user, so one user's name cannot collide with another's — and so a bucket listing is
+    readable by owner. The unique part matters: iPhone galleries are full of `image.jpg`, and two
+    attachments of the same `resume.pdf` used to overwrite each other's bytes and share one object.
+
+    The unique part counts against `_MAX_NAME`, so the filename component keeps its guaranteed cap
+    while the original name stays readable in the key.
+    """
+    unique = uuid.uuid4().hex[:UNIQUE_KEY_HEX]
+    room = _MAX_NAME - len(unique) - len(KEY_SEPARATOR)
+    readable = sanitize_filename(filename)[:room] or "file"
+    return f"{PREFIX}/{sanitize_filename(user_id)}/{unique}{KEY_SEPARATOR}{readable}"
+
+
+def is_minted_key(*, user_id: str, key: str) -> bool:
+    """Whether `key` has the shape `object_key` mints *for this user*.
+
+    Used by the direct-upload confirm step: the sign step minted the key once, so the check is
+    ownership plus shape, never a recomputation from the filename (which would no longer match).
+    """
+    prefix = f"{PREFIX}/{sanitize_filename(user_id)}/"
+    if not key.startswith(prefix):
+        return False
+    return _MINTED_NAME.fullmatch(key[len(prefix):]) is not None
 
 
 @dataclass

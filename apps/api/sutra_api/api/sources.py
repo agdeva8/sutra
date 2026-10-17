@@ -12,10 +12,10 @@ Three request shapes also differ from the spec, all in v1's favour:
 accepts `title`, `temporary` and `text`; and preview/extract return completely
 different bodies from the ones the spec declares.
 
-**A soft delete, and the bytes stay.** `DELETE` sets `is_deleted`; v1 kept the
-object too, calling it an audit trail. That is the right call here because
-`user_facts.source_id` and the audit ledger both point at the row — a hard delete
-would orphan the ledger that exists to be trustworthy.
+**A soft delete of the row.** `DELETE` sets `is_deleted`; the row stays because `user_facts.source_id`
+and the audit ledger both point at it — a hard delete would orphan the ledger that exists to be
+trustworthy. The stored object is removed only when no other row still points at that key, because
+rows written before keys were unique may share one.
 
 Uploads over 20 MB are a **413**, not a 400: the request was well-formed and the
 body was simply too big, and the client shows the difference.
@@ -28,6 +28,7 @@ from datetime import UTC, datetime, timedelta
 from ..vision import describe_image
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
@@ -39,7 +40,15 @@ from ..deps import CurrentUser, require_user
 from ..ids import new_id
 from ..llm import get_complete, provider_status
 from ..models import Source
-from ..storage import GENERIC_CONTENT_TYPE, delete as storage_delete, get as storage_get, object_key, put, signed_upload_url
+from ..storage import (
+    GENERIC_CONTENT_TYPE,
+    delete as storage_delete,
+    get as storage_get,
+    is_minted_key,
+    object_key,
+    put,
+    signed_upload_url,
+)
 from ..store import repo, staleness
 from ..stream import delta, done, error, frame, sse_response
 from ..wire import source_list_row, source_row, source_upload_row
@@ -285,10 +294,11 @@ async def complete_upload(
     """
     if body.purpose not in SOURCE_PURPOSES:
         raise HTTPException(status_code=400, detail=f"purpose must be one of {', '.join(SOURCE_PURPOSES)}")
-    # The key must be one this user's own upload could have produced, so a crafted key can neither
-    # claim nor read another user's object.
-    if body.key != object_key(user_id=user.user_id, filename=body.filename):
-        raise HTTPException(status_code=400, detail="key does not match the filename")
+    # The key must be one this user's own upload could have produced. The sign step minted it once;
+    # checking its ownership prefix and shape (not re-deriving it from the filename) is what stops a
+    # crafted key from claiming or reading another user's object.
+    if not is_minted_key(user_id=user.user_id, key=body.key):
+        raise HTTPException(status_code=400, detail="Invalid upload key")
 
     obj = await storage_get(body.key)
     if obj is None:
@@ -529,18 +539,36 @@ async def update_source(
     return source_row(row)
 
 
+async def _key_used_by_other_row(
+    session: AsyncSession, *, source_id: str, key: str
+) -> bool:
+    """Whether another `sources` row still points at `key`.
+
+    Rows written before uploads got unique keys can share one object, so the object may only be
+    deleted when this row is the last one holding it. Deleted rows count: they are the other
+    holders, and storage is not the source of truth either way.
+    """
+    if not key:
+        return False
+    stmt = select(func.count()).select_from(Source).where(
+        Source.storage_path == key, Source.id != source_id
+    )
+    return (await session.execute(stmt)).scalar_one() > 0
+
+
 @router.delete("/sources/{id}")
 async def delete_source(
     id: str,
     session: AsyncSession = Depends(get_session),
     user: CurrentUser = Depends(require_user),
 ) -> dict:
-    """**Soft** delete. The row and the object both survive.
+    """**Soft** delete the row. The object goes only when no other row still uses its key.
 
     A hard delete would orphan `user_facts.source_id` and the audit entries that
     reference this source — and an audit trail with holes in it is not one.
     """
     row = await _source_or_404(session, user_id=user.user_id, source_id=id)
+    shared = await _key_used_by_other_row(session, source_id=row.id, key=row.storage_path)
     row.is_deleted = True
     await _record_source_change(
         session,
@@ -550,6 +578,10 @@ async def delete_source(
         summary=f"Removed '{row.original_filename}'",
     )
     await session.commit()
+    if not shared and row.storage_path:
+        # Best-effort by contract: a missing object is a success, and a storage outage must not fail
+        # the delete. A shared key stays, because the other row still reads it.
+        await storage_delete(row.storage_path)
     return {"ok": True}
 
 
