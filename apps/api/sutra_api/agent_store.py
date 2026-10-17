@@ -27,15 +27,16 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import date, time, timedelta
 
-from agentv2.config import BLOCK_COMMITTED, BLOCK_TENTATIVE, ITEM_TYPE_TODO
+from agentv2.config import BLOCK_COMMITTED, BLOCK_TENTATIVE, FOUR_KIND_WRITES, ITEM_TYPE_TODO
 from agentv2.contracts import (
-    AddBlock, AddBlocker, AddRecurring, StopRecurring, ClearGoalPlan, CompleteItem, AddGoal, AddMilestone, AddPlanMonth, AddPlanWeek, AddReminder, AddTask, AddTodo, EditTodo, Change, ChangeSet, LinkSource, MoveBlock, Origin, Proposal,
+    AddBlock, AddBlocker, AddRecurring, StopRecurring, ClearGoalPlan, CompleteItem, AddGoal, AddMilestone, ReplaceMilestones, AddPlanMonth, AddPlanWeek, AddReminder, AddTask, AddTodo, EditTodo, Change, ChangeSet, LinkSource, MoveBlock, Origin, Proposal,
 )
-from agentv2.contracts.blocks import AddItem, EditItem, DeleteItem, Block, BLOCK_ADAPTER
+from agentv2.contracts.blocks import AddItem, EditItem, DeleteItem, Block, BLOCK_ADAPTER, MilestoneBlock
+from agentv2.core.milestones import replacement_targets
 from agentv2.contracts import ChangeSet as _ChangeSet
 from agentv2.contracts.planner import MilestoneSpec
 from agentv2.core.calendar import week_start
-from agentv2.core.context import BlockRow, Context, GoalHours, PlanWeekRow, RecurringRow
+from agentv2.core.context import BlockRow, Context, GoalHours, PlanMonthRow, PlanWeekRow, RecurringRow
 from agentv2.core.profile import UserProfile, to_planner
 from agentv2.core.recurring import occurrences
 from pydantic import TypeAdapter
@@ -121,6 +122,11 @@ def _note_hours(note: str | None) -> float:
     return float(m.group(1)) if m else 0.0
 
 
+def _plan_outcomes(description: str | None) -> tuple[str, ...]:
+    """A plan row's outcomes, stored one per line in its `description` column."""
+    return tuple(line.strip() for line in (description or "").splitlines() if line.strip())
+
+
 class SqlStore:
     """One user's view of the database, for the length of one request."""
 
@@ -131,7 +137,7 @@ class SqlStore:
 
     async def context(self) -> Context:
         goals = (await self.session.execute(
-            select(Goal.id, Goal.title, Goal.target_date, Goal.weekly_hours).where(Goal.user_id == self.user_id, Goal.status != "dropped")
+            select(Goal.id, Goal.title, Goal.target_date, Goal.weekly_hours, Goal.status).where(Goal.user_id == self.user_id, Goal.status != "dropped")
         )).all()
         goal_rows = goals
         until = self.today + timedelta(days=CONTEXT_DAYS_AHEAD)
@@ -159,6 +165,12 @@ class SqlStore:
             select(PlanItem).where(
                 PlanItem.user_id == self.user_id, PlanItem.horizon == "weekly", PlanItem.status == STATUS_OPEN,
                 PlanItem.goal_id.is_not(None), PlanItem.start_date >= week_start(self.today))
+        )).scalars().all()
+        # The month rows, for the plan context the coach reads (THIS MONTH). Older rows have no outcomes.
+        monthly = (await self.session.execute(
+            select(PlanItem).where(
+                PlanItem.user_id == self.user_id, PlanItem.horizon == "monthly", PlanItem.status == STATUS_OPEN,
+                PlanItem.goal_id.is_not(None), PlanItem.start_date >= self.today.replace(day=1))
         )).scalars().all()
         titles = {g.id: g.title for g in goals}
         blockers = (await self.session.execute(select(Blocker).where(Blocker.user_id == self.user_id, Blocker.end_date >= self.today))).scalars().all()
@@ -300,10 +312,18 @@ class SqlStore:
             blocked_dates=frozenset(new_blocked_dates),
             goal_targets={g.id: g.target_date for g in goal_rows if g.target_date},
             today=self.today,
-            plan_weeks=tuple(PlanWeekRow(w.goal_id, titles.get(w.goal_id, ""), w.start_date, w.title, float(w.weekly_hours or 0)) for w in weekly if w.goal_id in titles),
+            plan_weeks=tuple(
+                PlanWeekRow(w.goal_id, titles.get(w.goal_id, ""), w.start_date, w.title, float(w.weekly_hours or 0),
+                            w.why or "", _plan_outcomes(w.description))
+                for w in weekly if w.goal_id in titles),
+            plan_months=tuple(
+                PlanMonthRow(m.goal_id, titles.get(m.goal_id, ""), m.start_date, m.title, _note_hours(m.note),
+                             m.why or "", _plan_outcomes(m.description))
+                for m in monthly if m.goal_id in titles),
             expanded_weeks=frozenset(new_expanded_weeks),
             open_items=new_open_items,
             goal_ids=frozenset(g.id for g in goals),
+            active_goal_ids=frozenset(g.id for g in goals if g.status == "active"),
             goal_titles={g.id: g.title for g in goals},
             goal_weekly_hours={g.id: float(g.weekly_hours) for g in goal_rows if g.weekly_hours},
             goal_milestones={g: tuple(ms) for g, ms in new_goal_milestones.items()},
@@ -396,15 +416,19 @@ class SqlStore:
             s.add(Milestone(id=change.id, user_id=self.user_id, goal_id=change.goal_id,
                             goal_title=goal.title if goal else "", title=change.title, target_date=change.target_date,
                             parent_id=change.parent_id, hours=change.hours or None))
+        elif isinstance(change, ReplaceMilestones):
+            await self._replace_milestones(change)
         elif isinstance(change, AddPlanMonth):
             last = (change.month_start.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+            # Outcomes live one per line in `description`: the column already exists, so no migration.
             s.add(PlanItem(id=change.id, user_id=self.user_id, goal_id=change.goal_id, horizon="monthly", title=change.focus,
                            note=f"{change.hours:g}h", start_date=change.month_start, end_date=last, due_date=last,
-                           why=change.why or None))
+                           description="\n".join(change.outcomes) or None, why=change.why or None))
         elif isinstance(change, AddPlanWeek):
             s.add(PlanItem(id=change.id, user_id=self.user_id, goal_id=change.goal_id, horizon="weekly", title=change.focus,
                            start_date=change.week_start, end_date=change.week_start + timedelta(days=WEEK_LAST_DAY_OFFSET),
-                           weekly_hours=round(change.hours), why=change.why or None))
+                           weekly_hours=round(change.hours), description="\n".join(change.outcomes) or None,
+                           why=change.why or None))
         elif isinstance(change, AddTask):
             # `note` keeps the effort (the UI reads it as "3h"); `day` is what puts the task on a
             # calendar, and `description` is the session's own sentence, not the goal's.
@@ -462,6 +486,79 @@ class SqlStore:
             await s.execute(delete(CalendarBlock).where(
                 CalendarBlock.id == change.id, CalendarBlock.user_id == self.user_id))
         await s.flush()
+
+    async def _milestone_blocks(self, goal_id: str | None = None) -> list[tuple[CalendarBlock, MilestoneBlock]]:
+        """The user's milestone rows from `calendar_blocks`, parsed, optionally for one goal.
+
+        An unparseable row is skipped rather than raised: one bad row must not make an edit fail.
+        """
+        rows = list((await self.session.execute(
+            select(CalendarBlock).where(
+                CalendarBlock.user_id == self.user_id, CalendarBlock.block_kind == "milestone")
+        )).scalars())
+        out: list[tuple[CalendarBlock, MilestoneBlock]] = []
+        for row in rows:
+            try:
+                blk = BLOCK_ADAPTER.validate_python(row.data or {})
+            except Exception:
+                continue
+            if blk.block_kind != "milestone":
+                continue
+            if goal_id is not None and blk.goal_id != goal_id:
+                continue
+            out.append((row, blk))
+        return out
+
+    async def _replace_milestones(self, change: ReplaceMilestones) -> None:
+        """Replace a goal's open milestones with `change.milestones`, keeping the done ones.
+
+        Milestones live in two tables (`milestones` before the 4-kind switch, `calendar_blocks`
+        after), and a goal may have rows in both, so both are read and both open sets are cleared.
+        A milestone is done when either copy says so; keeping it is the safe direction, since
+        deleting a finished milestone would erase work the user already achieved.
+        """
+        s, uid = self.session, self.user_id
+        goal = await s.get(Goal, change.goal_id)
+        goal_title = goal.title if goal else ""
+
+        old = list((await s.execute(
+            select(Milestone).where(Milestone.user_id == uid, Milestone.goal_id == change.goal_id)
+        )).scalars())
+        blocks = await self._milestone_blocks(change.goal_id)
+
+        done = {m.id for m in old if m.status == STATUS_DONE}
+        done.update(row.id for row, blk in blocks if blk.reached)
+        existing = {m.id for m in old} | {row.id for row, _blk in blocks}
+        keep, replace = replacement_targets((mid, mid in done) for mid in existing)
+
+        if replace:
+            # The blocks may carry ids whose legacy copy was already deleted by an earlier change;
+            # deleting by id is harmless when the row is not there.
+            await s.execute(delete(Milestone).where(
+                Milestone.user_id == uid, Milestone.id.in_(list(replace))))
+            await s.execute(delete(CalendarBlock).where(
+                CalendarBlock.user_id == uid, CalendarBlock.id.in_(list(replace))))
+
+        for m in change.milestones:
+            if m.id in keep:
+                continue  # done is fixed; an incoming copy of it is ignored
+            # A `MilestoneBlock` requires a date. An undated input (a goal with no deadline, and a
+            # model that offered no date) keeps the legacy row, which allows one — never a validation
+            # error on a confirmed plan.
+            if FOUR_KIND_WRITES and m.target_date is not None:
+                s.add(CalendarBlock(
+                    id=m.id, user_id=uid, block_kind="milestone", title=m.title,
+                    data=MilestoneBlock(
+                        id=m.id, title=m.title, goal_id=change.goal_id, target_date=m.target_date,
+                        parent_id=m.parent_id, hours=m.hours,
+                    ).model_dump(mode="json"),
+                ))
+            else:
+                s.add(Milestone(
+                    id=m.id, user_id=uid, goal_id=change.goal_id, goal_title=goal_title,
+                    title=m.title, target_date=m.target_date, parent_id=m.parent_id,
+                    hours=m.hours or None,
+                ))
 
     async def _mark_calendar_block_done(self, item_id: str, *, outcome: str = "full", fraction: float | None = None) -> None:
         """Mirror `CompleteItem` onto a `calendar_blocks` row of the same id.
@@ -584,6 +681,32 @@ class SqlStore:
             await s.execute(delete(Blocker).where(Blocker.id == change.id, Blocker.user_id == uid))
         elif isinstance(change, AddMilestone):
             await s.execute(delete(Milestone).where(Milestone.id == change.id, Milestone.user_id == uid))
+        elif isinstance(change, ReplaceMilestones):
+            # Undo: remove what the set wrote (from either table) and restore the open milestones
+            # it replaced. Done milestones were never touched, so they need no restoring.
+            ids = [m.id for m in change.milestones]
+            if ids:
+                # A done milestone is never written by the replacement, so undo must not delete one
+                # just because the set listed it: that would erase work the user had already done.
+                done_rows = set((await s.execute(
+                    select(Milestone.id).where(
+                        Milestone.user_id == uid, Milestone.id.in_(ids), Milestone.status == STATUS_DONE
+                    )
+                )).scalars())
+                done_rows |= {
+                    row.id for row, blk in await self._milestone_blocks(change.goal_id)
+                    if row.id in ids and blk.reached
+                }
+                ids = [i for i in ids if i not in done_rows]
+                if ids:
+                    await s.execute(delete(Milestone).where(Milestone.user_id == uid, Milestone.id.in_(ids)))
+                    await s.execute(delete(CalendarBlock).where(CalendarBlock.user_id == uid, CalendarBlock.id.in_(ids)))
+            for m in change.before:
+                s.add(Milestone(
+                    id=m.id, user_id=uid, goal_id=change.goal_id, goal_title="",
+                    title=m.title, target_date=m.target_date, parent_id=m.parent_id,
+                    hours=m.hours or None,
+                ))
         elif isinstance(change, AddReminder):
             await s.execute(delete(Reminder).where(Reminder.id == change.id, Reminder.user_id == uid))
         elif isinstance(change, AddItem):

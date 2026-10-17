@@ -50,6 +50,35 @@ class AddMilestone(_Strict):
     hours: float = 0
 
 
+class MilestoneInput(_Strict):
+    """One milestone in a replacement set. `AddMilestone` minus the goal id, which the set carries."""
+
+    id: str
+    title: str
+    #: `None` only when the goal itself has no deadline; otherwise the builder dates every milestone.
+    target_date: date | None = None
+    parent_id: str | None = None
+    hours: float = 0
+
+
+class ReplaceMilestones(_Strict):
+    """Replace a goal's **open** milestones with this set, keeping the ones already done.
+
+    Editing a goal re-proposes the whole plan; confirming applies the goal update and this set as one
+    change, so a refinement can add, drop, re-date and re-size milestones in one transaction. Done
+    milestones are never touched — they record work already achieved, and re-dating one would rewrite
+    history. The store keeps them regardless of whether they are listed here, and removes every open
+    milestone of the goal that this set leaves out.
+    """
+
+    kind: Literal["replace_milestones"] = "replace_milestones"
+    goal_id: str
+    milestones: list[MilestoneInput] = Field(default_factory=list)
+    #: The open milestones this set replaces, as they were. The builder fills it from the store so
+    #: undo can put them back; the validator ignores it and the writer never reads it.
+    before: list[MilestoneInput] = Field(default_factory=list)
+
+
 class AddTask(_Strict):
     """Work under a goal, and the day it is for when the planner has picked one.
 
@@ -125,6 +154,9 @@ class AddPlanWeek(_Strict):
     hours: float = Field(gt=0)
     #: Why this exists, one plain sentence for the user, shown when they open it.
     why: str = ""
+    #: What the user can check off by the end of the week, 2-4 short results. Stored one per line in
+    #: the plan row's `description` column; optional so an older plan still writes.
+    outcomes: list[str] = Field(default_factory=list)
 
 
 class AddPlanMonth(_Strict):
@@ -140,6 +172,8 @@ class AddPlanMonth(_Strict):
     hours: float = Field(gt=0)
     #: Why this exists, one plain sentence for the user, shown when they open it.
     why: str = ""
+    #: What the user can check off by the end of the month; stored like a week's outcomes.
+    outcomes: list[str] = Field(default_factory=list)
 
 
 class CompleteItem(_Strict):
@@ -249,7 +283,7 @@ class MoveBlock(_Strict):
 
 
 Change = Annotated[
-    AddBlocker | AddRecurring | StopRecurring | ClearGoalPlan | CompleteItem | AddGoal | AddMilestone | AddTask | AddReminder | AddBlock | MoveBlock | LinkSource | AddPlanWeek | AddPlanMonth | AddTodo | EditTodo
+    AddBlocker | AddRecurring | StopRecurring | ClearGoalPlan | CompleteItem | AddGoal | AddMilestone | ReplaceMilestones | AddTask | AddReminder | AddBlock | MoveBlock | LinkSource | AddPlanWeek | AddPlanMonth | AddTodo | EditTodo
     | AddItem | EditItem | DeleteItem,
     Field(discriminator="kind"),
 ]

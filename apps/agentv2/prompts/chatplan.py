@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from ..config import PROPOSAL_ACTIONS
 from ..contracts.chatplan import ChatPlanReply
+from ..core.plan_context import PLAN_BLOCK_HEADER
 from ..llm import schema_text
 
 _ACTIONS = "\n".join(f"- {a}: args {doc}" for a, doc in PROPOSAL_ACTIONS.items())
@@ -24,8 +25,12 @@ Reply with only JSON matching this schema:
 {schema_text(ChatPlanReply)}"""
 
 
-def chatplan_user(message: str, today: str, goals: list[str], open_items: list[str], history: list[tuple[str, str]], calendar: str = "") -> str:
+def chatplan_user(message: str, today: str, goals: list[str], open_items: list[str], history: list[tuple[str, str]], calendar: str = "", plan: str = "") -> str:
     g = "\n".join(f"- {t}" for t in goals) or "(none)"
     o = "\n".join(f"- {t}" for t in open_items[:30]) or "(none)"
     h = "\n".join(f"{r}: {t}" for r, t in history) or "(start of chat)"
-    return f"Today is {today}.\n\nCalendar:\n{calendar}\n\nGoals:\n{g}\n\nOpen tasks:\n{o}\n\nRecent chat:\n{h}\n\nLatest message:\n{message}"
+    base = f"Today is {today}.\n\nCalendar:\n{calendar}\n\nGoals:\n{g}"
+    if plan:
+        # What the plan already commits to: THIS MONTH, THIS WEEK and TODAY, per goal.
+        base += f"\n\n{PLAN_BLOCK_HEADER}\n{plan}"
+    return base + f"\n\nOpen tasks:\n{o}\n\nRecent chat:\n{h}\n\nLatest message:\n{message}"

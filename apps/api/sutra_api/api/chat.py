@@ -42,6 +42,7 @@ from agentv2.llm import reply_text
 from ..agent_store import SqlStore
 from ..coach_context import build_coach_context
 from ..db import get_session
+from ..ids import conversation_id
 from ..rate_limit import llm_rate_limit
 from ..deps import CurrentUser, planner_enabled_for, require_user
 from ..llm import get_complete, provider_status
@@ -62,7 +63,9 @@ from ..stream import (
 from ..wire import chat_message, proposal_sse
 
 #: Recent turns the planner sees with a chat message. Generous; it only bounds a query.
-CHAT_CONTEXT_TURNS = 12
+#: A goal's plan is refined over many turns, and the turn that proposed the plan the user is now
+#: editing can be dozens back; 12 dropped it and the model re-invented the plan instead of revising it.
+CHAT_CONTEXT_TURNS = 60
 
 router = APIRouter(tags=["chat"])
 
@@ -70,7 +73,9 @@ router = APIRouter(tags=["chat"])
 HISTORY_LIMIT = 200
 HISTORY_DEFAULT = 50
 CONTEXT_TURNS_GENERAL = 24
-CONTEXT_TURNS_SCOPED = 12
+#: A scoped conversation is one goal's. It must keep the whole add-goal exchange in view, including
+#: the turn that proposed the plan being refined now, so this matches `CHAT_CONTEXT_TURNS`.
+CONTEXT_TURNS_SCOPED = 60
 
 #: The kinds a scoped conversation may be. `not_planned` is v1's answer for
 #: anything else.
@@ -78,6 +83,9 @@ CONTEXT_TURNS_SCOPED = 12
 CHAT_ROLES = frozenset({"user", "assistant"})
 KIND_ADD_GOAL = "add_goal"
 KIND_PLAN_DAY = "plan_day"
+#: Not a bucket kind: a prompt mode. Editing a goal continues its add-goal conversation (so the
+#: model keeps the context) but is told to revise the existing plan rather than propose a second goal.
+KIND_EDIT_GOAL = "edit_goal"
 INTENTS = frozenset(
     {"add_goal", "plan_day", "review_progress", "edit_goal", "drop_goal"}
 )
@@ -141,14 +149,95 @@ async def _sources_block(session: AsyncSession, *, user_id: str, source_ids: lis
     )
 
 
+#: How many milestone names one history summary names before it trails off. Every proposal is still
+#: in the conversation; this only stops one old plan from crowding out the turns after it.
+HISTORY_MILESTONES_SHOWN = 12
+
+#: The actions whose arguments describe the plan itself. The rest (tasks, blocks, sources) are
+#: scheduling detail the model does not need to revise a plan.
+_PLAN_ACTIONS = frozenset({"create_goal", "update_goal", "set_goal_dates"})
+
+
+def _squash(value: object) -> str:
+    """A value on one line: proposal args are free-form and may arrive with newlines."""
+    return " ".join(str(value or "").split())
+
+
+def _goal_clause(action: str, args: dict) -> str:
+    """`goal 'Switch jobs', by 2027-01-15, 6h/week` from a goal proposal."""
+    title = _squash(args.get("title"))
+    bits: list[str] = []
+    if title:
+        bits.append(f"goal '{title}'" if action == "create_goal" else f"goal '{title}' updated")
+    if args.get("target_date"):
+        bits.append(f"by {args['target_date']}")
+    if args.get("weekly_hours") not in (None, ""):
+        bits.append(f"{args['weekly_hours']}h/week")
+    return ", ".join(bits)
+
+
+def _proposals_summary(proposals: list) -> str:
+    """The one line a past assistant turn keeps about the plan it proposed.
+
+    The model otherwise sees only its own prose, so the plan it proposed three turns ago — the
+    target date, the hours, the milestones — is invisible. Refining then invents a new plan rather
+    than revising the one the user is looking at.
+    """
+    goals: list[str] = []
+    milestones: list[str] = []
+    for p in proposals:
+        # A rejected card is not part of the plan the user is looking at; keeping it in the summary
+        # invites the model to propose it again.
+        if str(getattr(p, "status", "") or "") == "rejected":
+            continue
+        action = str(getattr(p, "action", "") or "")
+        args = getattr(p, "args", None) or {}
+        if not isinstance(args, dict):
+            args = {}
+        if action in _PLAN_ACTIONS:
+            clause = _goal_clause(action, args)
+            if clause:
+                goals.append(clause)
+        elif action == "add_milestone":
+            title = _squash(args.get("title"))
+            if title:
+                when = args.get("target_date")
+                milestones.append(f"{title} ({when})" if when else title)
+    parts: list[str] = []
+    if goals:
+        parts.append("Proposed: " + "; ".join(goals))
+    if milestones:
+        shown = milestones[:HISTORY_MILESTONES_SHOWN]
+        extra = len(milestones) - len(shown)
+        parts.append("milestones: " + ", ".join(shown) + (f", … (+{extra} more)" if extra else ""))
+    return "; ".join(parts)
+
+
+def _history_with_summaries(rows: list, by_message: dict) -> list[dict]:
+    """Stored turns as the model should see them, each past turn keeping its proposals.
+
+    Pure, so the history the model actually receives can be pinned in a unit test without a database.
+    """
+    out: list[dict] = []
+    for r in rows:
+        content = _with_questions(r.content, r.questions)
+        summary = _proposals_summary(list(by_message.get(r.id, []) or []))
+        if summary:
+            content = f"{content}\n\n{summary}".strip()
+        out.append({"role": r.role, "content": content, "questions": list(r.questions or [])})
+    return out
+
+
 async def _history_text(
     session: AsyncSession, *, user_id: str, conv_id: str, limit: int
 ) -> list[dict]:
     rows = await chat_store.history(
         session, user_id=user_id, conv_id=conv_id, limit=limit
     )
-    return [{"role": r.role, "content": _with_questions(r.content, r.questions), "questions": list(r.questions or [])}
-            for r in rows]
+    by_message = await chat_store.proposals_for_messages(
+        session, message_ids=[r.id for r in rows]
+    )
+    return _history_with_summaries(rows, by_message)
 
 
 def _with_questions(content: str, questions: list | None) -> str:
@@ -267,6 +356,9 @@ async def chat_stream(
     kind = str(body.get("kind") or "")
     title = str(body.get("title") or "")
     scoped_kind = kind or SCOPE_TO_KIND.get(scope, "") or "general"
+    # Editing a goal continues its add-goal bucket — the model keeps the conversation that proposed
+    # the plan — but the prompt must refuse `create_goal` and revise the existing one instead.
+    prompt_kind = KIND_EDIT_GOAL if body.get("edit_goal") is True else scoped_kind
 
     conv_id, effective_ref, redirected = await _resolve_bucket(
         session, user_id=user.user_id, scope=scope, ref_id=ref_id, kind=kind, title=title
@@ -314,7 +406,7 @@ async def chat_stream(
     async def events():
         delivered: list[str] = []
         try:
-            for line in _status_lines(scoped_kind, n_sources=len(source_ids), has_history=bool(turns), interview=not auto_answer):
+            for line in _status_lines(prompt_kind, n_sources=len(source_ids), has_history=bool(turns), interview=not auto_answer):
                 yield frame(status_frame(line))
             async for event, payload in stream_turn(
                 complete=complete,
@@ -323,7 +415,7 @@ async def chat_stream(
                 auto_answer=auto_answer,
                 clarify=clarify,
                 proactive_propose=body.get("proactive_propose") is True,
-                scoped_kind=scoped_kind,
+                scoped_kind=prompt_kind,
                 asked=asked,
                 rounds_asked=rounds_asked,
                 profile_answers=profile_answers,
@@ -480,6 +572,67 @@ async def chat_history(
         session, message_ids=[r.id for r in rows]
     )
     return [chat_message(r, by_message.get(r.id, [])) for r in rows]
+
+
+#: The prefix a deterministic add-goal conversation id carries: `conv_add_goal_<ref>`.
+ADD_GOAL_CONV_PREFIX = conversation_id(KIND_ADD_GOAL, "")
+
+
+@router.get("/chat/goal-thread")
+async def goal_thread(
+    goal_id: str = "",
+    session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(require_user),
+) -> dict:
+    """The Add-goal conversation that produced `goal_id`, so editing continues it.
+
+    `conversations.goal_id` is the link: confirming `create_goal` writes the new
+    goal's id on the conversation. A goal created before that link existed (or by
+    a path that did not set it) falls back to the deterministic bucket scoped to
+    the goal itself — the conversation an earlier edit opened — and finally to no
+    thread at all, which the dialog starts fresh rather than pretending otherwise.
+
+    Answers `{ref_id, messages}`, history in `/chat/history`'s shape.
+    """
+    if not goal_id:
+        raise HTTPException(status_code=400, detail="goal_id is required")
+    goal_id = goal_id.strip()
+
+    # Newest first: an edit conversation also carries `goal_id`, and the add-goal one is the oldest;
+    # but if several edits exist, continuing the most recent keeps the freshest plan in view.
+    newest = (
+        await session.execute(
+            select(Conversation)
+            .where(
+                Conversation.user_id == user.user_id,
+                Conversation.goal_id == goal_id,
+                Conversation.kind == KIND_ADD_GOAL,
+            )
+            .order_by(Conversation.last_message_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    if newest is None:
+        newest = await session.get(Conversation, conversation_id(KIND_ADD_GOAL, goal_id))
+    if newest is None:
+        return {"ref_id": goal_id, "messages": []}
+
+    ref_id = (
+        newest.id[len(ADD_GOAL_CONV_PREFIX):]
+        if newest.id.startswith(ADD_GOAL_CONV_PREFIX)
+        else goal_id
+    )
+    rows = await chat_store.history(
+        session, user_id=user.user_id, conv_id=newest.id, limit=HISTORY_DEFAULT
+    )
+    by_message = await chat_store.proposals_for_messages(
+        session, message_ids=[r.id for r in rows]
+    )
+    return {
+        "ref_id": ref_id,
+        "messages": [chat_message(r, by_message.get(r.id, [])) for r in rows],
+    }
 
 
 @router.delete("/chat/history")

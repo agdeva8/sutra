@@ -13,7 +13,9 @@ from ..core.context import BlockRow, Context, GoalHours, PlanWeekRow, RecurringR
 from datetime import date as _date, timedelta as _timedelta
 
 from ..core.recurring import occurrences
-from ..contracts import AddRecurring, StopRecurring, ClearGoalPlan, CompleteItem, AddBlock, AddBlocker, AddGoal, AddMilestone, AddPlanMonth, AddPlanWeek, AddReminder, AddTask, AddTodo, EditTodo, Change, ChangeSet, LinkSource, MoveBlock, Origin, Proposal
+from ..contracts import AddRecurring, StopRecurring, ClearGoalPlan, CompleteItem, AddBlock, AddBlocker, AddGoal, AddMilestone, ReplaceMilestones, AddPlanMonth, AddPlanWeek, AddReminder, AddTask, AddTodo, EditTodo, Change, ChangeSet, LinkSource, MoveBlock, Origin, Proposal
+from ..contracts.blocks import MilestoneBlock
+from ..core.milestones import replacement_targets
 from ..contracts.blocks import AddItem, EditItem, DeleteItem, Block
 
 
@@ -141,6 +143,46 @@ class InMemoryStore:
             goal_milestones={g: tuple(ms) for g, ms in new_goal_milestones.items()},
         )
 
+    def _replace_milestones(self, change: ReplaceMilestones) -> None:
+        """Drop the goal's open milestones and write the new set; done ones stay untouched.
+
+        Mirrors `SqlStore`: the same rule over both tables this store models — the legacy
+        `self.milestones` and 4-kind milestone blocks.
+        """
+        existing = {mid for mid, m in self.milestones.items() if m.goal_id == change.goal_id}
+        existing.update(
+            bid for bid, blk in self.blocks4.items()
+            if blk.block_kind == "milestone" and blk.goal_id == change.goal_id
+        )
+
+        def is_done(mid: str) -> bool:
+            # `self.done` records completed tasks and milestones; a 4-kind milestone also carries
+            # its own `reached` flag, and either says the work is achieved.
+            if mid in self.done:
+                return True
+            blk = self.blocks4.get(mid)
+            return bool(getattr(blk, "reached", False))
+
+        _keep, replace = replacement_targets((mid, is_done(mid)) for mid in existing)
+        for mid in replace:
+            self.milestones.pop(mid, None)
+            self.blocks4.pop(mid, None)
+        for m in change.milestones:
+            if is_done(m.id):
+                continue  # done is fixed; an incoming copy of it is ignored
+            # Both shapes require a date; an undated input has no row this store can model. The SQL
+            # store keeps it in the legacy table, which allows one.
+            if m.target_date is None:
+                continue
+            self.milestones[m.id] = AddMilestone(
+                id=m.id, goal_id=change.goal_id, title=m.title, target_date=m.target_date,
+                parent_id=m.parent_id, hours=m.hours,
+            )
+            self.blocks4[m.id] = MilestoneBlock(
+                id=m.id, title=m.title, goal_id=change.goal_id, target_date=m.target_date,
+                parent_id=m.parent_id, hours=m.hours,
+            )
+
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[None]:
         snap = (dict(self.goals), dict(self.blocks), dict(self.tasks), dict(self.reminders),
@@ -201,6 +243,8 @@ class InMemoryStore:
                 self.blocks.pop(bid, None)
         elif isinstance(change, AddMilestone):
             self.milestones[change.id] = change
+        elif isinstance(change, ReplaceMilestones):
+            self._replace_milestones(change)
         elif isinstance(change, AddBlocker):
             self.blockers[change.id] = change
         elif isinstance(change, AddPlanWeek):
@@ -305,6 +349,20 @@ class InMemoryStore:
             self.months.pop(change.id, None)
         elif isinstance(change, AddMilestone):
             self.milestones.pop(change.id, None)
+        elif isinstance(change, ReplaceMilestones):
+            # Undo: drop what the set wrote and put the open milestones it replaced back.
+            for m in change.milestones:
+                if m.id in self.done:
+                    continue  # never written by the replacement, so undo must not remove it
+                self.milestones.pop(m.id, None)
+                self.blocks4.pop(m.id, None)
+            for m in change.before:
+                if m.target_date is None:
+                    continue  # both shapes require a date; nothing was written to restore
+                self.milestones[m.id] = AddMilestone(
+                    id=m.id, goal_id=change.goal_id, title=m.title, target_date=m.target_date,
+                    parent_id=m.parent_id, hours=m.hours,
+                )
         elif isinstance(change, AddBlocker):
             self.blockers.pop(change.id, None)
         elif isinstance(change, LinkSource):

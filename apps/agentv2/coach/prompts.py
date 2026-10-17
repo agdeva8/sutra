@@ -84,7 +84,13 @@ Rules for the block:
   sub-milestones, and give each sub-milestone `parent` (its facet's exact title) and every milestone `hours`.
 - {MILESTONE_RULES}
 - Keep the goal `title` identical to the one already proposed or confirmed in this conversation unless the
-  user asked to rename it. When the user rejects a proposed item, drop that item and do not re-plan the rest.
+  user asked to rename it.
+- When the user rejects a proposed item, remove **only** that item. Leave the rest of the plan as it is;
+  a rejection is not a request to re-plan.
+- When the user refines an item, re-plan everything it affects. Change the milestone it touches, re-date
+  and re-size the milestones after it so they still fit the goal's target date and weekly hours, add a
+  milestone the change now needs, and drop one that no longer fits. Propose the whole plan again, not
+  just the edited line.
 - `horizon` is one of: weekly, short, medium, long.
 - Omit the block entirely when you are asking a question.
 """
@@ -97,6 +103,26 @@ ADD_GOAL_MODE = """
 Your job this turn is to produce a usable proposal, not to interview.
 Make reasonable assumptions and state them in one line, then propose.
 Only ask a question if the plan would be materially wrong without the answer.
+"""
+
+#: Not a conversation kind: a prompt mode. Editing a goal continues the add-goal thread, so the
+#: model has the history that produced the plan, but it must revise that plan rather than add a second.
+KIND_EDIT_GOAL = "edit_goal"
+
+#: Appended when the user edits an existing goal. It must propose the whole plan again, because the
+#: confirm applies the update and the complete open-milestone set as one change and then re-plans.
+EDIT_GOAL_MODE = """
+=== EDIT GOAL MODE ===
+The goal already exists. Revise it; do not create a second one.
+- Propose `update_goal`, never `create_goal`. Its args carry the goal's `goal_id` and only the fields
+  that change (`title`, `target_date`, `weekly_hours`, `why`); leave a field out to keep it.
+- Propose the whole open milestone set again as `add_milestone` actions — the milestones the user kept
+  unchanged as well as the ones you re-date, re-size, add or drop. Confirming replaces every open
+  milestone with exactly this set, so anything you leave out disappears.
+- Milestones marked done in the conversation are fixed. Never re-date, re-size, move or drop them, and
+  never include them in the set; they are kept as they are.
+- The set must fit the goal's target date and weekly hours. Keep each facet before its sub-milestones,
+  every sub-milestone naming its facet's exact title as `parent`, and every milestone dated and sized.
 """
 
 #: Appended in grill mode. The user is asking to be interrogated.
@@ -174,6 +200,12 @@ has nothing to accept. Restate it as a tools block now: one `create_goal` and,
 one `add_milestone` action per checkpoint (see the milestone rules in the system prompt). Prose first, then
 the block. Do not ask any questions."""
 
+#: The repair turn when editing: there is already a goal, so the block updates it instead of creating one.
+EDIT_REFINE_PROMPT = """That reply described the revised plan but did not include the tools block, so
+the user has nothing to accept. Restate it as a tools block now: one `update_goal` for the goal's own
+fields, and one `add_milestone` action for every open milestone in the plan (see the milestone rules in
+the system prompt). Do not propose `create_goal`. Prose first, then the block. Do not ask any questions."""
+
 
 #: Scoped kind of the "Plan my day" chat.
 KIND_PLAN_DAY = "plan_day"
@@ -203,6 +235,8 @@ def mode_hint(*, proactive_propose: bool, clarify: bool, auto_answer: bool, scop
     """
     if clarify:
         return GRILL_MODE
+    if scoped_kind == KIND_EDIT_GOAL:
+        return EDIT_GOAL_MODE
     if scoped_kind == KIND_PLAN_DAY:
         return PLAN_DAY_MODE
     if scoped_kind == KIND_ADD_GOAL and not auto_answer:

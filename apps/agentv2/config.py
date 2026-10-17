@@ -130,6 +130,9 @@ from datetime import time as _time  # noqa: E402
 #: Below this, an entry waits for the user instead of being applied (HLD §8).
 TRIAGE_CONFIDENCE_MIN = 0.7
 
+#: Below this, an item's guessed goal is dropped and the item is not linked to it.
+GOAL_LINK_CONFIDENCE_MIN = 0.8
+
 #: The hours the agent may schedule into. Outside it is the user's own time.
 ACTIVE_WINDOW_START = _time(7, 0)
 ACTIVE_WINDOW_END = _time(22, 0)
@@ -166,8 +169,11 @@ DAY_WINDOW_WEEKS = 12
 #: Weeks planned down to days at the same time. Weeks do not share days, so they are independent; this
 #: only bounds how many model calls are in flight at once.
 PLAN_PARALLEL_WEEKS = 6
-#: One goal may take at most this share of a week's free hours, so goals coexist.
+#: One goal may take at most this share of a week's free hours when other active goals compete, so
+#: goals coexist.
 GOAL_MAX_SHARE_OF_FREE = 0.5
+#: A goal that is the user's only active one may use all of the free time: there is nobody to share with.
+GOAL_MAX_SHARE_OF_FREE_SINGLE = 1.0
 #: A week-level plan may land this far under the goal's total before it counts as unusable.
 TOTAL_UNDERSHOOT = 0.1
 #: Fix attempts after a plan breaks a budget rule, before the code fallback takes over.

@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 
-from ..config import BLOCK_COMMITTED, DEFAULT_BLOCK_MINUTES, FOUR_KIND_WRITES, MAX_AWAY_DAYS, TRIAGE_CONFIDENCE_MIN
+from ..config import BLOCK_COMMITTED, DEFAULT_BLOCK_MINUTES, FOUR_KIND_WRITES, GOAL_LINK_CONFIDENCE_MIN, MAX_AWAY_DAYS, TRIAGE_CONFIDENCE_MIN
 from ..config import TODO_ID_PREFIX
 from ..contracts import AddBlocker, AddRecurring, StopRecurring, CompleteItem, AddBlock, AddGoal, AddReminder, AddTask, AddTodo, Change, ChangeSet, LinkSource, Origin
 from ..contracts.blocks import AddItem, AwayBlock, EditItem, EventBlock, MilestoneBlock, Repeat, TaskBlock
@@ -28,6 +28,18 @@ class Routed:
     #: Set when nothing could be filed and the entry should wait for the user.
     waiting: str | None = None
     notes: list[str] = field(default_factory=list)
+
+
+def _goal_for(it: TriageItem, ctx: Context) -> str | None:
+    """The goal this item belongs to, or None.
+
+    Both halves matter: the id must be a goal the user actually has, and the model must have been
+    sure. A guessed link is worse than none — it pulls a note into the wrong plan, and nothing later
+    tells the user why it moved.
+    """
+    if it.goal_id and it.goal_id in ctx.goal_ids and it.goal_confidence >= GOAL_LINK_CONFIDENCE_MIN:
+        return it.goal_id
+    return None
 
 
 def _item(chat, it: TriageItem, ctx: Context, now: datetime, source_id: str | None, from_image: bool = False):
@@ -103,13 +115,12 @@ def _item(chat, it: TriageItem, ctx: Context, now: datetime, source_id: str | No
     if it.bucket == "source":
         if not source_id:
             return [], None, None
-        gid = it.goal_id if it.goal_id in ctx.goal_ids else None
-        return [LinkSource(source_id=source_id, goal_id=gid, title=it.title, summary=it.summary or "")], None, None
+        return [LinkSource(source_id=source_id, goal_id=_goal_for(it, ctx), title=it.title, summary=it.summary or "")], None, None
 
-    if it.bucket == "todo" or (it.bucket == "task" and (it.goal_id not in ctx.goal_ids or not it.effort_hours)):
+    if it.bucket == "todo" or (it.bucket == "task" and (not _goal_for(it, ctx) or not it.effort_hours)):
         # A small action, or "task" work the model could not tie to a goal and a size: file it as a
         # plain to-do rather than interrogating the user. It is sized and scheduled later if they want.
-        gid = it.goal_id if it.goal_id in ctx.goal_ids else None
+        gid = _goal_for(it, ctx)
         due_day = parse_date(it.due.date, now.date()) if it.due and it.due.date else None
         due_time = parse_hhmm(it.due.time) if it.due and it.due.time else None
         if due_day is not None and due_day < now.date():
@@ -121,7 +132,7 @@ def _item(chat, it: TriageItem, ctx: Context, now: datetime, source_id: str | No
                         day=due_day, due_time=due_time if due_day else None)], None, None
 
     if it.bucket == "task":
-        task = AddTask(id=new_id("task"), goal_id=it.goal_id, title=it.title, effort_hours=it.effort_hours)
+        task = AddTask(id=new_id("task"), goal_id=_goal_for(it, ctx), title=it.title, effort_hours=it.effort_hours)
         blocks, how = place_task(chat, it.title, it.effort_hours, ctx, now, task_id=task.id, goal_id=task.goal_id)
         left_over = "no free room this week" if how == "no_room" else "couldn't find a good time yet"
         return [task, *blocks], (f"placed via {how}" if blocks else f"{left_over}; task added unscheduled"), None
@@ -134,7 +145,7 @@ def _item(chat, it: TriageItem, ctx: Context, now: datetime, source_id: str | No
         named = parse_hhmm(spec.at_time) if spec.at_time else None
         if named is not None:
             times = [named]
-        gid = it.goal_id if it.goal_id in ctx.goal_ids else None
+        gid = _goal_for(it, ctx)
         if FOUR_KIND_WRITES:
             # One Task per time of day (D8), alerting at that time. It sits on its first day; a run of days
             # repeats on those weekdays until the last one, the same shape the backfill gives an old reminder.
@@ -160,7 +171,7 @@ def _item(chat, it: TriageItem, ctx: Context, now: datetime, source_id: str | No
     end = parse_hhmm(b.end_time) if b and b.end_time else None
     end = end or (datetime.combine(day, start) + timedelta(minutes=DEFAULT_BLOCK_MINUTES)).time()
     # A time the user named stays committed (the planner must not move it); a goal on it is colour and progress, not a licence to move.
-    gid = it.goal_id if it.goal_id in ctx.goal_ids else None
+    gid = _goal_for(it, ctx)
     if FOUR_KIND_WRITES:
         # D9: A block with a goal -> Task(placed_by=user). A block without a goal -> Event.
         if gid:

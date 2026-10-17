@@ -29,7 +29,16 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from .clarify_options import enrich
-from .prompts import KIND_ADD_GOAL, KIND_PLAN_DAY, MAX_QUESTIONS_PER_ROUND, PROPOSE_NOW_PROMPT, REFINE_PROMPT, assemble_system
+from .prompts import (
+    EDIT_REFINE_PROMPT,
+    KIND_ADD_GOAL,
+    KIND_EDIT_GOAL,
+    KIND_PLAN_DAY,
+    MAX_QUESTIONS_PER_ROUND,
+    PROPOSE_NOW_PROMPT,
+    REFINE_PROMPT,
+    assemble_system,
+)
 from .questions import drop_answered_by_profile, filter_repeats
 from .safety import signals_crisis
 from .tools_block import (
@@ -131,7 +140,11 @@ async def run_turn(
         and not block
     ):
         refined = True
-        follow_up = await complete(system, REFINE_PROMPT)
+        # Editing repairs to `update_goal`, adding to `create_goal`: a repair turn that created a
+        # second goal for one the user is editing would be exactly the bug this mode exists to stop.
+        follow_up = await complete(
+            system, EDIT_REFINE_PROMPT if scoped_kind == KIND_EDIT_GOAL else REFINE_PROMPT
+        )
         extra_prose, extra_block = split_prose_and_tools(follow_up)
         proposals = parse_proposals(extra_block)
         if proposals:

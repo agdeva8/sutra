@@ -59,6 +59,9 @@ _TIME_RE = re.compile(r"^\d{2}:\d{2}(:\d{2})?$")
 class ExecResult:
     success: bool
     result: str
+    #: The goal this action changed, when it names one. The confirm route reads it to decide which
+    #: goal's sessions need re-planning and which conversation to link the new goal to.
+    goal_id: str | None = None
 
 
 #: Spoken date spellings tried after ISO. Day-first because the default time zone is IST.
@@ -87,8 +90,8 @@ def _fail(msg: str) -> ExecResult:
     return ExecResult(False, msg)
 
 
-def _ok(msg: str) -> ExecResult:
-    return ExecResult(True, msg)
+def _ok(msg: str, *, goal_id: str | None = None) -> ExecResult:
+    return ExecResult(True, msg, goal_id)
 
 
 def _as_date(v: object) -> date | None:
@@ -246,7 +249,7 @@ async def _create_goal(session: AsyncSession, *, user_id: str, args: dict) -> Ex
         summary=summary,
         payload={"proposal_id": None, "args": _safe(args)},
     )
-    return _ok(summary)
+    return _ok(summary, goal_id=goal.id)
 
 
 async def _update_goal(session: AsyncSession, *, user_id: str, args: dict) -> ExecResult:
@@ -311,7 +314,7 @@ async def _update_goal(session: AsyncSession, *, user_id: str, args: dict) -> Ex
         summary=summary,
         detail={"freed_weekly_hours": freed} if freed else None,
     )
-    return _ok(summary)
+    return _ok(summary, goal_id=goal.id)
 
 
 async def _drop_goal(session: AsyncSession, *, user_id: str, args: dict) -> ExecResult:
@@ -414,7 +417,7 @@ async def _set_goal_dates(
         milestone_moved=True,
         summary=summary,
     )
-    return _ok(summary)
+    return _ok(summary, goal_id=goal.id)
 
 
 async def _add_milestone(
@@ -468,7 +471,7 @@ async def _add_milestone(
             milestone_moved=True,
             summary=summary,
         )
-    return _ok(summary)
+    return _ok(summary, goal_id=ms.goal_id)
 
 
 async def _add_blocker(session: AsyncSession, *, user_id: str, args: dict) -> ExecResult:

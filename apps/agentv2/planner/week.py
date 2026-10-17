@@ -10,13 +10,16 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
-from ..config import FIX_MAX_LOOPS, GOAL_MAX_SHARE_OF_FREE, MONTH_LEVEL_MIN_WEEKS, WEEK_HORIZON
+from ..config import FIX_MAX_LOOPS, GOAL_MAX_SHARE_OF_FREE, GOAL_MAX_SHARE_OF_FREE_SINGLE, MONTH_LEVEL_MIN_WEEKS, WEEK_HORIZON
 from ..contracts.planner import GoalSpec, MonthPlan, WeekPlan
 from ..core.budget import check_allocation, even_split
-from ..core.calendar import free_hours_by_week
+from ..core.calendar import free_hours_by_day, free_hours_by_week
 from ..core.context import Context
 from ..llm import complete_json
-from ..prompts.planner import MONTH_SYSTEM, WEEK_SYSTEM, milestones_text, month_user, week_user
+from ..prompts.planner import (
+    MONTH_SYSTEM, SHORTFALL_WHY_CALENDAR, SHORTFALL_WHY_LIMIT, SHORTFALL_WHY_SHARED,
+    WEEK_SYSTEM, milestones_text, month_user, week_user,
+)
 
 WEEK_PREFIX = "wk_"
 
@@ -29,6 +32,8 @@ class WeekAlloc:
     why: str = ""
     #: Titles of the milestones this week works toward, for the day level.
     milestones: list[str] = field(default_factory=list)
+    #: What the user can check off by the week's end, 2-4 short results.
+    outcomes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -37,6 +42,7 @@ class MonthAlloc:
     focus: str
     hours: float
     why: str = ""
+    outcomes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -47,6 +53,8 @@ class WeekResult:
     shortfall: float
     #: The months the weeks roll up into, so each can be written as its own row.
     months: list[MonthAlloc] = field(default_factory=list)
+    #: One sentence per week that could not hold the pace the user asked for, for the plan's notes.
+    shortfalls: list[str] = field(default_factory=list)
 
 
 def _weeks_until(goal: GoalSpec, now: datetime) -> int:
@@ -62,7 +70,13 @@ def _month_of(week_id: str) -> str:
     return MONTH_PREFIX + week_id[len(WEEK_PREFIX):][:7]
 
 
-def _plan_months(chat, goal: GoalSpec, usable: dict[str, float]) -> tuple[dict[str, float], dict[str, tuple[str, str]], str]:
+def _share_of_free(ctx: Context) -> float:
+    """How much of a week's free time one goal may take: half when another goal competes, all when alone."""
+    active = ctx.active_goal_ids or ctx.goal_ids
+    return GOAL_MAX_SHARE_OF_FREE if len(active) >= 2 else GOAL_MAX_SHARE_OF_FREE_SINGLE
+
+
+def _plan_months(chat, goal: GoalSpec, usable: dict[str, float]) -> tuple[dict[str, float], dict[str, tuple[str, str, list[str]]], str]:
     """Hours per month. Same discipline as weeks: model, checked, fixed, then an even split."""
     cap: dict[str, float] = {}
     for wid, h in usable.items():
@@ -82,19 +96,22 @@ def _plan_months(chat, goal: GoalSpec, usable: dict[str, float]) -> tuple[dict[s
             alloc[m.month_id] = alloc.get(m.month_id, 0.0) + m.hours
         problem = check_allocation(alloc, cap, target)
         if problem is None:
-            return {k: v for k, v in alloc.items() if v > 0}, {m.month_id: (m.focus, m.why) for m in plan.months if m.focus}, "model"
+            return ({k: v for k, v in alloc.items() if v > 0},
+                    {m.month_id: (m.focus, m.why, m.outcomes) for m in plan.months if m.focus}, "model")
     return even_split(target, cap), {}, "even_split"
 
 
 def plan_weeks(chat, goal: GoalSpec, ctx: Context, now: datetime) -> WeekResult:
     free = free_hours_by_week(ctx, now, _weeks_until(goal, now))
+    share = _share_of_free(ctx)
     # The goal's own pace, when the user gave one, caps every week: "10 hours a week" means no 17-hour week.
     pace = goal.weekly_hours or float("inf")
-    usable = {f"{WEEK_PREFIX}{d.isoformat()}": round(min(h * GOAL_MAX_SHARE_OF_FREE, pace), 2) for d, h in free.items() if h > 0}
+    usable = {f"{WEEK_PREFIX}{d.isoformat()}": round(min(h * share, pace), 2) for d, h in free.items() if h > 0}
     if len(usable) <= MONTH_LEVEL_MIN_WEEKS:
         # A short goal needs no separate month call: its months are just its weeks, summed.
         r = _alloc_weeks(chat, goal, goal.total_hours, usable)
         r.months = _roll_up(r.allocs)
+        _note_shortfalls(r, goal, ctx, now, usable, share)
         return r
 
     # Long goal: months first, then the weeks inside each month against that month's hours.
@@ -114,19 +131,47 @@ def plan_weeks(chat, goal: GoalSpec, ctx: Context, now: datetime) -> WeekResult:
         results = list(pool.map(weeks_of, range(len(order))))
     allocs = sorted((a for r in results for a in r.allocs), key=lambda a: a.week)
     shortfall = sum(r.shortfall for r in results) + max(0.0, goal.total_hours - sum(months.values()))
-    return WeekResult(allocs, f"month({how})+week", round(shortfall, 2), _roll_up(allocs, month_meta))
+    shortfalls = [s for r in results for s in r.shortfalls]
+    result = WeekResult(allocs, f"month({how})+week", round(shortfall, 2), _roll_up(allocs, month_meta), shortfalls)
+    _note_shortfalls(result, goal, ctx, now, usable, share)
+    return result
 
 
-def _roll_up(allocs: list[WeekAlloc], meta: dict[str, tuple[str, str]] | None = None) -> list[MonthAlloc]:
+def _roll_up(allocs: list[WeekAlloc], meta: dict[str, tuple[str, str, list[str]]] | None = None) -> list[MonthAlloc]:
     """One row per month that has planned weeks: the hours its weeks actually got, and what it is for.
     The month's own focus (if the model gave one) wins; otherwise it borrows its first week's."""
     out: dict[date, MonthAlloc] = {}
     for a in allocs:
         first = a.week.replace(day=1)
-        focus, why = (meta or {}).get(f"{MONTH_PREFIX}{first:%Y-%m}") or (a.focus, a.why)
-        m = out.setdefault(first, MonthAlloc(first, focus, 0.0, why))
+        focus, why, outcomes = (meta or {}).get(f"{MONTH_PREFIX}{first:%Y-%m}") or (a.focus, a.why, a.outcomes)
+        m = out.setdefault(first, MonthAlloc(first, focus, 0.0, why, list(outcomes)))
         m.hours = round(m.hours + a.hours, 2)
     return [m for _, m in sorted(out.items())]
+
+
+def _note_shortfalls(res: WeekResult, goal: GoalSpec, ctx: Context, now: datetime, usable: dict[str, float], share: float) -> None:
+    """Say when a week cannot hold the pace the user asked for, instead of shrinking it silently.
+
+    It fires only when the week was *offered* less than the goal's own weekly hours (the calendar,
+    the shared-time cap or capacity), not when a correct plan simply spreads less work over a week.
+    The sentence is appended to the week's `why` and returned in the plan's notes.
+    """
+    wanted = goal.weekly_hours
+    if not wanted:
+        return
+    for a in res.allocs:
+        wid = f"{WEEK_PREFIX}{a.week.isoformat()}"
+        if usable.get(wid, 0.0) >= wanted - 1e-9 or a.hours >= wanted - 1e-9:
+            continue
+        full = [d for d, h in free_hours_by_day(ctx, now, a.week).items() if h <= 0]
+        if full:
+            sentence = SHORTFALL_WHY_CALENDAR.format(got=a.hours, wanted=wanted, days=", ".join(f"{d:%a}" for d in full))
+        elif share < 1.0:
+            sentence = SHORTFALL_WHY_SHARED.format(got=a.hours, wanted=wanted)
+        else:
+            sentence = SHORTFALL_WHY_LIMIT.format(got=a.hours, wanted=wanted)
+        a.why = f"{a.why} {sentence}".strip()
+        res.shortfalls.append(f"{a.week:%d %b}: {sentence}")
 
 
 def _alloc_weeks(chat, goal: GoalSpec, total: float, usable: dict[str, float], earlier: list[str] | None = None) -> WeekResult:
@@ -147,8 +192,11 @@ def _alloc_weeks(chat, goal: GoalSpec, total: float, usable: dict[str, float], e
             focus = {w.week_id: w.focus for w in plan.weeks}
             why = {w.week_id: w.why for w in plan.weeks}
             serves = {w.week_id: [t for t in w.milestones if t in known] for w in plan.weeks}
-            return WeekResult([WeekAlloc(date.fromisoformat(w[len(WEEK_PREFIX):]), focus.get(w, goal.title), h, why.get(w, ""), serves.get(w, []))
-                               for w, h in sorted(alloc.items()) if h > 0], "model", 0.0)
+            outcomes = {w.week_id: w.outcomes for w in plan.weeks}
+            return WeekResult(
+                [WeekAlloc(date.fromisoformat(w[len(WEEK_PREFIX):]), focus.get(w, goal.title), h, why.get(w, ""),
+                           serves.get(w, []), outcomes.get(w, []))
+                 for w, h in sorted(alloc.items()) if h > 0], "model", 0.0)
 
     split = even_split(total, usable)
     return WeekResult(

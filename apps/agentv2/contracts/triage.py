@@ -58,6 +58,9 @@ class TriageItem(_Llm):
     bucket: Bucket
     title: str
     goal_id: str | None = Field(None, description="Must be one of the listed goal ids, or null.")
+    #: How sure the model is that `goal_id` is the goal this item belongs to, 0 to 1.
+    #: Defaults to 0 so a reply written before this field existed links nothing.
+    goal_confidence: float = Field(0, ge=0, le=1, description="How sure you are that goal_id is this item's goal, 0 to 1. Leave 0 when goal_id is null.")
     effort_hours: float | None = Field(None, description="Rough hours of work, for a task.")
     reminder: ReminderSpec | None = None
     due: DueSpec | None = Field(None, description="For a todo or task: the day and time it is due, if the user said one.")

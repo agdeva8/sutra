@@ -6,7 +6,7 @@ from datetime import date, datetime, time
 
 import pytest
 
-from agentv2.contracts import AddBlocker, AddItem, AddTodo, CompleteItem, Origin
+from agentv2.contracts import AddBlocker, AddItem, AddTodo, CompleteItem, LinkSource, Origin
 from agentv2.contracts.triage import AwaySpec, ReminderSpec, TriageItem, TriageResult
 from agentv2.core.context import Context
 from agentv2.gateway import apply
@@ -28,8 +28,8 @@ NOW = datetime(2026, 10, 14, 10, 0)
 ORIGIN = Origin(source="scratch")
 
 
-def _route(*items, ctx=None):
-    return route(None, TriageResult(items=list(items), confidence=0.95), ctx or Context(goal_ids=frozenset({"g"}), goal_titles={"g": "Goal"}), NOW, ORIGIN)
+def _route(*items, ctx=None, source_id=None):
+    return route(None, TriageResult(items=list(items), confidence=0.95), ctx or Context(goal_ids=frozenset({"g"}), goal_titles={"g": "Goal"}), NOW, ORIGIN, source_id)
 
 
 def test_a_todo_needs_no_goal_and_no_hours():
@@ -99,11 +99,11 @@ def test_an_away_range_blocks_planning_and_clears_planned_time_on_those_days():
 def test_a_timed_block_keeps_its_goal_when_the_goal_is_real_and_none_otherwise():
     from agentv2.contracts.triage import BlockSpec
     spec = BlockSpec(date="2026-10-15", start_time="18:00", end_time="20:00")
-    linked = _route(TriageItem(bucket="block", title="LLD prep", goal_id="g", block=spec)).changeset.changes[0]
+    linked = _route(TriageItem(bucket="block", title="LLD prep", goal_id="g", goal_confidence=1, block=spec)).changeset.changes[0]
     assert linked.block.block_kind == "task" and linked.block.goal_id == "g"
     plain = _route(TriageItem(bucket="block", title="Dentist", block=spec)).changeset.changes[0]
     assert plain.block.block_kind == "event" and plain.block.goal_id is None
-    invented = _route(TriageItem(bucket="block", title="Dentist", goal_id="g_made_up", block=spec)).changeset.changes[0]
+    invented = _route(TriageItem(bucket="block", title="Dentist", goal_id="g_made_up", goal_confidence=1, block=spec)).changeset.changes[0]
     assert invented.block.goal_id is None
 
 
@@ -119,6 +119,42 @@ def test_a_goal_task_placed_from_scratch_gives_its_slots_the_goal(monkeypatch):
         return [AddBlock(id="b", title=title, day=date(2026, 10, 15), start=time(9), end=time(10), status="tentative", task_id=task_id, goal_id=goal_id)], "model"
 
     monkeypatch.setattr(route_mod, "place_task", fake_place)
-    routed = _route(TriageItem(bucket="task", title="Mock interview", goal_id="g", effort_hours=1))
+    routed = _route(TriageItem(bucket="task", title="Mock interview", goal_id="g", goal_confidence=1, effort_hours=1))
     slot = routed.changeset.changes[1]
     assert seen["goal_id"] == "g" and slot.goal_id == "g"
+
+
+def test_a_confident_goal_is_kept_on_every_bucket_that_carries_one():
+    gid = dict(goal_id="g", goal_confidence=1)
+    todo = _route(TriageItem(bucket="todo", title="Read LLD chapter", **gid)).changeset.changes[0]
+    assert isinstance(todo, AddTodo) and todo.goal_id == "g"
+    reminder = _route(TriageItem(bucket="reminder", title="Revise", **gid)).changeset.changes[0]
+    assert reminder.block.goal_id == "g"
+    source = _route(TriageItem(bucket="source", title="Mock notes", **gid), source_id="s1").changeset.changes[0]
+    assert isinstance(source, LinkSource) and source.goal_id == "g"
+
+
+def test_a_guessed_goal_is_dropped_on_every_bucket_that_carries_one():
+    from agentv2.contracts.triage import BlockSpec
+    unsure = dict(goal_id="g", goal_confidence=0.5)
+    todo = _route(TriageItem(bucket="todo", title="Read LLD chapter", **unsure)).changeset.changes[0]
+    assert isinstance(todo, AddTodo) and todo.goal_id is None
+    reminder = _route(TriageItem(bucket="reminder", title="Revise", **unsure)).changeset.changes[0]
+    assert reminder.block.goal_id is None
+    block = _route(TriageItem(bucket="block", title="LLD prep", block=BlockSpec(date="2026-10-15", start_time="18:00", end_time="20:00"), **unsure)).changeset.changes[0]
+    assert block.block.block_kind == "event" and block.block.goal_id is None
+    source = _route(TriageItem(bucket="source", title="Mock notes", **unsure), source_id="s1").changeset.changes[0]
+    assert isinstance(source, LinkSource) and source.goal_id is None
+
+
+def test_a_task_with_no_confident_goal_becomes_a_todo():
+    routed = _route(TriageItem(bucket="task", title="Mock interview", goal_id="g", goal_confidence=0.5, effort_hours=1))
+    (change,) = routed.changeset.changes
+    assert isinstance(change, AddTodo) and change.goal_id is None
+
+
+def test_a_reply_from_before_goal_confidence_links_nothing():
+    # No `goal_confidence` key at all: the default of 0 must not be read as a link.
+    item = TriageItem.model_validate({"bucket": "todo", "title": "Read LLD chapter", "goal_id": "g"})
+    assert item.goal_confidence == 0
+    assert _route(item).changeset.changes[0].goal_id is None

@@ -17,6 +17,7 @@ from datetime import date, datetime, time, timedelta
 from agentv2.config import BLOCK_TENTATIVE
 from agentv2.core.calendar import free_hours_by_week, week_start
 from agentv2.core.context import Context
+from agentv2.core.plan_context import plan_sections
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -80,6 +81,8 @@ class CoachFacts:
     today_blocks: list[tuple[time, time, str]] = field(default_factory=list)
     recurring: list[tuple[str, list[int], time, time]] = field(default_factory=list)
     goals: list[str] = field(default_factory=list)
+    #: THIS MONTH / THIS WEEK / TODAY per goal: focus, outcomes, hours planned and done, today's items.
+    plan: list[str] = field(default_factory=list)
     overdue: list[str] = field(default_factory=list)
     in_flight: list[str] = field(default_factory=list)
     facts: list[str] = field(default_factory=list)
@@ -131,6 +134,8 @@ def render(f: CoachFacts) -> str:
         lines += ["", HEADER_GOALS, *f.goals]
     else:
         lines += ["", NO_ACTIVE_GOALS]
+    if f.plan:
+        lines += ["", *f.plan]
     if f.overdue:
         lines += ["", HEADER_OVERDUE, *f.overdue[:MAX_OVERDUE_LINES]]
     if f.in_flight:
@@ -214,6 +219,7 @@ async def build_coach_context(session: AsyncSession, *, user_id: str, now: datet
             + (f", {g.weekly_hours}h/week" if g.weekly_hours else "")
             for g in active
         ],
+        plan=plan_sections(ctx, now),
         overdue=[f"- {m.title} (was due {m.target_date})" for m in milestones
                  if m.target_date and m.target_date < today and m.status != "done"],
         in_flight=[f"- {i.title} ({i.start_date})" for i in items

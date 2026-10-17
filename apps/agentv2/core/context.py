@@ -32,6 +32,23 @@ class PlanWeekRow:
     week_start: date
     focus: str
     hours: float
+    #: Why this week carries this load, one sentence for the user. Empty on older rows.
+    why: str = ""
+    #: What the user can check off by the week's end. Empty on older rows.
+    outcomes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PlanMonthRow:
+    """A month of a goal's plan: the outcome its weeks add up to."""
+
+    goal_id: str
+    goal_title: str
+    month_start: date
+    focus: str
+    hours: float
+    why: str = ""
+    outcomes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -79,6 +96,12 @@ class Context:
     #: The most goal work one week may hold, from the user's own figure; None when they gave none.
     weekly_cap_hours: float | None = None
     plan_weeks: tuple[PlanWeekRow, ...] = ()
+    #: The goal's current and coming month rows, so the plan's outcomes can be read back.
+    plan_months: tuple[PlanMonthRow, ...] = ()
+    #: The goals that are `active` (not paused or dropped). The share of free time a goal may take
+    #: depends on how many others compete with it. Empty when the caller did not say; fall back to
+    #: `goal_ids` then.
+    active_goal_ids: frozenset[str] = frozenset()
     #: Active recurring commitments, so "stop my Tuesday class" can name the real one.
     recurring: tuple[RecurringRow, ...] = ()
     #: goal id -> hours needed and hours done, for goals whose total is known.

@@ -15,6 +15,7 @@ from ..config import CHAT_HISTORY_TURNS, PROPOSAL_ACTIONS, PROPOSAL_DATE_ARGS
 from ..contracts import Origin
 from ..contracts.chatplan import ChatPlanReply, ChatTurn
 from ..core.dates import calendar_text, parse_date
+from ..core.plan_context import plan_block
 from ..gateway import Store
 from ..llm import complete_json
 from ..prompts.chatplan import CHATPLAN_SYSTEM, chatplan_user
@@ -56,7 +57,8 @@ async def chat_turn(
     goals = ctx.goal_titles
     reply = await asyncio.to_thread(
         complete_json, chat, CHATPLAN_SYSTEM,
-        chatplan_user(message, now.date().isoformat(), list(goals.values()), list(ctx.open_items.values()), history[-CHAT_HISTORY_TURNS:], calendar_text(now.date())),
+        chatplan_user(message, now.date().isoformat(), list(goals.values()), list(ctx.open_items.values()),
+                      history[-CHAT_HISTORY_TURNS:], calendar_text(now.date()), plan_block(ctx, now)),
         ChatPlanReply,
     )
     if reply is None:

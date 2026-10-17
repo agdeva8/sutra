@@ -13,7 +13,7 @@ from datetime import date, datetime
 
 from ..config import BLOCK_COMMITTED, BLOCK_TENTATIVE
 from .context import BlockRow, Context
-from ..contracts import AddBlocker, AddRecurring, StopRecurring, ClearGoalPlan, CompleteItem, AddBlock, AddGoal, AddMilestone, AddPlanMonth, AddPlanWeek, AddReminder, AddTask, AddTodo, EditTodo, ChangeSet, LinkSource, MoveBlock, Violation
+from ..contracts import AddBlocker, AddRecurring, StopRecurring, ClearGoalPlan, CompleteItem, AddBlock, AddGoal, AddMilestone, ReplaceMilestones, AddPlanMonth, AddPlanWeek, AddReminder, AddTask, AddTodo, EditTodo, ChangeSet, LinkSource, MoveBlock, Violation
 from ..contracts.blocks import AddItem, EditItem, DeleteItem, Block, BlockKind
 
 RULE_GOAL_EXISTS = "goal_exists"
@@ -161,6 +161,17 @@ def validate(cs: ChangeSet, ctx: Context) -> list[Violation]:
         elif isinstance(c, AddMilestone):
             if c.goal_id not in goals:
                 fail(i, RULE_GOAL_EXISTS, f"milestone {c.id}: goal {c.goal_id} does not exist")
+        elif isinstance(c, ReplaceMilestones):
+            if c.goal_id not in goals:
+                fail(i, RULE_GOAL_EXISTS, f"milestones for goal {c.goal_id}: goal {c.goal_id} does not exist")
+            owned = {m.id for m in c.milestones}
+            if len(owned) != len(c.milestones):
+                fail(i, RULE_DUPLICATE_ID, f"goal {c.goal_id}: a milestone id appears twice in the replacement set")
+            for m in c.milestones:
+                if not m.title.strip():
+                    fail(i, RULE_ITEM_EXISTS, f"milestone {m.id}: a milestone needs a title")
+                if ctx.today is not None and m.target_date is not None and m.target_date < ctx.today:
+                    fail(i, RULE_NOT_IN_PAST, f"{m.title}: {m.target_date} has already passed")
         elif isinstance(c, AddPlanMonth):
             if c.goal_id not in goals:
                 fail(i, RULE_GOAL_EXISTS, f"plan month {c.id}: goal {c.goal_id} does not exist")
@@ -198,6 +209,8 @@ def validate(cs: ChangeSet, ctx: Context) -> list[Violation]:
                     fail(i, RULE_GOAL_EXISTS, f"task {blk.id}: goal {blk.goal_id} does not exist")
                 if blk.repeat:
                     _check_repeat(i, blk.repeat, fail)
+                if blk.quota is not None and blk.quota < 1:
+                    fail(i, RULE_RECURRING, "task: a quota must be at least 1")
                 if ctx.today is not None and blk.day is not None and blk.day < ctx.today:
                     fail(i, RULE_NOT_IN_PAST, f"task: {blk.day} has already passed")
             elif bk == "away":

@@ -12,8 +12,8 @@ from datetime import date, datetime, time, timedelta
 
 from ..config import BLOCK_TENTATIVE, FIX_MAX_LOOPS, FOUR_KIND_WRITES, MAX_GOAL_HOURS_PER_DAY, MIN_GAP_BETWEEN_SESSIONS_MIN, MIN_SESSION_HOURS
 from ..contracts import AddBlock, AddTask, Change
-from ..contracts.blocks import AddItem, TaskBlock
-from ..contracts.planner import DayPlan, GoalSpec
+from ..contracts.blocks import AddItem, Repeat, TaskBlock
+from ..contracts.planner import DAY_ITEM_FOCUS, DayItem, DayPlan, GoalSpec
 from ..core.budget import check_allocation, even_split
 from ..core.calendar import free_hours_by_day, windows_on
 from ..core.context import BlockRow, Context
@@ -25,6 +25,80 @@ from ..prompts.planner import DAY_SYSTEM, SESSION_SLOT_SYSTEM, day_user, session
 from .week import WeekAlloc
 
 DAY_PREFIX = "d_"
+#: The kinds a day item can be (contracts.planner.DayItemKind).
+KIND_FOCUS = DAY_ITEM_FOCUS  # "focus"
+KIND_QUOTA = "quota"
+KIND_MULTI_DAY = "multi_day"
+MINUTES_PER_HOUR = 60
+
+
+def _week_day_id(week: date, weekday: int) -> str:
+    """The day id of `weekday` (Monday = 0) inside `week`."""
+    return f"{DAY_PREFIX}{(week + timedelta(days=weekday)).isoformat()}"
+
+
+def _day_id_date(day_id: str) -> date | None:
+    try:
+        return date.fromisoformat(day_id[len(DAY_PREFIX):])
+    except ValueError:
+        return None
+
+
+def _quota_effort(item: DayItem) -> float:
+    """The hours one day of a quota holds: count × minutes each."""
+    return round(item.count * item.minutes_each / MINUTES_PER_HOUR, 2)
+
+
+def _per_day_effort(item: DayItem, week: date) -> dict[str, float]:
+    """How many hours the item asks of each day it touches. The week-level check adds these up."""
+    if item.kind == KIND_QUOTA:
+        each = _quota_effort(item)
+        return {_week_day_id(week, wd): each for wd in dict.fromkeys(item.weekdays)}
+    if item.kind == KIND_MULTI_DAY:
+        days = list(dict.fromkeys(item.days))
+        return {d: item.hours / len(days) for d in days} if days and item.hours > 0 else {}
+    return {item.day_id: item.hours}
+
+
+def _item_problem(item: DayItem, week: date) -> str | None:
+    """What is malformed about an item's kind and its own numbers, before the day budgets are checked."""
+    if item.kind == KIND_QUOTA:
+        if item.count < 1:
+            return f"{item.title}: a quota needs a count of at least 1"
+        if item.minutes_each <= 0:
+            return f"{item.title}: a quota needs minutes_each above 0"
+        if not item.weekdays:
+            return f"{item.title}: a quota needs at least one weekday"
+        if any(not 0 <= d <= 6 for d in item.weekdays):
+            return f"{item.title}: quota weekdays must be Monday to Sunday"
+    if item.kind == KIND_MULTI_DAY:
+        if not item.days:
+            return f"{item.title}: a multi-day item needs at least one day"
+        if item.hours <= 0:
+            return f"{item.title}: a multi-day item needs hours"
+        week_days = {week + timedelta(days=i) for i in range(7)}
+        for d in item.days:
+            when = _day_id_date(d)
+            if when is None or when not in week_days:
+                return f"{item.title}: {d} is not in this week"
+    if item.kind == KIND_FOCUS and _day_id_date(item.day_id) is None:
+        return f"{item.title}: {item.day_id} is not a day id"
+    return None
+
+
+def _keeps(item: DayItem) -> bool:
+    """Whether an item in an accepted reply is worth writing. A zero-hour focus session is not;
+    a quota's effort is derived and a multi-day item was already checked for hours."""
+    return item.kind != KIND_FOCUS or item.hours > 0
+
+
+def _first_day(item: DayItem, week: date) -> date:
+    """The day an untimed item hangs off: the first of its quota weekdays or of its days."""
+    if item.kind == KIND_QUOTA:
+        return week + timedelta(days=min(item.weekdays))
+    if item.kind == KIND_MULTI_DAY:
+        return min(_day_id_date(d) for d in item.days)
+    return date.fromisoformat(item.day_id[len(DAY_PREFIX):])
 
 
 def _room(ctx: Context, day: date) -> float:
@@ -92,65 +166,109 @@ def plan_day_level(chat, goal: GoalSpec, wk: WeekAlloc, ctx: Context, now: datet
     cap = {k: v for k, v in cap.items() if v > 0}
     listed = "\n".join(f"- {did}: {h:g}h" for did, h in cap.items())
 
-    sessions: list[tuple[str, str, float, str, str, str]] | None = None
+    items: list[DayItem] | None = None
     problem: str | None = feedback
     for _ in range(1 + FIX_MAX_LOOPS):
         plan = complete_json(chat, DAY_SYSTEM, day_user(goal.title, wk.focus, wk.hours, listed, problem, wk.milestones), DayPlan)
         if plan is None:
             break
         per_day: dict[str, float] = {}
+        problems = [p for p in (_item_problem(s, wk.week) for s in plan.sessions) if p]
         for s in plan.sessions:
-            per_day[s.day_id] = per_day.get(s.day_id, 0.0) + s.hours
-        problem = check_allocation(per_day, cap, wk.hours)
-        short = [s.title for s in plan.sessions if 0 < s.hours < MIN_SESSION_HOURS]
+            for day_id, hours in _per_day_effort(s, wk.week).items():
+                per_day[day_id] = per_day.get(day_id, 0.0) + hours
+        problem = problems[0] if problems else check_allocation(per_day, cap, wk.hours)
+        short = [s.title for s in plan.sessions if s.kind == KIND_FOCUS and 0 < s.hours < MIN_SESSION_HOURS]
         if problem is None and short:
-            problem = f"sessions must be at least {MIN_SESSION_HOURS:g}h; too short: {short[0]}"
+            problem = f"focus sessions must be at least {MIN_SESSION_HOURS:g}h; too short: {short[0]}"
         if problem is None:
-            sessions = [(s.day_id, s.title, s.hours, s.description, s.why, s.milestone) for s in plan.sessions if s.hours > 0]
+            items = [s for s in plan.sessions if _keeps(s)]
             break
     how = "model"
-    if sessions is None:
+    if items is None:
         how = "even_split"
-        sessions = [(did, wk.focus, h, "", "", "") for did, h in even_split(wk.hours, cap).items()]
+        # The code fallback knows one shape only: timed focus sessions.
+        items = [DayItem(day_id=did, title=wk.focus, hours=h, kind=KIND_FOCUS) for did, h in even_split(wk.hours, cap).items()]
 
-    placed, slot_problem = _model_slots(chat, goal, sessions, ctx, now)
-    if placed is None:
-        how += f"; times not placed ({slot_problem or 'no reply'})"
+    # Only a focus item gets a time on the clock; a quota and a multi-day item are done any time.
+    focus = [(s.day_id, s.title, s.hours, s.description, s.why, s.milestone) for s in items if s.kind == KIND_FOCUS]
+    placed: list | None = []
+    if focus:
+        placed, slot_problem = _model_slots(chat, goal, focus, ctx, now)
+        if placed is None:
+            how += f"; times not placed ({slot_problem or 'no reply'})"
     gap_ctx = ctx  # placement view only: the real ctx never gets the gap padding
     changes: list[Change] = []
     milestone_ids = {m.title: m.id for m in goal.milestones if m.id}
-    for i, (day_id, title, hours, description, why, milestone) in enumerate(sessions):
-        day = date.fromisoformat(day_id[len(DAY_PREFIX):])
-        if FOUR_KIND_WRITES:
-            # §4b: One TaskBlock, placed or unplaced.
-            # Placed: has day/start/end. Unplaced: has day but no start/end.
-            task_block = TaskBlock(
-                id=new_id("task"), title=title, goal_id=goal.id, day=day,
-                effort_hours=hours, description=description, why=why,
-                milestone_id=milestone_ids.get(milestone), placed_by="planner"
-            )
-            new_rows: tuple[BlockRow, ...] = ()
-            if placed is not None:
-                window, offset, slot_why = placed[i]
-                begin = _clock(window.day, window.start) + timedelta(minutes=offset)
-                end = begin + timedelta(hours=hours)
-                task_block.day = window.day
-                task_block.start = begin.time()
-                task_block.end = end.time()
-                task_block.why = slot_why
-                new_rows = (BlockRow(task_block.id, task_block.day, task_block.start, task_block.end, BLOCK_TENTATIVE, task_block.title, goal_id=goal.id),)
-            changes.append(AddItem(block=task_block))
+    focus_i = 0
+    for item in items:
+        milestone_id = milestone_ids.get(item.milestone)
+        if item.kind == KIND_FOCUS:
+            placement = placed[focus_i] if placed is not None else None
+            focus_i += 1
         else:
-            # Old path: AddTask + AddBlock
-            task = AddTask(id=new_id("task"), goal_id=goal.id, title=title, effort_hours=hours, day=day, description=description, why=why, milestone_id=milestone_ids.get(milestone))
+            placement = None
+        if FOUR_KIND_WRITES:
+            changes.append(_four_kind_change(goal, item, placement, milestone_id, wk.week))
+            rows = _placed_rows(changes[-1])
+        else:
+            # The old path has no way to express a quota or a repeat, so every kind degrades to one
+            # dated focus task ("treat every item as focus"): the first day, and the total hours.
+            day = _first_day(item, wk.week)
+            hours = _quota_effort(item) * len(set(item.weekdays)) if item.kind == KIND_QUOTA else item.hours
+            task = AddTask(id=new_id("task"), goal_id=goal.id, title=item.title, effort_hours=hours, day=day,
+                           description=item.description, why=item.why, milestone_id=milestone_id)
             blocks: list[AddBlock] = []
-            if placed is not None:
-                window, offset, slot_why = placed[i]
-                blocks = picks_to_blocks([(window.id, hours, offset)], [window], title, task_id=task.id, goal_id=goal.id, why=slot_why)
+            if placement is not None:
+                window, offset, slot_why = placement
+                blocks = picks_to_blocks([(window.id, hours, offset)], [window], item.title, task_id=task.id, goal_id=goal.id, why=slot_why)
             changes.append(task)
             changes += blocks
-            new_rows = tuple(BlockRow(b.id, b.day, b.start, b.end, BLOCK_TENTATIVE, b.title) for b in blocks)
-        ctx = replace(ctx, blocks=ctx.blocks + new_rows)
+            rows = tuple(BlockRow(b.id, b.day, b.start, b.end, BLOCK_TENTATIVE, b.title) for b in blocks)
+        ctx = replace(ctx, blocks=ctx.blocks + rows)
         # The next session may not start until the gap has passed.
-        gap_ctx = replace(gap_ctx, blocks=gap_ctx.blocks + new_rows + pad_after(new_rows))
+        gap_ctx = replace(gap_ctx, blocks=gap_ctx.blocks + rows + pad_after(rows))
     return changes, ctx, how
+
+
+def _four_kind_change(goal: GoalSpec, item: DayItem, placement, milestone_id: str | None, week: date) -> AddItem:
+    """One 4-kind change for a day item: a timed focus session, or an untimed quota / multi-day task."""
+    if item.kind == KIND_QUOTA:
+        days = sorted(set(item.weekdays))
+        return AddItem(block=TaskBlock(
+            id=new_id("task"), title=item.title, goal_id=goal.id, day=week + timedelta(days=days[0]),
+            repeat=Repeat(weekdays=days, until=week + timedelta(days=days[-1])),
+            quota=item.count, effort_hours=_quota_effort(item),
+            description=item.description, why=item.why, milestone_id=milestone_id, placed_by="planner",
+        ))
+    if item.kind == KIND_MULTI_DAY:
+        dates = sorted({_day_id_date(d) for d in item.days})
+        return AddItem(block=TaskBlock(
+            id=new_id("task"), title=item.title, goal_id=goal.id, day=dates[0],
+            repeat=Repeat(weekdays=sorted({d.weekday() for d in dates}), until=dates[-1]),
+            effort_hours=item.hours,
+            description=item.description, why=item.why, milestone_id=milestone_id, placed_by="planner",
+        ))
+    # §4b: One TaskBlock, placed or unplaced.
+    # Placed: has day/start/end. Unplaced: has day but no start/end.
+    block = TaskBlock(
+        id=new_id("task"), title=item.title, goal_id=goal.id, day=date.fromisoformat(item.day_id[len(DAY_PREFIX):]),
+        effort_hours=item.hours, description=item.description, why=item.why,
+        milestone_id=milestone_id, placed_by="planner",
+    )
+    if placement is not None:
+        window, offset, slot_why = placement
+        begin = _clock(window.day, window.start) + timedelta(minutes=offset)
+        block.day = window.day
+        block.start = begin.time()
+        block.end = (begin + timedelta(hours=item.hours)).time()
+        block.why = slot_why
+    return AddItem(block=block)
+
+
+def _placed_rows(change: AddItem) -> tuple[BlockRow, ...]:
+    """The timed rows a new item adds to the calendar view, for the next week's placement search."""
+    block = change.block
+    if block.start is None or block.end is None:
+        return ()  # untimed work holds no hours on the clock
+    return (BlockRow(block.id, block.day, block.start, block.end, BLOCK_TENTATIVE, block.title, goal_id=block.goal_id),)

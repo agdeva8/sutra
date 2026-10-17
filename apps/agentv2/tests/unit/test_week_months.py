@@ -38,6 +38,8 @@ def test_an_impossible_total_is_capped_to_what_fits_and_the_rest_is_shortfall(mo
     monkeypatch.setattr(week, "GOAL_MAX_SHARE_OF_FREE", 0.1)
     from agentv2.core.context import Context
     from datetime import datetime
-    r = week.plan_weeks(None, goal, Context(today=date(2026, 10, 15)), datetime(2026, 10, 15, 9))
+    # Two active goals, so the shared-time cap applies (a lone goal may use all the free time).
+    ctx = Context(today=date(2026, 10, 15), goal_ids=frozenset({"g", "other"}))
+    r = week.plan_weeks(None, goal, ctx, datetime(2026, 10, 15, 9))
     assert r.how == "month(model)+week" and round(r.shortfall, 2) == 80.0
     assert [a.week for a in r.allocs] == sorted(a.week for a in r.allocs)

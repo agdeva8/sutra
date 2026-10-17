@@ -60,6 +60,11 @@ class TaskBlock(_Strict):
     goal_id: str | None = None
     milestone_id: str | None = None
     repeat: Repeat | None = None     # repeating task (e.g. "drink water 5x/day")
+    #: A repeated small action ("send 5 applications" on each of `repeat.weekdays`): how many
+    #: instances belong to one day. None for ordinary work. Optional so older rows stay valid.
+    quota: int | None = Field(None, ge=1)
+    #: For a quota, the instances already done per ISO day ({"2026-10-13": 3}).
+    quota_done: dict[str, int] = Field(default_factory=dict)
     alert_before: int | None = Field(None, ge=0)
     done: bool = False
     state: Literal["open", "done", "partial", "skip"] = "open"
