@@ -245,15 +245,17 @@ jobs:
       - name: vercel pull
         run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
 
-      # Prebuilt in two steps so check mode validates the exact artifact a
-      # deploy would upload: `build` writes .vercel/output, `deploy --prebuilt`
-      # sends only that, with no second build on Vercel's side.
+      # A local build proves the function builds (check mode stops here).
       - name: vercel build
         run: vercel build --prod --token="$VERCEL_TOKEN"
 
+      # The deploy itself is built on Vercel, not prebuilt. A local Python build bundles files that
+      # `.vercelignore` keeps out of the upload (apps/agentv2/demo, .claude/…: about 4,800 files),
+      # so a prebuilt upload fails on Vercel with ENOENT. A remote build sees exactly what
+      # `.vercelignore` lets through, which is how Vercel's own Git builds of this project worked.
       - name: vercel deploy
         if: env.MODE == 'deploy'
-        run: vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
+        run: vercel deploy --prod --yes --token="$VERCEL_TOKEN"
 
   web:
     needs: [mode, api]
