@@ -23,7 +23,8 @@ from datetime import UTC, datetime
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import Goal, Milestone, TimetableBlock, User
+from ..models import CalendarBlock, Goal, Milestone, TimetableBlock, User
+from agentv2.contracts.blocks import BLOCK_ADAPTER
 from .repo import write_audit
 
 #: Cap on the item lists returned for display / prompt injection.
@@ -145,18 +146,27 @@ async def compute_goal_drop_impact(
             )
         ).scalars()
     )
-    blocks = list(
-        (
-            await session.execute(
-                select(TimetableBlock)
-                .where(
-                    TimetableBlock.user_id == user_id,
-                    TimetableBlock.goal_id == ref.goal_id,
-                )
-                .limit(500)
-            )
-        ).scalars()
+    # Phase 5: Read timetable blocks from CalendarBlock
+    cal_result = await session.execute(
+        select(CalendarBlock).where(
+            CalendarBlock.user_id == user_id,
+            CalendarBlock.block_kind == "event",
+        )
     )
+    blocks = []
+    for row in cal_result.scalars().all():
+        try:
+            blk = BLOCK_ADAPTER.validate_python(row.data)
+            if blk.goal_id == ref.goal_id:
+                blocks.append({
+                    "id": row.id,
+                    "label": blk.title,
+                    "block_date": blk.day.isoformat() if blk.day else None,
+                    "start_time": _hhmm(blk.start),
+                    "end_time": _hhmm(blk.end),
+                })
+        except Exception:
+            continue
     all_goals = list(
         (
             await session.execute(
@@ -295,11 +305,28 @@ async def apply_goal_drop_cascade(
             Milestone.user_id == user_id, Milestone.goal_id == ref.goal_id
         )
     )
+    # Phase 5: Delete goal's timetable blocks from CalendarBlock
+    from sqlalchemy import text
     await session.execute(
-        delete(TimetableBlock).where(
-            TimetableBlock.user_id == user_id, TimetableBlock.goal_id == ref.goal_id
-        )
+        delete(CalendarBlock).where(
+            CalendarBlock.user_id == user_id,
+            CalendarBlock.block_kind == "event",
+            text(f"data->>'goal_id' = :gid"),
+        ),
+        {"gid": ref.goal_id}
     )
+    # Phase 3: Also delete planner task blocks from calendar_blocks
+    cal_blocks = list((await session.execute(
+        select(CalendarBlock).where(CalendarBlock.user_id == user_id, CalendarBlock.block_kind == "task")
+    )).scalars())
+    for row in cal_blocks:
+        try:
+            import json
+            data = row.data or {}
+            if data.get("goal_id") == ref.goal_id and data.get("placed_by") == "planner":
+                await session.execute(delete(CalendarBlock).where(CalendarBlock.id == row.id))
+        except Exception:
+            pass
 
     line = _result_line(ref.goal_title, impact, reason)
     await write_audit(

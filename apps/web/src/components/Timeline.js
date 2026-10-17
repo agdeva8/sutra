@@ -59,6 +59,7 @@ import useGoalProgress from "../lib/useGoalProgress";
 import { progressStatus } from "../constants/goalProgress";
 import { planItemEvent, isTodo } from "../lib/events";
 import { KIND_STYLE, REMINDER_SLOT_MINUTES, SOURCE_RECURRING, GOAL_PALETTE, GOAL_GLYPH, WEEK_GLYPH, isGoalSession, BLOCK_KIND_REMINDER, goalColor, reminderColor, recurringColor } from "../constants/calendarKinds";
+import { blockColor } from "../constants/blockKinds";
 
 /* ---------------------------------------------------------------------------
  * Sutra Timeline — 3-view dropdown: Day by day (Drill), At a glance (Strip),
@@ -464,7 +465,8 @@ export default function Timeline({ state, onPrefill, onOpenChatWith, onOpenChat,
   const [replanOffer, setReplanOffer] = useState(null);
   // Timetable blocks come with /api/state (`timetableBlocks`), so there is no separate request per visit.
   // The old per-visit GET /timetable is kept only as a fallback for a board that omits them.
-  const stateBlocks = Array.isArray(state?.timetableBlocks) ? state.timetableBlocks : null;
+  // Phase 6: prefer `state.blocks` (4-kind model) if available.
+  const stateBlocks = Array.isArray(state?.blocks) ? state.blocks : (Array.isArray(state?.timetableBlocks) ? state.timetableBlocks : null);
   const [fetchedBlocks, setFetchedBlocks] = useState([]);
   useEffect(() => {
     if (stateBlocks) return;
@@ -2404,19 +2406,28 @@ function CalendarView({
     () =>
       (blocks || []).map((b) => {
         const hhmm = (t) => String(t || "").slice(0, 5);
+        // Check if it's the new 4-kind block (has block_kind) or old timetable block (has kind).
+        const isNewBlock = !!b.block_kind;
+        const date = isNewBlock ? (b.day || b.start_date || b.target_date) : b.block_date;
+        const title = isNewBlock ? b.title : b.label;
+        const time = isNewBlock ? b.start : b.start_time;
+        const goalTitle = isNewBlock ? (b.goal_title || (goals.find(g => g.id === b.goal_id)?.title) || "") : (b.goal_title || "");
+        const color = isNewBlock ? blockColor(b) : timeBlockStyle(b).color;
+        const glyph = isNewBlock ? KIND_STYLE[b.block_kind]?.glyph || "◆" : timeBlockStyle(b).glyph;
         return {
           id: `session-${b.id}`,
-          item: { id: b.id, kind: "block", title: b.label, date: b.block_date, start_date: b.block_date, end_date: b.block_date, goalTitle: b.goal_title, goal_id: b.goal_id, source_id: b.source_id, why: b.why, start_time: b.start_time, end_time: b.end_time },
-          date: new Date(`${String(b.block_date).slice(0, 10)}T00:00:00`),
-          ...timeBlockStyle(b),
-          title: `${hhmm(b.start_time)} ${b.label}`.trim(),
-          goalTitle: b.goal_title || "",
+          item: { id: b.id, kind: "block", title, date, start_date: date, end_date: date, goalTitle, goal_id: b.goal_id, source_id: b.source_id, why: b.why, start_time: time, end_time: isNewBlock ? b.end : b.end_time, block_kind: b.block_kind },
+          date: new Date(`${String(date).slice(0, 10)}T00:00:00`),
+          color,
+          glyph,
+          title: time ? `${hhmm(time)} ${title}`.trim() : title,
+          goalTitle,
           fulfils: "",
           hours: "",
-          status: isGoalSession(b) ? "" : "committed",
+          status: "",
         };
       }),
-    [blocks],
+    [blocks, goals],
   );
 
   // Month view goal filter — `null` means "all goals visible".

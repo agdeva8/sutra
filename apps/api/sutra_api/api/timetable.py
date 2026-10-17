@@ -36,9 +36,10 @@ from ..rate_limit import llm_rate_limit
 from ..background import run_after
 from ..deps import CurrentUser, require_user
 from ..ids import new_id
-from ..models import BLOCKER_KINDS, Reminder, TimetableBlock
+from ..models import BLOCKER_KINDS, CalendarBlock, Reminder, TimetableBlock
 from ..store import repo, staleness
 from ..wire import time_block
+from agentv2.contracts.blocks import BLOCK_ADAPTER, EventBlock
 
 router = APIRouter(tags=["timetable"])
 
@@ -114,9 +115,23 @@ async def list_timetable(
     session: AsyncSession = Depends(get_session),
     user: CurrentUser = Depends(require_user),
 ) -> dict:
-    rows = await repo.list_time_blocks(session, user_id=user.user_id)
-    reminders = (await session.execute(select(Reminder).where(Reminder.user_id == user.user_id))).scalars().all()
-    return {"blocks": [time_block(b) for b in rows] + _reminder_blocks(reminders)}
+    # Phase 5: Read exclusively from CalendarBlock (event kind)
+    cal_result = await session.execute(
+        select(CalendarBlock).where(
+            CalendarBlock.user_id == user.user_id,
+            CalendarBlock.block_kind == "event"
+        )
+    )
+    blocks = []
+    for row in cal_result.scalars().all():
+        try:
+            blk = BLOCK_ADAPTER.validate_python(row.data)
+            if blk.at is not None:
+                continue
+        except Exception:
+            continue
+        blocks.append({"id": row.id, **blk.model_dump(mode="json")})
+    return {"blocks": blocks}
 
 
 @router.post("/timetable/replan-conflicts", dependencies=[Depends(llm_rate_limit)])
@@ -170,21 +185,21 @@ async def create_block(
             session, user_id=user.user_id, goal_id=goal_id
         )
 
-    row = TimetableBlock(
+    # Phase 5: Write to CalendarBlock with EventBlock
+    event_data = EventBlock(
+        title=label,
+        day=block_date,
+        start=start,
+        end=end,
+        goal_id=goal_id,
+        note=str(body.get("note") or ""),
+    ).model_dump()
+
+    row = CalendarBlock(
         id=new_id("blk"),
         user_id=user.user_id,
-        block_date=block_date,
-        start_time=start,
-        end_time=end,
-        label=label,
-        kind=kind,
-        # `manual` — the solver writes `plan`, and the difference is what tells a
-        # replan which blocks it may move.
-        source="manual",
-        source_id=None,
-        goal_id=goal_id,
-        goal_title=goal_title,
-        note=str(body.get("note") or ""),
+        block_kind="event",
+        data=event_data,
     )
     session.add(row)
     await session.flush()
@@ -208,9 +223,7 @@ async def create_block(
             summary=f"Added '{label}'",
         )
     await session.commit()
-    # No replan here: it ran inside the request (BACKGROUND_INLINE) and added seconds to every write. The
-    # client follows up with `POST /timetable/replan-conflicts`.
-    return time_block(row)
+    return {"id": row.id, **event_data}
 
 
 @router.put("/timetable/{id}")
@@ -228,8 +241,9 @@ async def update_block(
         raise HTTPException(status_code=400, detail="Invalid JSON body")
     body = body or {}
 
-    row = await repo.get_time_block(session, user_id=user.user_id, block_id=id)
-    if row is None:
+    # Phase 5: Read from CalendarBlock
+    row = await session.get(CalendarBlock, id)
+    if row is None or row.user_id != user.user_id or row.block_kind != "event":
         raise HTTPException(status_code=404, detail="Block not found")
 
     label = str(body.get("label") or "").strip()
@@ -243,17 +257,19 @@ async def update_block(
             status_code=400, detail="end_time must be after start_time"
         )
 
-    row.block_date = _parse_date(body.get("block_date"))
-    row.start_time = start
-    row.end_time = end
-    row.label = label
-    row.kind = str(body.get("kind") or row.kind)
-    row.goal_id = body.get("goal_id") or None
-    row.goal_title = str(body.get("goal_title") or "") or await _resolve_goal_title(
-        session, user_id=user.user_id, goal_id=row.goal_id
-    )
-    row.note = str(body.get("note") or "")
+    try:
+        blk = BLOCK_ADAPTER.validate_python(row.data)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Block not found")
 
+    blk.title = label
+    blk.day = _parse_date(body.get("block_date"))
+    blk.start = start
+    blk.end = end
+    blk.goal_id = body.get("goal_id") or None
+    blk.note = str(body.get("note") or "")
+
+    row.data = blk.model_dump()
     await repo.write_audit(
         session,
         user_id=user.user_id,
@@ -261,21 +277,19 @@ async def update_block(
         summary=f"Updated block '{label}'",
         payload={"block_id": row.id, "label": label},
     )
-    if row.goal_id:
+    if blk.goal_id:
         horizons, milestone_moved = radius_for("timetable.edit")
         await staleness.record_change(
             session,
             user_id=user.user_id,
-            goal_id=row.goal_id,
+            goal_id=blk.goal_id,
             kind="timetable",
             horizons_moved=horizons,
             milestone_moved=milestone_moved,
             summary=f"Updated block '{label}'",
         )
     await session.commit()
-    # No replan here: it ran inside the request (BACKGROUND_INLINE) and added seconds to every write. The
-    # client follows up with `POST /timetable/replan-conflicts`.
-    return {"block": time_block(row)}
+    return {"block": {"id": row.id, **blk.model_dump(mode="json")}}
 
 
 @router.delete("/timetable/{id}")
@@ -284,12 +298,19 @@ async def delete_block(
     session: AsyncSession = Depends(get_session),
     user: CurrentUser = Depends(require_user),
 ) -> dict:
-    row = await repo.get_time_block(session, user_id=user.user_id, block_id=id)
-    if row is None:
+    # Phase 5: Read from CalendarBlock
+    row = await session.get(CalendarBlock, id)
+    if row is None or row.user_id != user.user_id or row.block_kind != "event":
         raise HTTPException(status_code=404, detail="Block not found")
 
-    label = row.label
-    goal_id = row.goal_id
+    try:
+        blk = BLOCK_ADAPTER.validate_python(row.data)
+        label = blk.title
+        goal_id = blk.goal_id
+    except Exception:
+        label = "Unknown"
+        goal_id = None
+
     await session.delete(row)
     await repo.write_audit(
         session,

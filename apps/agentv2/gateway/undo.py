@@ -46,4 +46,5 @@ async def undo(store: Store, audit_id: str) -> UndoResult:
             await store.revert(change)
             out.reverted += 1
         await store.mark_undone(audit_id)
+        await store.bump_version()
     return out

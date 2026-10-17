@@ -21,6 +21,23 @@ from .ids import new_id
 _MIN = 60.0
 
 
+def picks_to_task_blocks(picks: list[Pick], windows: list[Window], title: str, *, goal_id: str | None = None, milestone_id: str | None = None, effort_hours: float | None = None, description: str = "", why: str = "") -> list:
+    """Turn window picks into TaskBlocks for the new 4-kind path."""
+    from ..contracts.blocks import AddItem, TaskBlock
+    by_id = {w.id: w for w in windows}
+    blocks = []
+    for wid, hours, offset in picks:
+        w = by_id[wid]
+        begin = _at(w.day, w.start) + timedelta(minutes=offset)
+        end = begin + timedelta(hours=hours)
+        blocks.append(AddItem(block=TaskBlock(
+            id=new_id("task"), title=title, day=w.day, start=begin.time(), end=end.time(),
+            goal_id=goal_id, milestone_id=milestone_id, effort_hours=hours if effort_hours is None else effort_hours,
+            description=description, why=why, placed_by="planner"
+        )))
+    return blocks
+
+
 @dataclass(frozen=True)
 class Window:
     id: str

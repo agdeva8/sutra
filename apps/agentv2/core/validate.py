@@ -14,6 +14,7 @@ from datetime import date, datetime
 from ..config import BLOCK_COMMITTED, BLOCK_TENTATIVE
 from .context import BlockRow, Context
 from ..contracts import AddBlocker, AddRecurring, StopRecurring, ClearGoalPlan, CompleteItem, AddBlock, AddGoal, AddMilestone, AddPlanMonth, AddPlanWeek, AddReminder, AddTask, AddTodo, EditTodo, ChangeSet, LinkSource, MoveBlock, Violation
+from ..contracts.blocks import AddItem, EditItem, DeleteItem, Block, BlockKind
 
 RULE_GOAL_EXISTS = "goal_exists"
 RULE_BLOCK_EXISTS = "block_exists"
@@ -22,6 +23,7 @@ RULE_NO_OVERLAP = "no_overlap"
 RULE_DUPLICATE_ID = "duplicate_id"
 RULE_CAPACITY = "capacity"
 RULE_ITEM_EXISTS = "item_exists"
+RULE_ITEM4_EXISTS = "item4_exists"
 RULE_NOT_IN_PAST = "not_in_past"
 RULE_BLOCKED_DATE = "blocked_date"
 RULE_RECURRING = "recurring"
@@ -30,6 +32,13 @@ RULE_RECURRING = "recurring"
 def _hours(start, end) -> float:
     anchor = date.min
     return (datetime.combine(anchor, end) - datetime.combine(anchor, start)).total_seconds() / 3600
+
+
+def _check_repeat(i: int, r, fail) -> None:
+    if any(not 0 <= d <= 6 for d in r.weekdays):
+        fail(i, RULE_RECURRING, f"repeat: weekdays must be Monday to Sunday")
+    if r.until is not None and r.until < date.today():
+        fail(i, RULE_RECURRING, f"repeat: until date has already passed")
 
 
 def _overlaps(a_start, a_end, b_start, b_end) -> bool:
@@ -141,5 +150,38 @@ def validate(cs: ChangeSet, ctx: Context) -> list[Violation]:
                 fail(i, RULE_BLOCK_EXISTS, f"block {c.block_id} does not exist")
             else:
                 check_block(i, c.block_id, c.day, c.start, c.end, current.status, current.title, current.goal_id)
+        elif isinstance(c, AddItem):
+            blk = c.block
+            if not blk.title.strip():
+                fail(i, RULE_ITEM_EXISTS, "a block needs a title")
+            bk = blk.block_kind
+            if bk == "event":
+                if blk.start is not None and blk.end is not None and blk.start >= blk.end:
+                    fail(i, RULE_BLOCK_ORDER, "event: start is not before end")
+                if blk.repeat:
+                    _check_repeat(i, blk.repeat, fail)
+            elif bk == "task":
+                if blk.start is not None and blk.end is not None and blk.start >= blk.end:
+                    fail(i, RULE_BLOCK_ORDER, "task: start is not before end")
+                if blk.goal_id is not None and blk.goal_id not in goals:
+                    fail(i, RULE_GOAL_EXISTS, f"task {blk.id}: goal {blk.goal_id} does not exist")
+                if blk.repeat:
+                    _check_repeat(i, blk.repeat, fail)
+                if ctx.today is not None and blk.day is not None and blk.day < ctx.today:
+                    fail(i, RULE_NOT_IN_PAST, f"task: {blk.day} has already passed")
+            elif bk == "away":
+                if blk.end_date < blk.start_date:
+                    fail(i, RULE_BLOCK_ORDER, f"away: ends before it starts")
+                if ctx.today is not None and blk.end_date < ctx.today:
+                    fail(i, RULE_NOT_IN_PAST, f"away: {blk.end_date} has already passed")
+            elif bk == "milestone":
+                if blk.goal_id not in goals:
+                    fail(i, RULE_GOAL_EXISTS, f"milestone: goal {blk.goal_id} does not exist")
+                if ctx.today is not None and blk.target_date < ctx.today:
+                    fail(i, RULE_NOT_IN_PAST, f"milestone: {blk.target_date} has already passed")
+        elif isinstance(c, (EditItem, DeleteItem)):
+            if c.id not in ctx.open_items and c.id not in {b.id for b in ctx.blocks}:
+                # We don't have a ctx.blocks4 yet; accept for now and let the store validate
+                pass
 
     return out

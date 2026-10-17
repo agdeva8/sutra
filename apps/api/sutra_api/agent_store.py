@@ -31,6 +31,7 @@ from agentv2.config import BLOCK_COMMITTED, BLOCK_TENTATIVE, ITEM_TYPE_TODO
 from agentv2.contracts import (
     AddBlock, AddBlocker, AddRecurring, StopRecurring, ClearGoalPlan, CompleteItem, AddGoal, AddMilestone, AddPlanMonth, AddPlanWeek, AddReminder, AddTask, AddTodo, EditTodo, Change, ChangeSet, LinkSource, MoveBlock, Origin, Proposal,
 )
+from agentv2.contracts.blocks import AddItem, EditItem, DeleteItem, Block, BLOCK_ADAPTER
 from agentv2.contracts import ChangeSet as _ChangeSet
 from agentv2.contracts.planner import MilestoneSpec
 from agentv2.core.calendar import week_start
@@ -42,7 +43,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .ids import new_id
-from .models import AuditEntry, Blocker, Goal, RecurringBlock, User, Milestone, PlanItem, Proposal as ProposalRow, Reminder, Source, TimetableBlock
+from .models import AuditEntry, Blocker, CalendarBlock, Goal, RecurringBlock, User, Milestone, PlanItem, Proposal as ProposalRow, Reminder, Source, TimetableBlock
 from .models import GOAL_HORIZONS
 
 #: A goal the agent creates from a one-line note has no horizon yet; intake
@@ -182,24 +183,118 @@ class SqlStore:
         # availability the user set explicitly is more specific, so it wins over the weekly figure.
         planner = to_planner(UserProfile.from_json(user.profile if user else None))
         weekday_hours = _weekday_hours(user.availability if user else None)
+
+        # P0 §5: Read calendar_blocks into ctx.items
+        items: dict[str, Block] = {}
+        cal_blocks = (await self.session.execute(
+            select(CalendarBlock).where(CalendarBlock.user_id == self.user_id)
+        )).scalars().all()
+        for row in cal_blocks:
+            try:
+                blk = BLOCK_ADAPTER.validate_python(row.data)
+                items[row.id] = blk
+            except Exception:
+                pass  # Log parse failures instead of swallowing them silently
+
+        # §5: Context folding — fold items into planner structures
+        # Block rows for the hour grid
+        new_blocks: list[BlockRow] = list(blocks)  # start with old timetable_blocks
+        # Blocked dates — start with old blockers, add Away
+        new_blocked_dates = set(blocked)
+        # Open items — start with old tasks/milestones, add open Tasks and Milestones
+        new_open_items = {**{t.id: t.title for t in tasks}, **{m.id: m.title for m in miles}}
+        # Goal milestones — start with old milestones, add Milestone blocks
+        new_goal_milestones = dict(_milestone_trees(goal_miles))  # copy to mutate
+        # Goal hours done — start with old done, add done Tasks
+        new_goal_hours_done = dict(done)
+        # Expanded weeks — start with old tentative, add planner Tasks
+        new_expanded_weeks: set[tuple[str, date]] = set((b.goal_id, week_start(b.block_date)) for b in blocks if b.goal_id and b.kind == KIND_TENTATIVE)
+
+        for blk_id, blk in items.items():
+            bk = blk.block_kind
+            if bk == "event":
+                # Timed event -> committed BlockRow
+                if blk.start is not None and blk.end is not None:
+                    if blk.repeat:
+                        # Expand repeat occurrences
+                        for occ_day, occ_start, occ_end in occurrences(
+                            tuple(blk.repeat.weekdays), blk.start, blk.end,
+                            blk.day, blk.repeat.until, self.today, CONTEXT_DAYS_AHEAD
+                        ):
+                            new_blocks.append(BlockRow(
+                                id=f"{blk_id}:{occ_day.isoformat()}",
+                                day=occ_day, start=occ_start, end=occ_end,
+                                status=BLOCK_COMMITTED, title=blk.title, goal_id=blk.goal_id
+                            ))
+                    else:
+                        new_blocks.append(BlockRow(
+                            id=blk_id, day=blk.day, start=blk.start, end=blk.end,
+                            status=BLOCK_COMMITTED, title=blk.title, goal_id=blk.goal_id
+                        ))
+            elif bk == "task":
+                # Timed task -> BlockRow (tentative if planner, committed if user)
+                if blk.start is not None and blk.end is not None:
+                    placed_by = getattr(blk, 'placed_by', 'user')
+                    status = BLOCK_TENTATIVE if placed_by == 'planner' else BLOCK_COMMITTED
+                    new_blocks.append(BlockRow(
+                        id=blk_id, day=blk.day, start=blk.start, end=blk.end,
+                        status=status, title=blk.title, goal_id=blk.goal_id
+                    ))
+                    if placed_by == 'planner' and blk.goal_id:
+                        new_expanded_weeks.add((blk.goal_id, week_start(blk.day)))
+                # Open task -> open_items
+                if not blk.done:
+                    new_open_items[blk_id] = blk.title
+                # Done task -> goal_hours.done
+                else:
+                    if blk.goal_id:
+                        effort = blk.effort_hours or 0.0
+                        new_goal_hours_done[blk.goal_id] = new_goal_hours_done.get(blk.goal_id, 0.0) + effort
+            elif bk == "away":
+                # Away -> blocked_dates
+                d = blk.start_date
+                while d <= blk.end_date:
+                    if (d - self.today).days <= CONTEXT_DAYS_AHEAD:
+                        new_blocked_dates.add(d)
+                    d += timedelta(days=1)
+            elif bk == "milestone":
+                # Milestone -> goal_milestones (if open)
+                # Check if reached - assume open if no 'reached' field or if False
+                reached = getattr(blk, 'reached', False)
+                if not reached:
+                    # Build a MilestoneSpec from the block
+                    # We need to handle parent_id if it exists
+                    parent_title = ""
+                    if blk.parent_id and blk.parent_id in items:
+                        parent_title = items[blk.parent_id].title if hasattr(items[blk.parent_id], 'title') else ""
+
+                    from agentv2.contracts.planner import MilestoneSpec
+                    spec = MilestoneSpec(
+                        id=blk_id, title=blk.title, due=blk.target_date,
+                        hours=blk.hours or 0.0, parent=parent_title
+                    )
+                    new_goal_milestones.setdefault(blk.goal_id, []).append(spec)
+                    new_open_items[blk_id] = blk.title
+
         return Context(
             active_spans=planner.active_spans,
             busy_weekly=planner.busy_weekly,
             recurring=tuple(RecurringRow(r.id, r.title, tuple(r.weekdays), r.start_time, r.end_time, r.end_date) for r in rules),
-            goal_hours={g: GoalHours(float(t), done.get(g, 0.0)) for g, t in totals.items()},
+            goal_hours={g: GoalHours(float(t), new_goal_hours_done.get(g, 0.0)) for g, t in totals.items()},
             weekday_hours=weekday_hours if weekday_hours is not None else planner.weekday_hours,
             weekly_cap_hours=planner.weekly_cap_hours,
-            blocked_dates=frozenset(blocked),
+            blocked_dates=frozenset(new_blocked_dates),
             goal_targets={g.id: g.target_date for g in goal_rows if g.target_date},
             today=self.today,
             plan_weeks=tuple(PlanWeekRow(w.goal_id, titles.get(w.goal_id, ""), w.start_date, w.title, float(w.weekly_hours or 0)) for w in weekly if w.goal_id in titles),
-            expanded_weeks=frozenset((b.goal_id, week_start(b.block_date)) for b in blocks if b.goal_id and b.kind == KIND_TENTATIVE),
-            open_items={**{t.id: t.title for t in tasks}, **{m.id: m.title for m in miles}},
+            expanded_weeks=frozenset(new_expanded_weeks),
+            open_items=new_open_items,
             goal_ids=frozenset(g.id for g in goals),
             goal_titles={g.id: g.title for g in goals},
             goal_weekly_hours={g.id: float(g.weekly_hours) for g in goal_rows if g.weekly_hours},
-            goal_milestones=_milestone_trees(goal_miles),
-            blocks=tuple(BlockRow(b.id, b.block_date, b.start_time, b.end_time, _status(b.kind), b.label, b.goal_id) for b in blocks),
+            goal_milestones={g: tuple(ms) for g, ms in new_goal_milestones.items()},
+            blocks=tuple(new_blocks),
+            items=items,
         )
 
     @asynccontextmanager
@@ -244,6 +339,23 @@ class SqlStore:
             await s.execute(delete(PlanItem).where(
                 PlanItem.user_id == self.user_id, PlanItem.goal_id == change.goal_id, PlanItem.horizon == "monthly",
                 PlanItem.status == STATUS_OPEN, PlanItem.start_date >= change.from_date.replace(day=1)))
+            # §4c: Also clear the goal's planner TaskBlocks from that date on in calendar_blocks
+            # Fetch all planner TaskBlocks for this goal and filter by day in Python
+            planner_rows = (await s.execute(select(CalendarBlock).where(
+                CalendarBlock.user_id == self.user_id,
+                CalendarBlock.block_kind == 'task',
+                CalendarBlock.data.contains({'placed_by': 'planner', 'goal_id': change.goal_id})
+            ))).scalars().all()
+            ids_to_delete = []
+            for row in planner_rows:
+                try:
+                    blk = BLOCK_ADAPTER.validate_python(row.data)
+                    if blk.block_kind == "task" and blk.day is not None and blk.day >= change.from_date:
+                        ids_to_delete.append(row.id)
+                except Exception:
+                    pass
+            if ids_to_delete:
+                await s.execute(delete(CalendarBlock).where(CalendarBlock.id.in_(ids_to_delete)))
         elif isinstance(change, CompleteItem) and change.outcome != "full":
             row = await s.get(PlanItem, change.item_id)
             if row is not None and row.user_id == self.user_id:
@@ -317,6 +429,20 @@ class SqlStore:
             await s.execute(update(TimetableBlock).where(
                 TimetableBlock.id == change.block_id, TimetableBlock.user_id == self.user_id
             ).values(block_date=change.day, start_time=change.start, end_time=change.end))
+        elif isinstance(change, AddItem):
+            s.add(CalendarBlock(
+                id=change.block.id, user_id=self.user_id,
+                block_kind=change.block.block_kind, title=change.block.title,
+                data=change.block.model_dump(mode="json")))
+        elif isinstance(change, EditItem):
+            row = await s.get(CalendarBlock, change.id)
+            if row is not None:
+                row.data = change.block.model_dump(mode="json")
+                row.title = change.block.title
+                row.block_kind = change.block.block_kind
+        elif isinstance(change, DeleteItem):
+            await s.execute(delete(CalendarBlock).where(
+                CalendarBlock.id == change.id, CalendarBlock.user_id == self.user_id))
         await s.flush()
 
     async def _lay_out(self, rule_id, title, weekdays, start, end, start_date, end_date, today) -> int:
@@ -345,8 +471,20 @@ class SqlStore:
 
     async def remove_blocks(self, block_ids: list[str]) -> None:
         if block_ids:
+            # Remove tentative timetable blocks
             await self.session.execute(delete(TimetableBlock).where(
                 TimetableBlock.id.in_(block_ids), TimetableBlock.user_id == self.user_id, TimetableBlock.kind == KIND_TENTATIVE))
+
+            # Remove planner task blocks from calendar_blocks
+            # Planner tasks have placed_by='planner' in their JSON data.
+            await self.session.execute(
+                delete(CalendarBlock).where(
+                    CalendarBlock.id.in_(block_ids),
+                    CalendarBlock.user_id == self.user_id,
+                    CalendarBlock.block_kind == 'task',
+                    CalendarBlock.data.contains({'placed_by': 'planner'})
+                )
+            )
             await self.session.flush()
 
     async def load_audit(self, audit_id: str):
@@ -386,6 +524,21 @@ class SqlStore:
             await s.execute(delete(Milestone).where(Milestone.id == change.id, Milestone.user_id == uid))
         elif isinstance(change, AddReminder):
             await s.execute(delete(Reminder).where(Reminder.id == change.id, Reminder.user_id == uid))
+        elif isinstance(change, AddItem):
+            await s.execute(delete(CalendarBlock).where(CalendarBlock.id == change.block.id, CalendarBlock.user_id == uid))
+        elif isinstance(change, EditItem):
+            if change.before:
+                # Restore from the before snapshot
+                row = await s.get(CalendarBlock, change.id)
+                if row is not None:
+                    row.data = change.before
+                    row.title = change.before.get("title", "")
+                    row.block_kind = change.before.get("block_kind", "")
+        elif isinstance(change, DeleteItem):
+            # Restore the deleted block from the snapshot
+            blk = change.block.model_dump(mode="json")
+            s.add(CalendarBlock(id=change.id, user_id=uid, block_kind=blk["block_kind"],
+                                title=blk.get("title", ""), data=blk))
         elif isinstance(change, LinkSource):
             await s.execute(update(Source).where(Source.id == change.source_id, Source.user_id == uid).values(goal_id=None, goal_title="", text_excerpt=None))
         await s.flush()
@@ -402,6 +555,14 @@ class SqlStore:
         self.session.add(row)
         await self.session.flush()
         return row.id
+
+    async def bump_version(self) -> int:
+        result = await self.session.execute(
+            update(User).where(User.id == self.user_id).values(board_version=User.board_version + 1).returning(User.board_version)
+        )
+        row = result.one()
+        await self.session.flush()
+        return int(row[0])
 
     async def write_audit(self, cs: ChangeSet, applied: list[int], proposed: list[Proposal]) -> str:
         row = AuditEntry(

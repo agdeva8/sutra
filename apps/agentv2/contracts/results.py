@@ -27,6 +27,7 @@ class Applied(_Strict):
     applied: list[int]
     proposed: list[Proposal]
     audit_id: str
+    version: int | None = None
 
 
 class Rejected(_Strict):

@@ -10,14 +10,15 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 
-from ..config import BLOCK_TENTATIVE, FIX_MAX_LOOPS, MAX_GOAL_HOURS_PER_DAY, MIN_GAP_BETWEEN_SESSIONS_MIN, MIN_SESSION_HOURS
+from ..config import BLOCK_TENTATIVE, FIX_MAX_LOOPS, FOUR_KIND_WRITES, MAX_GOAL_HOURS_PER_DAY, MIN_GAP_BETWEEN_SESSIONS_MIN, MIN_SESSION_HOURS
 from ..contracts import AddBlock, AddTask, Change
+from ..contracts.blocks import AddItem, TaskBlock
 from ..contracts.planner import DayPlan, GoalSpec
 from ..core.budget import check_allocation, even_split
 from ..core.calendar import free_hours_by_day, windows_on
 from ..core.context import BlockRow, Context
 from ..core.ids import new_id
-from ..core.slots import busy_by_day, pad_after, picks_to_blocks, validate_picks
+from ..core.slots import busy_by_day, pad_after, picks_to_blocks, picks_to_task_blocks, validate_picks
 from ..llm import complete_json
 from ..contracts.planner import SessionPlan
 from ..prompts.planner import DAY_SYSTEM, SESSION_SLOT_SYSTEM, day_user, session_slot_user
@@ -120,16 +121,35 @@ def plan_day_level(chat, goal: GoalSpec, wk: WeekAlloc, ctx: Context, now: datet
     milestone_ids = {m.title: m.id for m in goal.milestones if m.id}
     for i, (day_id, title, hours, description, why, milestone) in enumerate(sessions):
         day = date.fromisoformat(day_id[len(DAY_PREFIX):])
-        # The day travels with the task. Without it the row has no date, so the week and day views have
-        # nowhere to draw it — the task existed but was invisible on every calendar.
-        task = AddTask(id=new_id("task"), goal_id=goal.id, title=title, effort_hours=hours, day=day, description=description, why=why, milestone_id=milestone_ids.get(milestone))
-        blocks: list[AddBlock] = []
-        if placed is not None:
-            window, offset, slot_why = placed[i]
-            blocks = picks_to_blocks([(window.id, hours, offset)], [window], title, task_id=task.id, goal_id=goal.id, why=slot_why)
-        changes.append(task)
-        changes += blocks
-        new_rows = tuple(BlockRow(b.id, b.day, b.start, b.end, BLOCK_TENTATIVE, b.title) for b in blocks)
+        if FOUR_KIND_WRITES:
+            # §4b: One TaskBlock, placed or unplaced.
+            # Placed: has day/start/end. Unplaced: has day but no start/end.
+            task_block = TaskBlock(
+                id=new_id("task"), title=title, goal_id=goal.id, day=day,
+                effort_hours=hours, description=description, why=why,
+                milestone_id=milestone_ids.get(milestone), placed_by="planner"
+            )
+            new_rows: tuple[BlockRow, ...] = ()
+            if placed is not None:
+                window, offset, slot_why = placed[i]
+                begin = _clock(window.day, window.start) + timedelta(minutes=offset)
+                end = begin + timedelta(hours=hours)
+                task_block.day = window.day
+                task_block.start = begin.time()
+                task_block.end = end.time()
+                task_block.why = slot_why
+                new_rows = (BlockRow(task_block.id, task_block.day, task_block.start, task_block.end, BLOCK_TENTATIVE, task_block.title, goal_id=goal.id),)
+            changes.append(AddItem(block=task_block))
+        else:
+            # Old path: AddTask + AddBlock
+            task = AddTask(id=new_id("task"), goal_id=goal.id, title=title, effort_hours=hours, day=day, description=description, why=why, milestone_id=milestone_ids.get(milestone))
+            blocks: list[AddBlock] = []
+            if placed is not None:
+                window, offset, slot_why = placed[i]
+                blocks = picks_to_blocks([(window.id, hours, offset)], [window], title, task_id=task.id, goal_id=goal.id, why=slot_why)
+            changes.append(task)
+            changes += blocks
+            new_rows = tuple(BlockRow(b.id, b.day, b.start, b.end, BLOCK_TENTATIVE, b.title) for b in blocks)
         ctx = replace(ctx, blocks=ctx.blocks + new_rows)
         # The next session may not start until the gap has passed.
         gap_ctx = replace(gap_ctx, blocks=gap_ctx.blocks + new_rows + pad_after(new_rows))

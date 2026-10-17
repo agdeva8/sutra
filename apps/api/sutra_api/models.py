@@ -129,6 +129,7 @@ class User(Timestamped, Base):
     #: Display preferences that follow the account across devices: theme and text size. Optional keys only
     #: (`sutra_api/api/preferences.py` lists them); an empty object means "never saved", not "defaults".
     preferences: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb"))
+    board_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
     __table_args__ = (
         # Partial unique. A plain unique index would reject the second
@@ -801,6 +802,40 @@ class AuditEntry(Base):
     __table_args__ = (
         # v1 had no index here and ordered by created_at on every request.
         Index("audit_log_user_created_idx", "user_id", "created_at"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# calendar_blocks — the four-kind block table
+# ---------------------------------------------------------------------------
+
+
+class CalendarBlock(Base):
+    """One of the four calendar block kinds: event, task, away, milestone.
+
+    The block's full state lives in `data` as JSON. The `block_kind` column lets a
+    query filter without parsing JSON, and is the discriminator for Pydantic validation.
+    """
+
+    __tablename__ = "calendar_blocks"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    block_kind: Mapped[str] = mapped_column(String, nullable=False)  # event | task | away | milestone
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    data: Mapped[dict] = mapped_column(JSONB, nullable=False)  # full Block as JSON
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("cal_blocks_user_idx", "user_id"),
+        Index("cal_blocks_kind_idx", "user_id", "block_kind"),
     )
 
 

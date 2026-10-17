@@ -13,6 +13,7 @@ from datetime import datetime
 from ..contracts import (
     AddBlock, AddBlocker, AddRecurring, StopRecurring, ClearGoalPlan, CompleteItem, AddGoal, AddMilestone, AddPlanMonth, AddPlanWeek, AddReminder, AddTask, AddTodo, EditTodo, Applied, Change, LinkSource, MoveBlock, Origin, Rejected,
 )
+from ..contracts.blocks import AddItem, EditItem, DeleteItem
 from ..gateway import Store, apply
 from ..llm import Image
 from .classify import classify
@@ -84,6 +85,22 @@ def describe(c: Change) -> str:
         return f"Kept in Sources: {c.title}"
     if isinstance(c, MoveBlock):
         return f"Move block to {c.day:%a %d %b} {c.start:%H:%M}-{c.end:%H:%M}"
+    # §4a: New 4-kind changes
+    if isinstance(c, AddItem):
+        blk = c.block
+        if blk.block_kind == "event":
+            return f"Event: {blk.title}" + (f", {blk.day:%a %d %b} {blk.start:%H:%M}-{blk.end:%H:%M}" if blk.start and blk.end else "")
+        if blk.block_kind == "task":
+            return f"Task: {blk.title}" + (f", {blk.day:%a %d %b} {blk.start:%H:%M}-{blk.end:%H:%M}" if blk.day else "")
+        if blk.block_kind == "away":
+            span = f"{blk.start_date:%a %d %b}" if blk.start_date == blk.end_date else f"{blk.start_date:%a %d %b} to {blk.end_date:%a %d %b}"
+            return f"Away: {blk.title}, {span}"
+        if blk.block_kind == "milestone":
+            return f"Milestone: {blk.title} by {blk.target_date:%d %b %Y}"
+    if isinstance(c, EditItem):
+        return f"Updated: {c.block.title}"
+    if isinstance(c, DeleteItem):
+        return f"Deleted: {c.block.title}"
     return c.kind
 
 

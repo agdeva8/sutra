@@ -246,6 +246,22 @@ export const api = {
   createBlock: (b) => req("/timetable", { method: "POST", body: JSON.stringify(b) }).then(replanAfter),
   updateBlock: (id, b) => req(`/timetable/${id}`, { method: "PUT", body: JSON.stringify(b) }).then(replanAfter),
   deleteBlock: (id) => req(`/timetable/${id}`, { method: "DELETE" }),
+
+  // Calendar blocks (Phase 6: 4-kind model)
+  blocks: {
+    list: (params = {}) => {
+      const qs = new URLSearchParams();
+      if (params.from) qs.set("from", params.from);
+      if (params.to) qs.set("to", params.to);
+      const q = qs.toString();
+      return req(`/blocks${q ? `?${q}` : ""}`);
+    },
+    create: (b) => req("/blocks", { method: "POST", body: JSON.stringify(b) }).then(replanAfter),
+    update: (id, b) => req(`/blocks/${id}`, { method: "PATCH", body: JSON.stringify(b) }).then(replanAfter),
+    delete: (id) => req(`/blocks/${id}`, { method: "DELETE" }).then(replanAfter),
+    undo: (id) => req(`/blocks/${id}/undo`, { method: "POST" }).then(boardChanged),
+  },
+  stateVersion: () => req("/state/version"),
   // Plan items (multi-horizon execution lattice) — tick a task done/open, or
   // add a user-owned daily task directly.
   createPlanItem: (p) => req("/plan-items", { method: "POST", body: JSON.stringify(p) }),

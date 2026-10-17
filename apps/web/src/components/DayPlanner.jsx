@@ -1,10 +1,14 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import { X, Plus, AlertOctagon, CheckCircle2, Circle, Milestone, Clock } from "lucide-react";
 import CenteredDialog from "./CenteredDialog";
 import AutoTextarea from "./AutoTextarea";
 import TimeWheelInput from "./TimeWheelInput";
 import AddToDayDialog from "./AddToDayDialog";
+import BlockCard from "./BlockCard";
+import BlockFormDialog from "./BlockFormDialog";
+import BlockDetailSheet from "./BlockDetailSheet";
 import { api } from "../lib/api";
+import { blockColor } from "../constants/blockKinds";
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
@@ -44,22 +48,15 @@ const blockerCoversDay = (b, dayStart) => {
  *   onClose   — close the panel
  */
 export default function DayPlanner({ day, state, onChange = () => {}, onClose, embedded = false }) {
-  const [blocks, setBlocks] = useState([]);
   const [saving, setSaving] = useState(false);
   // The single unified add flow (time block / unavailable).
   const [addOpen, setAddOpen] = useState(false);
 
-  // Block dialog
+  // New block dialog (4-kind model)
   const [blockDialogOpen, setBlockDialogOpen] = useState(false);
   const [editBlock, setEditBlock] = useState(null);
-  const [blockLabel, setBlockLabel] = useState("");
-  const [blockKind, setBlockKind] = useState("focus");
-  const [blockStart, setBlockStart] = useState("09:00");
-  const [blockEnd, setBlockEnd] = useState("10:00");
-  const [blockNote, setBlockNote] = useState("");
-  const [blockGoalId, setBlockGoalId] = useState("");
 
-  // Blocker dialog
+  // Blocker dialog (kept for legacy blockers)
   const [blockerDialogOpen, setBlockerDialogOpen] = useState(false);
   const [editBlocker, setEditBlocker] = useState(null);
   const [blockerTitle, setBlockerTitle] = useState("");
@@ -67,12 +64,8 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, e
   const [blockerEnd, setBlockerEnd] = useState("");
   const [blockerNote, setBlockerNote] = useState("");
 
-  const loadBlocks = useCallback(() => {
-    api.timetable()
-      .then((res) => setBlocks(res?.blocks || []))
-      .catch(() => { /* offline — keep the last list */ });
-  }, []);
-  useEffect(() => { loadBlocks(); }, [loadBlocks]);
+  // Blocks: prefer state.blocks, fall back to empty (parent should keep state fresh).
+  const blocks = useMemo(() => state?.blocks || [], [state?.blocks]);
 
   if (!day) return null;
 
@@ -81,9 +74,18 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, e
   const blockers = state?.blockers || [];
   const milestones = state?.milestones || [];
   const dayBlockers = blockers.filter((b) => blockerCoversDay(b, dayStart));
+
+  // Filter blocks for this day. Event/Task use `day`, Away uses start_date/end_date.
   const dayBlocks = blocks
-    .filter((b) => b.block_date === dateStr)
-    .sort((a, b) => String(a.start_time || "").localeCompare(String(b.start_time || "")));
+    .filter((b) => {
+      if (b.block_kind === "away") {
+        const s = b.start_date;
+        const e = b.end_date || b.start_date;
+        return s && e && s <= dateStr && e >= dateStr;
+      }
+      return b.day === dateStr;
+    })
+    .sort((a, b) => String(a.start || a.start_time || "").localeCompare(String(b.start || b.start_time || "")));
 
   // Plan tasks — per-day rows from the multi-horizon lattice (plan_items).
   // Marked by a "Fulfils …" note.
@@ -101,36 +103,29 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, e
   const hasItems =
     dayPlanTasks.length + dayMilestones.length + dayBlockers.length + dayBlocks.length > 0;
 
-  // --- blocks -------------------------------------------------------------
+  // --- blocks (4-kind model) -----------------------------------------------
   const openEditBlock = (b) => {
     setEditBlock(b);
     setBlockDialogOpen(true);
-    setBlockLabel(b.label || "");
-    setBlockKind(b.kind || "focus");
-    setBlockStart(b.start_time || "09:00");
-    setBlockEnd(b.end_time || "10:00");
-    setBlockNote(b.note || "");
-    setBlockGoalId(b.goal_id || "");
   };
   const closeBlockDialog = () => { setEditBlock(null); setBlockDialogOpen(false); };
-  const saveBlock = async () => {
-    if (!blockLabel.trim() || !blockStart || !blockEnd) return;
+  const saveBlock = async (blockData) => {
     setSaving(true);
     try {
-      const payload = { block_date: dateStr, start_time: blockStart, end_time: blockEnd, label: blockLabel.trim(), kind: blockKind, goal_id: blockGoalId || null, note: blockNote };
-      if (editBlock) { setBlocks((prev) => prev.map((b) => (b.id === editBlock.id ? { ...b, ...payload } : b))); await api.updateBlock(editBlock.id, payload); }
-      else { await api.createBlock(payload); }
-      loadBlocks();
+      if (editBlock) await api.blocks.update(editBlock.id, blockData);
+      else await api.blocks.create(blockData);
       onChange();
       closeBlockDialog();
     } catch (e) { console.error("Failed to save block", e); } finally { setSaving(false); }
   };
-  const deleteBlock = async () => {
-    if (!editBlock) return;
-    const id = editBlock.id;
-    setBlocks((prev) => prev.filter((b) => b.id !== id));
-    closeBlockDialog();
-    try { await api.deleteBlock(id); onChange(); } catch (e) { console.error(e); loadBlocks(); }
+  const deleteBlock = async (id) => {
+    setSaving(true);
+    try { await api.blocks.delete(id); onChange(); closeBlockDialog(); } catch (e) { console.error(e); } finally { setSaving(false); }
+  };
+  const toggleBlockDone = async (b) => {
+    if (b.block_kind !== "task") return;
+    const nextState = b.state === "done" ? "open" : "done";
+    try { await api.blocks.update(b.id, { state: nextState }); onChange(); } catch (e) { console.error(e); }
   };
 
   // --- blockers -----------------------------------------------------------
@@ -188,23 +183,19 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, e
         <div className="space-y-2">
           {!hasItems && <p className="text-[13px] text-[var(--text-muted)]">Nothing on this day yet.</p>}
 
-          {dayBlocks.map((b) => (
-            <button
-              key={b.id}
-              type="button"
-              data-testid={`detail-block-${b.id}`}
-              onClick={() => openEditBlock(b)}
-              className="w-full flex items-start gap-2.5 text-[13px] rounded-xl bg-[var(--bg-tertiary)] px-3 py-2.5 text-left hover:bg-[color-mix(in_srgb,var(--accent)_10%,var(--bg-tertiary))] transition-colors"
-            >
-              <Clock className="w-4 h-4 shrink-0 text-[var(--accent)]" />
-              <span className="tabular-nums text-[12px] text-[var(--text-muted)] shrink-0">{b.start_time}–{b.end_time}</span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[var(--text-primary)]">{b.label}</span>
-                {b.why && <span className="mt-0.5 block text-[11px] leading-snug text-[var(--text-muted)]" data-testid={`detail-block-why-${b.id}`}>{b.why}</span>}
-              </span>
-              <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] shrink-0">{b.kind}</span>
-            </button>
-          ))}
+          {dayBlocks.map((b) => {
+            const goal = (state?.goals || []).find((g) => g.id === b.goal_id);
+            return (
+              <BlockCard
+                key={b.id}
+                block={b}
+                goalTitle={goal?.title || ""}
+                density="row"
+                onClick={() => openEditBlock(b)}
+                onToggleDone={() => toggleBlockDone(b)}
+              />
+            );
+          })}
 
           {dayBlockers.map((b) => (
             <button
@@ -268,97 +259,34 @@ export default function DayPlanner({ day, state, onChange = () => {}, onClose, e
             </div>
           ))}
 
-          <div className="pt-1">
+          <div className="pt-1 flex gap-2">
+            <button
+              data-testid={`add-to-day-block-${dateStr}`}
+              onClick={() => { setEditBlock(null); setBlockDialogOpen(true); }}
+              className="min-h-11 flex-1 flex items-center justify-center gap-1.5 px-3 rounded-xl bg-[var(--accent)] text-[13px] font-semibold text-[var(--bg-primary)] hover:opacity-90 transition-opacity"
+            >
+              <Plus className="w-4 h-4" /> Add block
+            </button>
             <button
               data-testid={`add-to-day-detail-${dateStr}`}
               onClick={() => setAddOpen(true)}
-              className="min-h-11 w-full flex items-center justify-center gap-1.5 px-3 rounded-xl bg-[var(--accent)] text-[13px] font-semibold text-[var(--bg-primary)] hover:opacity-90 transition-opacity"
+              className="min-h-11 flex-1 flex items-center justify-center gap-1.5 px-3 rounded-xl bg-[var(--bg-tertiary)] text-[13px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
             >
-              <Plus className="w-4 h-4" /> Add to this day
+              More options
             </button>
           </div>
         </div>
       </div>
 
-      {/* Block dialog */}
-      <CenteredDialog
+      {/* 4-kind Block dialog */}
+      <BlockFormDialog
         open={blockDialogOpen}
         onClose={closeBlockDialog}
-        title={editBlock ? "Edit block" : "Add a time block"}
-        subtitle={dateStr}
-        maxWidth="max-w-sm"
-      >
-        <div className="space-y-3">
-          <div>
-            <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)] mb-1">Label *</label>
-            <input
-              data-testid="block-label-input"
-              type="text"
-              value={blockLabel}
-              onChange={(e) => setBlockLabel(e.target.value)}
-              placeholder="e.g. Deep work — draft proposal"
-              className="w-full px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--bg-primary)] text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] transition-colors"
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)] mb-1">Start *</label>
-              <TimeWheelInput data-testid="block-start-input" value={blockStart} onChange={setBlockStart} className="w-full px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--bg-primary)] text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] transition-colors" />
-            </div>
-            <div>
-              <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)] mb-1">End *</label>
-              <TimeWheelInput data-testid="block-end-input" value={blockEnd} onChange={setBlockEnd} className="w-full px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--bg-primary)] text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] transition-colors" />
-            </div>
-          </div>
-          <div>
-            <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)] mb-1">Kind</label>
-            <div className="grid grid-cols-4 gap-1.5">
-              {["focus", "routine", "commitment", "blocker"].map((k) => (
-                <button key={k} type="button" data-testid={`block-kind-${k}`} onClick={() => setBlockKind(k)} aria-pressed={blockKind === k} className={`h-10 rounded-xl text-[12px] font-medium capitalize transition-colors ${blockKind === k ? "bg-[var(--accent)] text-[var(--bg-primary)]" : "bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"}`}>
-                  {k}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div>
-            <label htmlFor="block-goal-select" className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)] mb-1">Goal (optional)</label>
-            <select
-              id="block-goal-select"
-              data-testid="block-goal-select"
-              value={blockGoalId}
-              onChange={(e) => setBlockGoalId(e.target.value)}
-              className="min-h-11 w-full px-3 rounded-xl border border-[var(--border)] bg-[var(--bg-primary)] text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] transition-colors"
-            >
-              <option value="">Unlinked schedule block</option>
-              {(state?.goals || [])
-                .filter((g) => g.status !== "dropped")
-                .map((g) => (
-                  <option key={g.id} value={g.id}>{g.title}</option>
-                ))}
-            </select>
-            <p className="mt-1 text-xs leading-relaxed text-[var(--text-muted)]">
-              Link goal-related work so the coach can flag schedule conflicts.
-            </p>
-          </div>
-          <div>
-            <label className="block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)] mb-1">Note</label>
-            <AutoTextarea data-testid="block-note-input" value={blockNote} onChange={(e) => setBlockNote(e.target.value)} minRows={2} maxRows={4} placeholder="Optional details…" className="w-full px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--bg-primary)] text-sm leading-[22px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]" />
-          </div>
-          <div className="flex gap-2 pt-1">
-            {editBlock && (
-              <button data-testid="block-delete-btn" onClick={deleteBlock} disabled={saving} className="min-h-11 px-3 rounded-xl text-xs border border-[color-mix(in_srgb,var(--danger)_40%,transparent)] text-[var(--danger)] hover:bg-[color-mix(in_srgb,var(--danger)_10%,transparent)] transition-colors disabled:opacity-50">
-                Remove
-              </button>
-            )}
-            <div className="ml-auto flex gap-2">
-              <button onClick={closeBlockDialog} disabled={saving} className="min-h-11 px-4 rounded-xl text-xs font-medium bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors">Cancel</button>
-              <button data-testid="block-save-btn" onClick={saveBlock} disabled={saving || !blockLabel.trim() || !blockStart || !blockEnd} className="min-h-11 px-4 rounded-xl text-xs font-semibold bg-[var(--accent)] text-[var(--bg-primary)] hover:opacity-90 transition-opacity disabled:opacity-50">
-                {saving ? "Saving…" : editBlock ? "Save" : "Add"}
-              </button>
-            </div>
-          </div>
-        </div>
-      </CenteredDialog>
+        onSave={saveBlock}
+        editing={editBlock}
+        goals={(state?.goals || []).filter((g) => g.status !== "dropped")}
+        defaultDate={day}
+      />
 
       {/* Blocker dialog */}
       <CenteredDialog

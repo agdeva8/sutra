@@ -21,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .agent_store import KIND_TENTATIVE, SOURCE_RECURRING, SqlStore
-from .models import RecurringBlock, TimetableBlock, User, UserFact
+from .models import CalendarBlock, RecurringBlock, TimetableBlock, User, UserFact
 from .profile import profile_lines
 from .store import repo
 
@@ -143,6 +143,10 @@ def render(f: CoachFacts) -> str:
 
 
 async def build_coach_context(session: AsyncSession, *, user_id: str, now: datetime) -> str:
+    from agentv2.contracts.blocks import BLOCK_ADAPTER
+    from agentv2.core.recurring import occurrences as _occurrences
+    from agentv2.config import RECURRING_HORIZON_DAYS
+
     today = now.date()
     user = await session.get(User, user_id)
     goals = await repo.list_goals(session, user_id=user_id, limit=MAX_GOALS)
@@ -151,25 +155,49 @@ async def build_coach_context(session: AsyncSession, *, user_id: str, now: datet
     ctx = await SqlStore(session, user_id, today=today).context()
 
     until = today + timedelta(weeks=CONTEXT_WEEKS_AHEAD)
-    fixed = (await session.execute(
-        select(TimetableBlock).where(
-            TimetableBlock.user_id == user_id, TimetableBlock.block_date >= today,
-            TimetableBlock.block_date < until, TimetableBlock.kind != KIND_TENTATIVE,
-            # Recurring rules are listed once below rather than per occurrence.
-            TimetableBlock.source != SOURCE_RECURRING,
-        ).order_by(TimetableBlock.block_date, TimetableBlock.start_time)
-    )).scalars().all()
-    today_rows = (await session.execute(
-        select(TimetableBlock).where(TimetableBlock.user_id == user_id, TimetableBlock.block_date == today)
-        .order_by(TimetableBlock.start_time)
-    )).scalars().all()
-    rules = (await session.execute(select(RecurringBlock).where(
-        RecurringBlock.user_id == user_id,
-        (RecurringBlock.end_date.is_(None)) | (RecurringBlock.end_date >= today)))).scalars().all()
     facts = (await session.execute(
         select(UserFact.fact).where(UserFact.user_id == user_id)
         .order_by(UserFact.confidence.desc(), UserFact.updated_at.desc()).limit(MAX_FACTS)
     )).scalars().all()
+
+    # Phase 5: Read calendar_blocks exclusively
+    cal_blocks = (await session.execute(
+        select(CalendarBlock).where(CalendarBlock.user_id == user_id)
+    )).scalars().all()
+
+    cal_fixed: list[tuple[date, time, time, str]] = []
+    cal_today: list[tuple[time, time, str]] = []
+    cal_recurring: list[tuple[str, list[int], time, time]] = []
+
+    for row in cal_blocks:
+        try:
+            blk = BLOCK_ADAPTER.validate_python(row.data)
+        except Exception:
+            continue
+        bk = blk.block_kind
+        if bk == "event":
+            if blk.repeat and blk.start and blk.end:
+                # Add to recurring list
+                cal_recurring.append((blk.title, list(blk.repeat.weekdays), blk.start, blk.end))
+                # Expand and add to fixed commitments
+                occs = _occurrences(
+                    tuple(blk.repeat.weekdays), blk.start, blk.end,
+                    blk.day, blk.repeat.until, today, RECURRING_HORIZON_DAYS
+                )
+                for occ_day, occ_start, occ_end in occs:
+                    if today <= occ_day < until:
+                        cal_fixed.append((occ_day, occ_start, occ_end, blk.title))
+                    if occ_day == today:
+                        cal_today.append((occ_start, occ_end, blk.title))
+            elif blk.start and blk.end:
+                if blk.day >= today and blk.day < until:
+                    cal_fixed.append((blk.day, blk.start, blk.end, blk.title))
+                if blk.day == today:
+                    cal_today.append((blk.start, blk.end, blk.title))
+        elif bk == "task":
+            # Tasks are shown in today_blocks if they have a time
+            if blk.start and blk.end and blk.day == today:
+                cal_today.append((blk.start, blk.end, blk.title))
 
     active = [g for g in goals if g.status == GOAL_ACTIVE]
     inactive = sorted((g for g in goals if g.status != GOAL_ACTIVE), key=lambda g: g.updated_at or g.created_at, reverse=True)
@@ -177,9 +205,9 @@ async def build_coach_context(session: AsyncSession, *, user_id: str, now: datet
         today=today,
         profile=dict(user.profile or {}) if user else {},
         weeks=week_hours(ctx, now),
-        commitments=[(b.block_date, b.start_time, b.end_time, b.label) for b in fixed],
-        today_blocks=[(b.start_time, b.end_time, b.label) for b in today_rows],
-        recurring=[(r.title, list(r.weekdays or []), r.start_time, r.end_time) for r in rules],
+        commitments=cal_fixed,
+        today_blocks=cal_today,
+        recurring=cal_recurring,
         goals=[
             f"- {g.title} ({g.horizon})"
             + (f" -> {g.target_date}" if g.target_date else "")

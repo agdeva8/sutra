@@ -82,9 +82,14 @@ def load_settings() -> Settings:
 
 # --- Gateway / validator (step 1) -------------------------------------------
 
+import os
+
+#: Phase 4 rollout switch (D10). When True, agent stages emit the new 4-kind changes.
+FOUR_KIND_WRITES = os.environ.get("FOUR_KIND_WRITES", "").lower() in ("1", "true", "yes")
+
 #: Change kinds the gateway may apply without asking (HLD §9). Anything else, and
 #: anything that touches a committed block, becomes a proposal.
-AUTO_APPLY_KINDS = frozenset({"add_recurring", "stop_recurring", "clear_goal_plan", "complete_item", "add_goal", "add_milestone", "add_task", "add_reminder", "add_block", "link_source", "add_plan_week", "add_plan_month", "add_blocker", "add_todo", "edit_todo"})
+AUTO_APPLY_KINDS = frozenset({"add_recurring", "stop_recurring", "clear_goal_plan", "complete_item", "add_goal", "add_milestone", "add_task", "add_reminder", "add_block", "link_source", "add_plan_week", "add_plan_month", "add_blocker", "add_todo", "edit_todo", "add_item", "edit_item", "delete_item"})
 
 # --- To-dos ------------------------------------------------------------------
 
@@ -214,6 +219,9 @@ PROPOSAL_ACTIONS = {
     "set_goal_dates": "goal_title, start_date?, target_date?",
     "add_milestone": "goal_title, title, target_date?, parent?, hours?",
     "add_blocker": "title, start_date, end_date?, note?",
+    "add_block": "label, block_date?, start_time?, end_time?, goal_title?",
+    "edit_block": "block_id, title?, block_date?, start_time?, end_time?, goal_title?",
+    "delete_block": "block_id",
 }
 #: Argument names whose value is a date. The model gives the user's own words ("friday", "in 3 weeks",
 #: or an ISO date they stated); code turns them into dates.

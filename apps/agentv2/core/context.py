@@ -93,6 +93,8 @@ class Context:
     active_spans: tuple[tuple[time, time], ...] = ((ACTIVE_WINDOW_START, ACTIVE_WINDOW_END),)
     #: weekday -> spans the user is busy every week (their work or study hours, from their profile).
     busy_weekly: dict[int, tuple[tuple[time, time], ...]] = field(default_factory=dict)
+    #: id -> Block for the four calendar block kinds (calendar_blocks table).
+    items: dict[str, "Block"] = field(default_factory=dict)
 
     def capacity_on(self, day: date) -> float:
         """Hours of planned work `day` can hold."""

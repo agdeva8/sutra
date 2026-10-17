@@ -30,6 +30,7 @@ from ..models import (
     CALENDAR_EMPTIED,
     CALENDAR_REVOKED,
     Blocker,
+    CalendarBlock,
     CalendarFeed,
     CalendarSubscription,
     Goal,
@@ -38,6 +39,7 @@ from ..models import (
     Reminder,
     TimetableBlock,
 )
+from agentv2.contracts.blocks import BLOCK_ADAPTER
 from ..wire import iso_dt
 
 router = APIRouter(tags=["calendar"])
@@ -241,94 +243,110 @@ async def dismiss_prompt(
 
 
 async def _events_for(session: AsyncSession, user_id: str, since: date) -> list[FeedEvent]:
-    """Everything the in-app calendar shows, as feed events: sessions, fixed and recurring blocks,
-    reminders, milestones, away stretches and goal deadlines. One source, so the two never disagree."""
+    """Everything the in-app calendar shows, as feed events from calendar_blocks only.
+    One source, so the two never disagree."""
+    from agentv2.core.recurring import occurrences as _occurrences
+    from agentv2.config import RECURRING_HORIZON_DAYS
+
     goals = {
         g.id: g
         for g in (
             await session.execute(select(Goal).where(Goal.user_id == user_id))
         ).scalars()
     }
-    items = (
-        await session.execute(
-            select(PlanItem).where(
-                PlanItem.user_id == user_id,
-                PlanItem.horizon.in_(FEED_HORIZONS),
-            )
-        )
-    ).scalars()
     events: list[FeedEvent] = []
-    for it in items:
-        goal = goals.get(it.goal_id) if it.goal_id else None
-        if goal is not None and goal.status not in FEED_GOAL_STATUSES:
-            continue
-        start = it.start_date or it.due_date
-        if start is None:
-            continue
-        end = it.end_date or it.due_date or start
-        if end < since:
-            continue
-        desc = "\n".join(p for p in (goal.title if goal else "", it.phase, it.note, it.description) if p)
-        events.append(
-            FeedEvent(
-                uid=it.id, title=it.title, start=start, end=end,
-                description=desc, done=it.status == "done",
-            )
-        )
-    blocks = (
-        await session.execute(
-            select(TimetableBlock).where(
-                TimetableBlock.user_id == user_id, TimetableBlock.block_date >= since
-            )
-        )
+
+    # Phase 5: Read only from calendar_blocks
+    cal_blocks = (
+        await session.execute(select(CalendarBlock).where(CalendarBlock.user_id == user_id))
     ).scalars()
-    for b in blocks:
-        events.append(
-            FeedEvent(
-                uid=b.id, title=b.label, start=b.block_date,
-                start_time=b.start_time, end_time=b.end_time,
-                description="\n".join(p for p in (b.goal_title, b.note) if p),
-            )
-        )
-    for m in (
-        await session.execute(
-            select(Milestone).where(Milestone.user_id == user_id, Milestone.target_date >= since)
-        )
-    ).scalars():
-        events.append(
-            FeedEvent(
-                uid=m.id, title=f"{MILESTONE_PREFIX}{m.title}", start=m.target_date,
-                description=m.goal_title or "", done=m.status == "done",
-            )
-        )
-    for bl in (
-        await session.execute(select(Blocker).where(Blocker.user_id == user_id))
-    ).scalars():
-        end = bl.end_date or bl.start_date
-        if end >= since:
-            events.append(FeedEvent(uid=bl.id, title=f"{AWAY_PREFIX}{bl.title}", start=bl.start_date, end=end, description=bl.note))
+    today = date.today()
+    for row in cal_blocks:
+        try:
+            blk = BLOCK_ADAPTER.validate_python(row.data)
+        except Exception:
+            continue
+        bk = blk.block_kind
+        if bk == "event":
+            if blk.repeat and blk.start and blk.end:
+                # Expand repeat occurrences
+                occs = _occurrences(
+                    tuple(blk.repeat.weekdays), blk.start, blk.end,
+                    blk.day, blk.repeat.until, today, RECURRING_HORIZON_DAYS
+                )
+                for occ_day, occ_start, occ_end in occs:
+                    if occ_day < since:
+                        continue
+                    events.append(FeedEvent(
+                        uid=f"{row.id}:{occ_day.isoformat()}",
+                        title=blk.title,
+                        start=occ_day,
+                        start_time=occ_start,
+                        end_time=occ_end,
+                        description=blk.note,
+                    ))
+            else:
+                # Single occurrence
+                if blk.day >= since:
+                    events.append(FeedEvent(
+                        uid=row.id,
+                        title=blk.title,
+                        start=blk.day,
+                        start_time=blk.start,
+                        end_time=blk.end,
+                        description=blk.note,
+                    ))
+        elif bk == "task":
+            if blk.repeat and blk.start and blk.end:
+                occs = _occurrences(
+                    tuple(blk.repeat.weekdays), blk.start, blk.end,
+                    blk.day, blk.repeat.until, today, RECURRING_HORIZON_DAYS
+                )
+                for occ_day, occ_start, occ_end in occs:
+                    if occ_day < since:
+                        continue
+                    events.append(FeedEvent(
+                        uid=f"{row.id}:{occ_day.isoformat()}",
+                        title=blk.title,
+                        start=occ_day,
+                        start_time=occ_start,
+                        end_time=occ_end,
+                        description=blk.description,
+                        done=blk.state == "done",
+                    ))
+            else:
+                if blk.day and blk.day >= since:
+                    events.append(FeedEvent(
+                        uid=row.id,
+                        title=blk.title,
+                        start=blk.day,
+                        start_time=blk.start,
+                        end_time=blk.end,
+                        description=blk.description,
+                        done=blk.state == "done",
+                    ))
+        elif bk == "away":
+            if blk.end_date >= since:
+                events.append(FeedEvent(
+                    uid=row.id,
+                    title=f"{AWAY_PREFIX}{blk.title}",
+                    start=blk.start_date,
+                    end=blk.end_date,
+                ))
+        elif bk == "milestone":
+            if blk.target_date and blk.target_date >= since:
+                events.append(FeedEvent(
+                    uid=row.id,
+                    title=f"{MILESTONE_PREFIX}{blk.title}",
+                    start=blk.target_date,
+                    description="",
+                    done=blk.reached,
+                ))
+
+    # Phase 5: Generate goal deadlines on the fly if not in calendar_blocks
     for g in goals.values():
         if g.status in FEED_GOAL_STATUSES and g.target_date and g.target_date >= since:
             events.append(FeedEvent(uid=f"{g.id}-deadline", title=f"{DEADLINE_PREFIX}{g.title}", start=g.target_date))
-    for r in (
-        await session.execute(select(Reminder).where(Reminder.user_id == user_id))
-    ).scalars():
-        for day in r.days or []:
-            try:
-                when = date.fromisoformat(str(day))
-            except ValueError:
-                continue
-            if when < since:
-                continue
-            for hhmm in r.times or []:
-                try:
-                    start = time.fromisoformat(str(hhmm))
-                except ValueError:
-                    continue
-                end = (datetime.combine(when, start) + timedelta(minutes=REMINDER_MINUTES)).time()
-                events.append(
-                    FeedEvent(uid=f"{r.id}-{when.isoformat()}-{start:%H%M}", title=f"{REMINDER_PREFIX}{r.title}", start=when, start_time=start, end_time=end)
-                )
     return events
 
 

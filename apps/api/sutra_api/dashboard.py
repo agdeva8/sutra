@@ -19,7 +19,7 @@ from .core.over_commitment import compute_over_commitment
 from .core.replan_suggestions import compute_replan_suggestions
 from sqlalchemy import select
 
-from .models import Reminder, User
+from .models import CalendarBlock, Reminder, User
 from .store import drift as drift_store
 from .store import repo
 from .wire import (
@@ -50,6 +50,11 @@ async def assemble_state(session: AsyncSession, *, user_id: str) -> dict:
     Drift is refreshed first and swallowed on failure: it is a diagnostic, and a
     diagnostic that can break the board is worse than a stale one.
     """
+    # Read the version BEFORE the board (design doc's rule)
+    user_row = await session.get(User, user_id)
+    version = user_row.board_version if user_row else 0
+    available_weekly_hours = user_row.available_weekly_hours if user_row else None
+
     try:
         await drift_store.refresh_drift_for_dashboard(session, user_id=user_id)
         await session.commit()
@@ -57,18 +62,9 @@ async def assemble_state(session: AsyncSession, *, user_id: str) -> dict:
         await session.rollback()
 
     goals = await repo.list_goals(session, user_id=user_id, limit=GOAL_LIMIT)
-    milestones = await repo.list_milestones(
-        session, user_id=user_id, limit=MILESTONE_LIMIT
-    )
-    blockers = await repo.list_blockers(session, user_id=user_id, limit=BLOCKER_LIMIT)
     items = await repo.list_plan_items(session, user_id=user_id, limit=PLAN_ITEM_LIMIT)
-    blocks = await repo.list_time_blocks(session, user_id=user_id, limit=BLOCK_LIMIT)
     sources = await repo.list_sources(session, user_id=user_id, limit=SOURCE_LIMIT)
     recent = await repo.recent_audit(session, user_id=user_id, limit=AUDIT_RECENT)
-
-    reminders = list((await session.execute(select(Reminder).where(Reminder.user_id == user_id).limit(REMINDER_LIMIT))).scalars())
-    user_row = await session.get(User, user_id)
-    available_weekly_hours = user_row.available_weekly_hours if user_row else None
 
     # A dropped goal's plan is not rendered. Its rows still exist — a drop is a
     # status change, and `plan_items` cascade only when the *row* goes — so this
@@ -81,16 +77,9 @@ async def assemble_state(session: AsyncSession, *, user_id: str) -> dict:
             sources_by_goal.setdefault(src.goal_id, []).append(src.id)
 
     goal_payload = [goal_state(g, sources_by_goal.get(g.id, [])) for g in goals]
-    milestone_payload = [
-        milestone_state(m)
-        for m in milestones
-        if m.goal_id is None or m.goal_id not in dropped
-    ]
     item_payload = [
         plan_item(i) for i in items if i.goal_id is None or i.goal_id not in dropped
     ]
-    blocker_payload = [blocker(b) for b in blockers]
-    block_payload = [time_block(b) for b in blocks]
     source_payload = [source_list_row(s) for s in sources]
     audit_payload = [audit_entry(a) for a in recent]
 
@@ -108,16 +97,44 @@ async def assemble_state(session: AsyncSession, *, user_id: str) -> dict:
                 }
                 for g in goal_payload
             ],
-            "blockers": blocker_payload,
             "recentAudit": audit_payload,
-            "milestones": milestone_payload,
             # `commitments` is deliberately absent — the entity was folded into
             # `plan_items`, and v1's dashboard never passed it either, which is
             # why that branch of `compute_replan_suggestions` is dead.
-            "timetableBlocks": block_payload,
             "availableWeeklyHours": available_weekly_hours,
         }
     )
+
+    # Phase 5: Read calendar_blocks exclusively
+    cal_blocks_rows = await session.execute(
+        select(CalendarBlock).where(CalendarBlock.user_id == user_id)
+    )
+    from agentv2.contracts.blocks import BLOCK_ADAPTER
+
+    cal_blocks_list: list[dict] = []
+    blocker_payload: list[dict] = []
+    milestone_payload: list[dict] = []
+    block_payload: list[dict] = []
+    reminder_payload: list[dict] = []
+
+    for row in cal_blocks_rows.scalars().all():
+        try:
+            blk = BLOCK_ADAPTER.validate_python(row.data)
+        except Exception:
+            continue
+        # Filter out dropped goal's blocks
+        if blk.goal_id and blk.goal_id in dropped:
+            continue
+        blk_dict = {"id": row.id, **blk.model_dump(mode="json")}
+        cal_blocks_list.append(blk_dict)
+        if row.block_kind == "away":
+            blocker_payload.append(blk_dict)
+        elif row.block_kind == "milestone":
+            milestone_payload.append(blk_dict)
+        elif row.block_kind == "event":
+            block_payload.append(blk_dict)
+        elif row.block_kind == "task" and blk.at is not None:
+            reminder_payload.append(blk_dict)
 
     return {
         "goals": goal_payload,
@@ -138,6 +155,9 @@ async def assemble_state(session: AsyncSession, *, user_id: str) -> dict:
         # read" resolves to *add*, since the read is real and shipped.
         "timetableBlocks": block_payload,
         "timetable_blocks": block_payload,
-        # Each reminder is its whole schedule: the days it falls on and the times of day on each of them.
-        "reminders": [{"id": r.id, "title": r.title, "goal_id": r.goal_id, "days": list(r.days or []), "times": list(r.times or [])} for r in reminders],
+        # Phase 5: Reminders from calendar_blocks
+        "reminders": reminder_payload,
+        # Phase 5: New blocks and version
+        "blocks": cal_blocks_list,
+        "version": version,
     }

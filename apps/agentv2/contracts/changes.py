@@ -13,6 +13,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..config import BLOCK_TENTATIVE, TODO_PRIORITY_NORMAL
+from .blocks import AddItem, EditItem, DeleteItem
 
 
 class _Strict(BaseModel):
@@ -248,7 +249,8 @@ class MoveBlock(_Strict):
 
 
 Change = Annotated[
-    AddBlocker | AddRecurring | StopRecurring | ClearGoalPlan | CompleteItem | AddGoal | AddMilestone | AddTask | AddReminder | AddBlock | MoveBlock | LinkSource | AddPlanWeek | AddPlanMonth | AddTodo | EditTodo,
+    AddBlocker | AddRecurring | StopRecurring | ClearGoalPlan | CompleteItem | AddGoal | AddMilestone | AddTask | AddReminder | AddBlock | MoveBlock | LinkSource | AddPlanWeek | AddPlanMonth | AddTodo | EditTodo
+    | AddItem | EditItem | DeleteItem,
     Field(discriminator="kind"),
 ]
 

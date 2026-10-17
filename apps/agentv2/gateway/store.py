@@ -25,6 +25,10 @@ class Store(Protocol):
 
     async def write_audit(self, cs: ChangeSet, applied: list[int], proposed: list[Proposal]) -> str: ...
 
+    async def bump_version(self) -> int:
+        """Increment the board version and return the new value. Called inside the transaction."""
+        ...
+
     async def extend_recurring(self, today) -> int:
         """Lay out any recurring commitment that has not been laid out up to the horizon. Returns blocks added."""
         ...

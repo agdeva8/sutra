@@ -28,11 +28,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..core.blast_radius import radius_for
 from ..agent_background import replan_conflicts_for
 from ..db import get_session
+from ..ids import new_id
 from ..background import run_after
 from ..deps import CurrentUser, require_user
+from ..models import CalendarBlock
 from ..store import drift as drift_store
 from ..store import repo, staleness
 from ..wire import blocker
+from agentv2.contracts.blocks import BLOCK_ADAPTER, AwayBlock
 
 router = APIRouter(tags=["blockers"])
 
@@ -86,8 +89,22 @@ async def list_blockers(
     session: AsyncSession = Depends(get_session),
     user: CurrentUser = Depends(require_user),
 ) -> dict:
-    rows = await repo.list_blockers(session, user_id=user.user_id)
-    return {"blockers": [blocker(b) for b in rows]}
+    # Phase 5: Read exclusively from CalendarBlock
+    from sqlalchemy import select
+    cal_result = await session.execute(
+        select(CalendarBlock).where(
+            CalendarBlock.user_id == user.user_id,
+            CalendarBlock.block_kind == "away"
+        )
+    )
+    blockers = []
+    for row in cal_result.scalars().all():
+        try:
+            blk = BLOCK_ADAPTER.validate_python(row.data)
+        except Exception:
+            continue
+        blockers.append({"id": row.id, **blk.model_dump(mode="json")})
+    return {"blockers": blockers}
 
 
 @router.post("/blockers", status_code=201)
@@ -114,20 +131,28 @@ async def create_blocker(
             status_code=400, detail="end_date must not precede start_date"
         )
 
-    row = await repo.create_blocker(
-        session,
-        user_id=user.user_id,
+    # Phase 5: Write to CalendarBlock with AwayBlock
+    away_data = AwayBlock(
         title=title,
         start_date=start,
-        end_date=end,
-        note=str(body.get("note") or ""),
+        end_date=end or start,
+    ).model_dump()
+
+    row = CalendarBlock(
+        id=new_id("blk"),
+        user_id=user.user_id,
+        block_kind="away",
+        data=away_data,
     )
+    session.add(row)
+    await session.flush()
+
     await repo.write_audit(
         session,
         user_id=user.user_id,
         type="create:blocker",
-        summary=f"Blocker '{row.title}' {row.start_date}..{row.end_date}",
-        payload={"blocker_id": row.id, "title": row.title},
+        summary=f"Blocker '{title}' {start}..{end or start}",
+        payload={"blocker_id": row.id, "title": title},
     )
     # Blockers are not goal-scoped, so there is no single `goal_id` to mark
     # stale — but every active goal's drift may have moved, which is what
@@ -137,12 +162,10 @@ async def create_blocker(
         user_id=user.user_id,
         goal_id=None,
         kind="blocker.add",
-        summary=f"Blocker '{row.title}'",
+        summary=f"Blocker '{title}'",
     )
     await session.commit()
-    # No replan here: it ran inside the request (BACKGROUND_INLINE) and added seconds to every write. The
-    # client follows up with `POST /timetable/replan-conflicts`.
-    return blocker(row)
+    return {"id": row.id, **away_data}
 
 
 @router.put("/blockers/{id}")
@@ -160,8 +183,14 @@ async def update_blocker(
         raise HTTPException(status_code=400, detail="Invalid JSON body")
     body = body or {}
 
-    row = await repo.get_blocker(session, user_id=user.user_id, blocker_id=id)
-    if row is None:
+    # Phase 5: Read from CalendarBlock
+    row = await session.get(CalendarBlock, id)
+    if row is None or row.user_id != user.user_id or row.block_kind != "away":
+        raise HTTPException(status_code=404, detail="Blocker not found")
+
+    try:
+        blk = BLOCK_ADAPTER.validate_python(row.data)
+    except Exception:
         raise HTTPException(status_code=404, detail="Blocker not found")
 
     title = str(body.get("title") or "").strip()
@@ -170,29 +199,27 @@ async def update_blocker(
     start = _require_date(body.get("start_date"), "start_date")
     end = _optional_date(body.get("end_date"), "end_date")
 
-    row.title = title
-    row.start_date = start
-    row.end_date = end or start
-    row.note = str(body.get("note") or "")
+    blk.title = title
+    blk.start_date = start
+    blk.end_date = end or start
 
+    row.data = blk.model_dump()
     await repo.write_audit(
         session,
         user_id=user.user_id,
         type="update:blocker",
-        summary=f"Updated blocker '{row.title}'",
-        payload={"blocker_id": row.id, "title": row.title},
+        summary=f"Updated blocker '{blk.title}'",
+        payload={"blocker_id": row.id, "title": blk.title},
     )
     await _after_capacity_change(
         session,
         user_id=user.user_id,
         goal_id=None,
         kind="blocker.edit",
-        summary=f"Updated blocker '{row.title}'",
+        summary=f"Updated blocker '{blk.title}'",
     )
     await session.commit()
-    # No replan here: it ran inside the request (BACKGROUND_INLINE) and added seconds to every write. The
-    # client follows up with `POST /timetable/replan-conflicts`.
-    return {"blocker": blocker(row)}
+    return {"blocker": {"id": row.id, **blk.model_dump(mode="json")}}
 
 
 @router.delete("/blockers/{id}")
@@ -201,11 +228,17 @@ async def delete_blocker(
     session: AsyncSession = Depends(get_session),
     user: CurrentUser = Depends(require_user),
 ) -> dict:
-    row = await repo.get_blocker(session, user_id=user.user_id, blocker_id=id)
-    if row is None:
+    # Phase 5: Read from CalendarBlock
+    row = await session.get(CalendarBlock, id)
+    if row is None or row.user_id != user.user_id or row.block_kind != "away":
         raise HTTPException(status_code=404, detail="Blocker not found")
 
-    title = row.title
+    try:
+        blk = BLOCK_ADAPTER.validate_python(row.data)
+        title = blk.title
+    except Exception:
+        title = "Unknown"
+
     await session.delete(row)
     await repo.write_audit(
         session,

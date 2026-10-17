@@ -20,6 +20,7 @@ import {
   isGoalSession,
   BLOCK_KIND_REMINDER,
 } from "../constants/calendarKinds";
+import { blockColor } from "../constants/blockKinds";
 
 export const EVENT_KIND = {
   session: "session", // a goal's planned time slot
@@ -30,6 +31,10 @@ export const EVENT_KIND = {
   commitment: "commitment", // a fixed, one-off block
   recurring: "recurring", // an occurrence of a repeating commitment
   away: "away",
+  block_event: "block_event",
+  block_task: "block_task",
+  block_away: "block_away",
+  block_milestone: "block_milestone",
 };
 
 /** The calendarKinds key that draws each event kind. */
