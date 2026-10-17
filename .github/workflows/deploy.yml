@@ -227,6 +227,11 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      # Vercel's Python builder installs the function's dependencies with uv, and on a machine
+      # that isn't Vercel's own it expects uv on PATH ("uv is required but was not found").
+      - name: Install uv
+        run: pip install "uv==$UV_VERSION"
+
       - name: Install the Vercel CLI
         run: npm install --global "vercel@$VERCEL_CLI_VERSION"
 
@@ -271,6 +276,15 @@ jobs:
 
       - name: vercel pull
         run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+
+      # `pull` writes "[SENSITIVE]" for any value marked Sensitive in Vercel, and a CRA build bakes
+      # REACT_APP_* values into the bundle. A placeholder there would ship to every browser, so stop.
+      - name: No placeholder in build-time variables
+        run: |
+          if grep -E '^REACT_APP_[A-Z0-9_]*="?\[SENSITIVE\]' .vercel/.env.production.local; then
+            echo "::error::a REACT_APP_ variable is marked Sensitive in Vercel, so its real value can't be built in; unmark it (it is public in the bundle anyway)"
+            exit 1
+          fi
 
       # Still run from the repo root: the project's Root Directory setting is
       # what points the build at apps/web.
