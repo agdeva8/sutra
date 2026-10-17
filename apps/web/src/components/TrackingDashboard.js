@@ -45,6 +45,8 @@ export default function TrackingDashboard({
   // The first-run tour waits on it: its "Your first goal" step is done either way, so whether a goal
   // was actually added is deliberately not part of this.
   onAddGoalClosed = () => {},
+  // Fires whenever the dialog opens or closes. Same reason: the tour has to step aside while it is up.
+  onAddGoalOpenChange = () => {},
 }) {
   const { user } = useAuth();
   const [addGoalOpen, setAddGoalOpen] = useState(false);
@@ -83,6 +85,12 @@ export default function TrackingDashboard({
     return registerCloser(() => addGoalStepBackRef.current?.());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [addGoalOpen, registerCloser]);
+
+  // The dialog is this component's state, so Coach cannot see it open. Report it, the same way the
+  // close is reported: the first-run tour steps aside while any dialog is up and resumes after.
+  useEffect(() => {
+    onAddGoalOpenChange(addGoalOpen);
+  }, [addGoalOpen, onAddGoalOpenChange]);
 
   if (!state) {
     return (

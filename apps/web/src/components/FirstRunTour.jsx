@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowRight } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ArrowDown, ArrowUp } from "lucide-react";
 import ScratchExamples from "./ScratchExamples";
-import { RING_PAD_PX, SpotlightRing, SpotlightVeil, ringFor, useTargetRect } from "./Spotlight";
-import { hasOpenedScratch, markScratchOpened } from "../lib/scratchIntro";
+import { SpotlightRing, SpotlightVeil, ringFor, useTargetRect } from "./Spotlight";
+import { hasOpenedScratch } from "../lib/scratchIntro";
 import {
   TOUR_STEPS,
   advanceTour,
   endTour,
+  goToStep,
+  nextNavStep,
   onTourChange,
   readTourState,
   restartTour,
@@ -14,48 +16,58 @@ import {
 } from "../lib/firstRunTour";
 
 /**
- * FirstRunTour — the app's intro, the way a game opens: one screen at a time, in the
- * order the product wants a new person to meet it.
+ * FirstRunTour — a walkthrough the user drives themselves.
  *
- * A card names the step and offers exactly one obvious thing to do; skipping is always
- * available and nothing is forced. Anything the card cannot do from where it stands —
- * open the Add-goal dialog, take the user to Scratch — is handed to Coach, which owns
- * the screens.
+ * The tour never navigates or opens anything for them. On a nav step it puts an arrow
+ * on one navigation button and waits: the button stays tappable through the hole in the
+ * veil, and the step ends when the app reaches that screen, however it got there. On a
+ * screen step it points at one control on the screen the user is already on; if tapping
+ * that control opens a dialog, the tour steps out of the way until the dialog closes and
+ * then continues with the next step. Every step can be skipped, and the whole tour can
+ * be ended from any one of them.
  *
- * It is not a wall: every step it cannot point at (no goal yet, a target that never
- * arrives, a panel still loading) falls back to a centred card, and Back on Android ends
- * it for this load without touching the saved step, so it resumes next time.
+ * The only exception is the sign-in offer, which stays a centred card: there is nothing
+ * on screen to point at, and it is the one step that opens something itself.
+ *
+ * It is not a wall: a step whose target never arrives falls back to a centred card, and
+ * Back on Android ends it for this load without touching the saved step, so it resumes
+ * next time.
  */
 
-/** The phone's card sits above the bottom bar: the bar's height plus the home-indicator inset. */
-const PHONE_BOTTOM = "calc(var(--gc-tab-bar-h) + var(--gc-nav-inset) + 0.75rem)";
-/** Tailwind `sm` starts at 640, the same width the bottom bar and the top strip swap at. */
-const PHONE_MAX_PX = 639;
-/** A card never grows past the room it has, so its button stays reachable on a short screen. */
-const CARD_MAX_H = "max-h-[calc(100dvh-2rem)] overflow-y-auto";
-const CARD_MAX_H_PHONE = "max-h-[calc(100dvh-var(--gc-tab-bar-h)-var(--gc-nav-inset)-2rem)] overflow-y-auto";
+/** Space between the card and the viewport edge. */
+const GUTTER_PX = 16;
+/** The caption card's width; it also never exceeds the viewport minus two gutters. */
+const CARD_MAX_W_PX = 360;
+/** The card's height before it has been measured — close enough to place the first frame. */
+const CARD_ESTIMATE_H_PX = 200;
+/** Room between the card and the ring for the bouncing arrow. */
+const ARROW_SPACE_PX = 36;
+/** The arrow glyph's box. */
+const ARROW_ICON_PX = 24;
 
 /**
- * What each step points at, wherever this width draws it. A step absent from this map is
- * a centred card — there is nothing on screen to ring.
+ * What each step points at, wherever this width draws it. A nav step lists both the
+ * phone's bottom-bar item and the desktop tab-strip item; whichever is hidden measures
+ * zero, so the same list works on both. A step absent from this map is a centred card.
  */
 const TARGETS = {
-  timeline: ['[data-testid="calendar-sync-button"]'],
-  today: ['[role="tablist"][aria-label="Range"]'],
-  scratch_composer: ['[data-testid="scratch-composer"]'],
+  goal_nav: ['[data-testid="mobile-tab-state"]', '[data-testid="panel-tab-state"]'],
+  goal_screen: ['[data-testid="empty-state-add-goal"]', '[data-testid="add-goal-button"]'],
+  timeline_nav: ['[data-testid="mobile-tab-timeline"]', '[data-testid="panel-tab-timeline"]'],
+  timeline_screen: ['[data-testid="calendar-sync-button"]'],
+  today_nav: ['[data-testid="mobile-tab-today"]', '[data-testid="panel-tab-today"]'],
+  today_screen: ['[role="tablist"][aria-label="Range"]'],
+  scratch_nav: ['[data-testid="mobile-tab-scratch"]', '[data-testid="panel-tab-scratch"]'],
+  scratch_screen: ['[data-testid="scratch-composer"]'],
   // To-dos has no tab of its own on a phone: it lives behind the bar's "More".
-  todos: ['[data-testid="mobile-tab-more"]', '[data-testid="panel-tab-todos"]'],
+  more_nav: ['[data-testid="mobile-tab-more"]', '[data-testid="panel-tab-todos"]'],
 };
 
-/** The screen a step needs under it. A step with no entry stays wherever the user already is. */
-const PANEL_FOR_STEP = {
-  goal: "state",
-  timeline: "timeline",
-  today: "today",
-  scratch_composer: "scratch",
-};
-
-/** The card's words. One short title and at most a sentence or two — it sits over the app. */
+/**
+ * The card's words. `emphasis` names the one word the card bolds — usually the button
+ * the user is about to tap. Nav and screen steps carry a caption only; the dialog and
+ * the composer carry a title too.
+ */
 const COPY = {
   signin: {
     title: "Sign in to keep your plan on every device",
@@ -63,78 +75,112 @@ const COPY = {
     primary: "Sign in",
     secondary: "Continue as guest",
   },
-  goal: {
-    title: "Your first goal",
-    body: "What do you want to get done?",
-    primary: "Add a goal",
-    secondary: "Skip",
-  },
-  timeline: {
-    title: "Your plan, laid out in time",
-    body: "Sync it to Google, Apple or Outlook calendar from here, on your phone too.",
-    primary: "Next",
-  },
-  today: {
-    title: "What's next",
-    body: "Today, this week and this month.",
-    primary: "Next",
-  },
-  scratch: {
-    title: "Dump a thought in three seconds",
-    body: "We work out what it is and file it.",
-    primary: "Take me to Scratch",
-  },
-  scratch_composer: {
+  goal_nav: { body: "Tap Goal to set what you're working towards.", emphasis: "Goal", secondary: "Skip" },
+  goal_screen: { body: "Add a goal, or skip and come back later." },
+  timeline_nav: { body: "Here's Timeline: your plan laid out in time.", emphasis: "Timeline", secondary: "Skip" },
+  timeline_screen: { body: "Sync your plan to Google, Apple or Outlook calendar, on your phone too." },
+  today_nav: { body: "Tap Today for what's next.", emphasis: "Today", secondary: "Skip" },
+  today_screen: { body: "Today, this week, this month." },
+  scratch_nav: { body: "Tap Scratch: the fastest way to get anything in.", emphasis: "Scratch", secondary: "Skip" },
+  scratch_dialog: {
     title: "Meet Scratch",
-    body: "Type or speak here.",
+    body: "A thought, a photo, a voice note. We work out what it is and file it.",
+    primary: "Got it",
+  },
+  scratch_screen: {
+    title: "Your Scratch pad",
+    body: "Type or speak here. We work out what it is and file it.",
     primary: "Next",
   },
-  todos: {
-    title: "Your to-dos live here",
-    body: "And on Today.",
+  more_nav: {
+    body: "To-dos and everything else live under More.",
+    emphasis: "More",
     primary: "Done",
+    secondary: "Skip",
   },
 };
 
-/** The card. Centred or beside its target, the same box either way, with its own way out. */
-function TourCard({ copy, children, onPrimary, onSecondary, onSkip, index, total, maxHeight }) {
+/** Bold the one word a caption is pointing at, without splitting the sentence into HTML. */
+function withEmphasis(text, word) {
+  if (!word) return text;
+  const at = text.indexOf(word);
+  if (at < 0) return text;
   return (
-    <div className={`pointer-events-auto relative w-full max-w-md rounded-2xl border border-[var(--accent)] bg-[var(--bg-secondary)] px-5 py-6 text-center shadow-xl ${maxHeight}`}>
-      <h2 className="text-[20px] font-semibold text-[var(--text-primary)]">{copy.title}</h2>
-      {copy.body && <p className="mt-2 text-[15px] leading-relaxed text-[var(--text-secondary)]">{copy.body}</p>}
+    <>
+      {text.slice(0, at)}
+      <strong className="font-semibold text-[var(--text-primary)]">{word}</strong>
+      {text.slice(at + word.length)}
+    </>
+  );
+}
+
+const clamp = (n, lo, hi) => Math.min(Math.max(n, lo), hi);
+
+/**
+ * The caption card. Its own way out always, one obvious action when the step has one,
+ * and the progress dots underneath.
+ */
+function TourCard({ copy, children, onPrimary, onSecondary, onSkipTour, index, total, maxHeight, cardRef }) {
+  return (
+    <div
+      ref={cardRef}
+      data-testid="first-run-tour-card"
+      className="w-full overflow-y-auto rounded-2xl border border-[var(--accent)] bg-[var(--bg-secondary)] px-5 py-5 text-center shadow-xl"
+      style={maxHeight ? { maxHeight } : undefined}
+    >
+      {copy.title && <h2 className="text-[20px] font-semibold text-[var(--text-primary)]">{copy.title}</h2>}
+      {copy.body && (
+        <p
+          className={`${copy.title ? "mt-2" : ""} text-[16px] leading-relaxed text-[var(--text-secondary)]`}
+        >
+          {withEmphasis(copy.body, copy.emphasis)}
+        </p>
+      )}
       {children && <div className="mt-4 text-left">{children}</div>}
-      <button
-        type="button"
-        autoFocus
-        onClick={onPrimary}
-        data-testid="first-run-tour-primary"
-        className="mt-5 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-[var(--accent)] px-6 text-[16px] font-semibold text-white hover:opacity-90 focus:outline-none focus-visible:ring-4 focus-visible:ring-[color-mix(in_srgb,var(--accent)_40%,transparent)]"
-      >
-        {copy.primary}
-        {copy.primary === "Take me to Scratch" && <ArrowRight className="h-5 w-5" aria-hidden="true" />}
-      </button>
+      {copy.primary && (
+        <button
+          type="button"
+          autoFocus
+          onClick={onPrimary}
+          data-testid="first-run-tour-primary"
+          className="mt-4 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-[var(--accent)] px-6 text-[16px] font-semibold text-white hover:opacity-90 focus:outline-none focus-visible:ring-4 focus-visible:ring-[color-mix(in_srgb,var(--accent)_40%,transparent)]"
+        >
+          {copy.primary}
+        </button>
+      )}
       {copy.secondary && (
         <button
           type="button"
+          autoFocus={!copy.primary}
           onClick={onSecondary}
-          data-testid="first-run-tour-secondary"
-          className="mt-3 min-h-11 w-full rounded text-[15px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+          data-testid="first-run-tour-skip"
+          className="mt-2 min-h-11 w-full rounded text-[15px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
         >
           {copy.secondary}
         </button>
       )}
-      <button
-        type="button"
-        onClick={onSkip}
-        data-testid="first-run-tour-skip"
-        className="mt-2 min-h-11 rounded text-[14px] font-medium text-[var(--accent)] underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
-      >
-        Skip tour
-      </button>
+      {onSkipTour && (
+        <button
+          type="button"
+          autoFocus={!copy.primary && !copy.secondary}
+          onClick={onSkipTour}
+          data-testid="first-run-tour-skip-tour"
+          className="min-h-11 rounded px-2 text-[14px] font-medium text-[var(--accent)] underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+        >
+          Skip tour
+        </button>
+      )}
       <p className="sr-only">{`Step ${index + 1} of ${total}`}</p>
       <div aria-hidden="true" className="mt-3 flex justify-center gap-1.5">
         {Array.from({ length: total }, (_, i) => (
-          <span key={i} className={i === index ? "h-1.5 w-5 rounded-full bg-[var(--accent)]" : "h-1.5 w-1.5 rounded-full bg-[var(--border-accent)]"} />
+          <span
+            key={i}
+            className={
+              i === index
+                ? "h-1.5 w-5 rounded-full bg-[var(--accent)]"
+                : "h-1.5 w-1.5 rounded-full bg-[var(--border-accent)]"
+            }
+          />
         ))}
       </div>
     </div>
@@ -143,18 +189,18 @@ function TourCard({ copy, children, onPrimary, onSecondary, onSkip, index, total
 
 /**
  * Props, all supplied by Coach: `ready` (the board has loaded, so "is this an existing
- * user" can be answered), `goalCount`, `isGuest`, `goPanel`, `onOpenSignIn`,
- * `onOpenAddGoal`, `addGoalClosedAt` (changes when the Add-goal dialog closes) and
- * `onRunChange` (whether the tour currently has the floor).
+ * user" can be answered), `goalCount`, `isGuest`, `panelView` (which screen is showing,
+ * so a nav step knows when it has been reached), `dialogOpen` (any app dialog is open —
+ * the tour hides while it is), `onOpenSignIn` and `onRunChange` (whether the tour
+ * currently has the floor).
  */
 export default function FirstRunTour({
   ready = false,
   goalCount = 0,
   isGuest = false,
-  goPanel = () => {},
+  panelView = "",
+  dialogOpen = false,
   onOpenSignIn = () => {},
-  onOpenAddGoal = () => {},
-  addGoalClosedAt = 0,
   onRunChange = () => {},
 }) {
   const [store, setStore] = useState(readTourState);
@@ -181,40 +227,43 @@ export default function FirstRunTour({
   const [stopped, setStopped] = useState(false);
   const running = decided && !store.done && !stopped;
 
-  // The Add-goal dialog belongs to the Goal screen, so the tour hands off and waits rather than
-  // drawing its own. It steps out of the way meanwhile — the dialog is the only thing to look at.
-  const [goalDialogOpen, setGoalDialogOpen] = useState(false);
-  const closedAtRef = useRef(addGoalClosedAt);
-
   useEffect(() => {
     onRunChange(running);
   }, [running, onRunChange]);
 
   const step = shownStep(store.step, isGuest);
-  const stepKey = TOUR_STEPS[step]?.key;
+  const def = TOUR_STEPS[step];
+  const stepKey = def?.key;
   const selectors = TARGETS[stepKey] || null;
   const copy = COPY[stepKey];
 
-  const advance = useCallback(() => {
-    setGoalDialogOpen(false);
-    advanceTour(step);
-  }, [step]);
+  const advance = useCallback(() => advanceTour(step), [step]);
 
-  const skip = useCallback(() => {
-    setGoalDialogOpen(false);
-    endTour();
-  }, []);
-
-  // Move to the screen this step lives on, once per step — never again, so a user who wanders off
-  // is not yanked back.
-  const navigatedRef = useRef(-1);
+  // A nav step ends when the app arrives at that screen — however it got there. If the
+  // user is already standing on it when the step begins, it passes straight through to
+  // the screen step that follows.
+  const passedNavRef = useRef(-1);
   useEffect(() => {
-    if (!running) return;
-    if (navigatedRef.current === step) return;
-    navigatedRef.current = step;
-    const panel = PANEL_FOR_STEP[stepKey];
-    if (panel) goPanel(panel);
-  }, [running, step, stepKey, goPanel]);
+    if (!running || def?.kind !== "nav") return;
+    const reached =
+      (def.panel && panelView === def.panel) || (def.panels && def.panels.includes(panelView));
+    if (!reached || passedNavRef.current === step) return;
+    passedNavRef.current = step;
+    advance();
+  }, [running, def, panelView, step, advance]);
+
+  // A dialog opened from the step's own control: hide until it closes, then continue
+  // with the next step. Everything else about the tour waits too — the app has the floor.
+  const dialogWasOpenRef = useRef(false);
+  useEffect(() => {
+    if (dialogOpen) {
+      dialogWasOpenRef.current = true;
+      return;
+    }
+    if (!dialogWasOpenRef.current) return;
+    dialogWasOpenRef.current = false;
+    if (running && def?.kind === "screen") advance();
+  }, [dialogOpen, running, def, advance]);
 
   useEffect(() => {
     if (!running) return undefined;
@@ -223,94 +272,140 @@ export default function FirstRunTour({
     return () => window.removeEventListener("popstate", onPop);
   }, [running]);
 
-  // The dialog has closed — with a goal or without one, that step is done.
-  useEffect(() => {
-    if (!goalDialogOpen || addGoalClosedAt === closedAtRef.current) return;
-    advance();
-  }, [goalDialogOpen, addGoalClosedAt, advance]);
+  // Spot a target while the step is on screen. `useTargetRect` looks for about a second
+  // before giving up, so a panel that is still loading ends as a centred card.
+  const rect = useTargetRect(selectors, running && !dialogOpen);
 
-  const openAddGoal = () => {
-    closedAtRef.current = addGoalClosedAt;
-    setGoalDialogOpen(true);
-    onOpenAddGoal();
-  };
+  // The card's real height drives the placement: above the target when it fits, below
+  // otherwise, and never over the target itself.
+  const [cardH, setCardH] = useState(CARD_ESTIMATE_H_PX);
+  const cardRef = useRef(null);
+  useLayoutEffect(() => {
+    // `scrollHeight`, not `offsetHeight`: the card may currently be clamped by the room on
+    // one side, and the natural height is what decides the side for the next step.
+    const h = cardRef.current?.scrollHeight;
+    if (h && Math.abs(h - cardH) > 1) setCardH(h);
+    // Re-measure when the card's content changes, too — the component stays mounted across steps.
+  }, [cardH, step]);
 
-  // Spot a target while the step is on screen. `useTargetRect` looks for about a second before giving
-  // up, so a panel that is still loading ends as a centred card rather than a card pointing at nothing.
-  const rect = useTargetRect(selectors, running && !goalDialogOpen);
-
-  if (!running || !copy) return null;
-  if (goalDialogOpen) return null;
+  if (!running || !copy || dialogOpen) return null;
 
   const ring = rect ? ringFor(rect) : null;
-  const isPhone = window.innerWidth <= PHONE_MAX_PX;
-  // A phone keeps the card clear of the bottom bar; a ringed step elsewhere sits above or below
-  // whatever it points at, so it never covers it.
-  const below = ring ? rect.top + rect.height / 2 < window.innerHeight / 2 : false;
-  const anchored = isPhone && ring;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const cardW = Math.min(CARD_MAX_W_PX, vw - GUTTER_PX * 2);
+
+  // Above or below the target, whichever has the room for the card and its arrow.
+  let placement = "center";
+  let top = 0;
+  let maxHeight = null;
+  if (ring) {
+    const above = ring.y - GUTTER_PX - ARROW_SPACE_PX;
+    const below = vh - (ring.y + ring.h) - GUTTER_PX - ARROW_SPACE_PX;
+    if (above >= cardH) placement = "above";
+    else if (below >= cardH) placement = "below";
+    else placement = above >= below ? "above" : "below";
+    const room = Math.max(0, placement === "above" ? above : below);
+    // Never taller than the room on that side: the card scrolls rather than covering the target.
+    const effectiveH = Math.min(cardH, room);
+    top =
+      placement === "above"
+        ? ring.y - ARROW_SPACE_PX - effectiveH
+        : ring.y + ring.h + ARROW_SPACE_PX;
+    maxHeight = room;
+  }
+  const left = ring
+    ? clamp(ring.x + ring.w / 2 - cardW / 2, GUTTER_PX, vw - GUTTER_PX - cardW)
+    : GUTTER_PX;
+
+  const arrowX = ring ? clamp(ring.x + ring.w / 2 - ARROW_ICON_PX / 2, GUTTER_PX, vw - GUTTER_PX - ARROW_ICON_PX) : 0;
+  const arrowTop = ring
+    ? placement === "above"
+      ? ring.y - ARROW_SPACE_PX + 4
+      : ring.y + ring.h + 4
+    : 0;
 
   const firstIndex = isGuest ? 0 : 1;
   const dotIndex = step - firstIndex;
   const dotTotal = TOUR_STEPS.length - firstIndex;
 
   const onPrimary = () => {
-    if (stepKey === "signin") {
+    if (def.kind === "card") {
       onOpenSignIn();
       advance();
       return;
     }
-    if (stepKey === "goal") {
-      openAddGoal();
-      return;
-    }
-    if (stepKey === "scratch") {
-      markScratchOpened();
-      goPanel("scratch");
-      advance();
-      return;
-    }
-    if (stepKey === "todos") {
-      skip();
+    if (def.kind === "nav") {
+      endTour();
       return;
     }
     advance();
   };
 
+  // Nav steps: Skip passes over this visit and the screen step after it, landing on the
+  // next navigation button. Screen steps have Next instead; the tour may still end here.
+  const onSecondary =
+    def.kind === "nav"
+      ? () => {
+          const next = nextNavStep(step);
+          if (next < 0) endTour();
+          else goToStep(next);
+        }
+      : advance;
+
   const card = (
     <TourCard
       copy={copy}
+      cardRef={cardRef}
       onPrimary={onPrimary}
-      onSecondary={advance}
-      onSkip={skip}
+      onSecondary={copy.secondary ? onSecondary : undefined}
+      onSkipTour={def.kind === "dialog" ? undefined : endTour}
       index={dotIndex}
       total={dotTotal}
-      maxHeight={anchored ? CARD_MAX_H_PHONE : CARD_MAX_H}
+      maxHeight={maxHeight}
     >
-      {stepKey === "scratch" && <ScratchExamples />}
+      {def.kind === "dialog" && <ScratchExamples />}
     </TourCard>
   );
 
+  // `aria-modal` is false on purpose: on a nav step the live control is the real button
+  // under the hole, and a modal dialog would hide it from assistive technology.
   return (
-    <div role="dialog" aria-modal="true" aria-label="How Sutra works" data-testid="first-run-tour" className="fixed inset-0 z-[55]">
-      {/* The veil swallows taps, so the card is the only live thing. Nothing found to point at
-          within the second we allow → no hole, and the card simply centres. */}
+    <div
+      role="dialog"
+      aria-modal="false"
+      aria-label="How Sutra works"
+      data-testid="first-run-tour"
+      className="fixed inset-0 z-[55]"
+    >
+      {/* Four panels, no overlay in the hole: the highlighted button stays tappable. */}
       <SpotlightVeil ring={ring} />
-      {ring && <SpotlightRing ring={ring} label="Continue the tour" testId="first-run-tour-ring" onClick={advance} />}
+      {ring && <SpotlightRing ring={ring} />}
 
-      {anchored ? (
-        <div className="pointer-events-none absolute inset-x-0 px-3" style={{ bottom: PHONE_BOTTOM }}>
-          <div className="mx-auto max-w-md">{card}</div>
-        </div>
-      ) : ring ? (
-        // Beside the target: centred across the window, clear of the target's own box.
-        <div
-          className="pointer-events-none absolute inset-x-0 flex justify-center px-5"
-          style={below ? { top: rect.bottom + RING_PAD_PX } : { bottom: window.innerHeight - rect.top + RING_PAD_PX }}
+      {ring && def.kind === "nav" && (
+        <span
+          aria-hidden="true"
+          data-testid="first-run-tour-arrow"
+          className="pointer-events-none absolute text-[var(--accent)] drop-shadow motion-safe:animate-bounce"
+          style={{ left: arrowX, top: arrowTop, width: ARROW_ICON_PX, height: ARROW_ICON_PX }}
         >
-          {card}
+          {placement === "above" ? <ArrowDown className="h-6 w-6" /> : <ArrowUp className="h-6 w-6" />}
+        </span>
+      )}
+
+      {ring ? (
+        <div
+          className="pointer-events-none absolute"
+          style={{ left, top, width: cardW }}
+        >
+          <div className="pointer-events-auto">{card}</div>
         </div>
       ) : (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-5">{card}</div>
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-4">
+          <div className="pointer-events-auto w-full" style={{ maxWidth: cardW }}>
+            {card}
+          </div>
+        </div>
       )}
     </div>
   );

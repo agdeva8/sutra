@@ -184,9 +184,11 @@ export default function Coach() {
   // Add goal". Overview opens the Add Goal dialog on arrival and
   // calls `onAutoOpenAddGoalHandled` to clear it.
   const [pendingAddGoal, setPendingAddGoal] = useState(false);
-  // Bumped by the Goal screen when the Add-goal dialog closes, however it closed. The first-run tour's
-  // "Your first goal" step waits on it — a step that ends whether or not a goal was added.
-  const [addGoalClosedAt, setAddGoalClosedAt] = useState(0);
+  // Bumped by the Goal screen when the Add-goal dialog closes, however it closed.
+  const [, setAddGoalClosedAt] = useState(0);
+  // The Add-goal dialog is the Goal screen's own state, so it is reported up rather than resolved here.
+  // The first-run tour needs both edges: it steps aside while the dialog is up and resumes when it closes.
+  const [addGoalOpen, setAddGoalOpen] = useState(false);
   const [devLoginAvailable, setDevLoginAvailable] = useState(false);
 
   const setAutoAnswer = (v) => {
@@ -831,6 +833,7 @@ export default function Coach() {
                 onOpenToday={() => goPanel("today")}
                 registerCloser={pushCloser}
                 onAddGoalClosed={() => setAddGoalClosedAt((n) => n + 1)}
+                onAddGoalOpenChange={setAddGoalOpen}
                 autoAnswer={autoAnswer}
                 grillMe={grillMe}
               />
@@ -904,17 +907,16 @@ export default function Coach() {
       <WelcomeToast user={user} state={state} signedIn={!isGuest} suppress={!scratchOpenedFlag || tourRunning} />
       {/* Asks once per account; guests are skipped — their account expires. */}
       {user && !isGuest && <CalendarSyncPrompt />}
-      {/* The first-run tour: one screen at a time, every step skippable, and it drives the screens it
-          needs. It replaces the old Scratch spotlight — the walk now starts at sign-in and ends at
-          To-dos, with Scratch as one step in the middle. */}
+      {/* The first-run tour: it points at the real nav buttons and waits for the user's own taps.
+          `panelView` tells a nav step when it has been reached, and `dialogOpen` lets the tour step
+          aside while any dialog is up so it can pick up again when that dialog closes. */}
       <FirstRunTour
         ready={!!state}
         goalCount={liveGoalCount}
         isGuest={isGuest}
-        goPanel={goPanel}
+        panelView={panelView}
+        dialogOpen={isAnyDialogOpen || addGoalOpen}
         onOpenSignIn={openSignIn}
-        onOpenAddGoal={openAddGoal}
-        addGoalClosedAt={addGoalClosedAt}
         onRunChange={setTourRunning}
       />
       <ReplanToast

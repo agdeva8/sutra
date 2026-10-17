@@ -1,20 +1,30 @@
 import { useLayoutEffect, useState } from "react";
 
 /**
- * The spotlight — a dark veil with a hole in it, a lit ring drawn in that hole, and
- * the measurement that keeps the hole over its target while the page moves under it.
+ * The spotlight — a dimmed, lightly blurred veil with a hole in it, a rounded ring
+ * drawn around that hole, and the measurement that keeps the hole over its target
+ * while the page moves under it.
  *
  * Shared by the first-run tour and the "Meet Scratch" spotlight, so the two can never
  * drift into looking like different apps.
+ *
+ * The veil is built from four panels around the hole rather than a mask on
+ * `backdrop-filter`: a masked backdrop blur is unreliable on mobile Safari, and the
+ * panels also give each edge a real element to swallow taps with. Nothing covers the
+ * hole itself, so the control underneath stays tappable.
  */
 
 /** Space between the target's box and the ring's edge. */
-export const RING_PAD_PX = 12;
+export const RING_PAD_PX = 8;
+/** The ring's corner radius — a rounded rectangle, never a pill or a circle. */
+export const RING_RADIUS_PX = 16;
 /** How long to keep looking for a target that is not there yet. */
 const LOOK_FOR_MS = 1000;
 /** How often to look again while it is missing — a panel may still be fetching its chunk. */
 const RELOOK_MS = 150;
-const VEIL = "color-mix(in srgb, var(--bg-primary) 62%, transparent)";
+
+/** The veil's look, named once: a dark dim plus a light blur. */
+const VEIL_PANEL_CLASS = "absolute bg-black/40 backdrop-blur-[2px]";
 
 /**
  * The visible box of the first selector that has one, or null. A hidden element —
@@ -29,27 +39,20 @@ export function findTarget(selectors) {
   return null;
 }
 
-/** The ring's geometry around a target: padded, and round on a short target, pill-shaped on a long one. */
-export function ringFor(rect) {
-  const ring = {
-    x: rect.left - RING_PAD_PX,
-    y: rect.top - RING_PAD_PX,
-    w: rect.width + RING_PAD_PX * 2,
-    h: rect.height + RING_PAD_PX * 2,
-  };
-  return { ...ring, radius: Math.min(ring.w, ring.h) / 2 };
-}
-
 /**
- * A veil mask that is opaque everywhere except a rounded rectangle. Drawn as an SVG
- * path with the hole wound the other way (even-odd), so one rule covers the phone's
- * round ring and the desktop's pill.
+ * The ring's geometry around a target: padded, rounded, and clamped to the viewport
+ * so a target touching an edge still gets a ring that fits on screen.
  */
-function holeMask(vw, vh, ring) {
-  const { x, y, w, h, radius: r } = ring;
-  const hole = `M${x + r} ${y}H${x + w - r}A${r} ${r} 0 0 1 ${x + w} ${y + r}V${y + h - r}A${r} ${r} 0 0 1 ${x + w - r} ${y + h}H${x + r}A${r} ${r} 0 0 1 ${x} ${y + h - r}V${y + r}A${r} ${r} 0 0 1 ${x + r} ${y}Z`;
-  const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 ${vw} ${vh}'><path fill-rule='evenodd' d='M0 0H${vw}V${vh}H0Z ${hole}'/></svg>`;
-  return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+export function ringFor(rect) {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const left = Math.max(0, rect.left - RING_PAD_PX);
+  const top = Math.max(0, rect.top - RING_PAD_PX);
+  const right = Math.min(vw, rect.left + rect.width + RING_PAD_PX);
+  const bottom = Math.min(vh, rect.top + rect.height + RING_PAD_PX);
+  const w = Math.max(0, right - left);
+  const h = Math.max(0, bottom - top);
+  return { x: left, y: top, w, h, radius: Math.min(RING_RADIUS_PX, w / 2, h / 2) };
 }
 
 /**
@@ -89,43 +92,59 @@ export function useTargetRect(selectors, active) {
 }
 
 /**
- * The veil. With a ring it is cut away over the target and blurred elsewhere; without
+ * The veil. With a ring it is four panels around the hole — top, bottom, left, right —
+ * so nothing is drawn over the target and a tap there reaches the real control. Without
  * one it simply covers the screen, which is the fallback when nothing could be found to
- * point at. Either way it swallows taps, so the only live thing is the card on top.
+ * point at. Either way the panels swallow taps, so the app behind is not live.
  */
 export function SpotlightVeil({ ring }) {
-  const mask = ring ? holeMask(window.innerWidth, window.innerHeight, ring) : null;
+  if (!ring) {
+    return <div aria-hidden="true" data-testid="spotlight-veil" className={`inset-0 ${VEIL_PANEL_CLASS}`} />;
+  }
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const { x, y, w, h } = ring;
+  const panels = [
+    { left: 0, top: 0, width: vw, height: y },
+    { left: 0, top: y + h, width: vw, height: Math.max(0, vh - y - h) },
+    { left: 0, top: y, width: x, height: h },
+    { left: x + w, top: y, width: Math.max(0, vw - x - w), height: h },
+  ];
   return (
-    <div
-      aria-hidden="true"
-      className="absolute inset-0 backdrop-blur-md"
-      style={{
-        background: VEIL,
-        WebkitMaskImage: mask || undefined,
-        maskImage: mask || undefined,
-        WebkitMaskSize: mask ? "100% 100%" : undefined,
-        maskSize: mask ? "100% 100%" : undefined,
-      }}
-    />
+    <>
+      {panels.map((panel, i) => (
+        <div
+          key={i}
+          aria-hidden="true"
+          data-testid="spotlight-veil-panel"
+          className={VEIL_PANEL_CLASS}
+          style={panel}
+        />
+      ))}
+    </>
   );
 }
 
-/** The lit ring in the hole, with a pulse so it reads as "here". */
-export function SpotlightRing({ ring, label, testId, onClick }) {
+/**
+ * The lit ring in the hole: a rounded rectangle with an accent edge and a soft glow.
+ * Deliberately not interactive — the hole has to stay a hole, so the tap lands on the
+ * real control underneath.
+ */
+export function SpotlightRing({ ring, testId = "first-run-tour-ring" }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={label}
+    <div
+      aria-hidden="true"
       data-testid={testId}
-      className="absolute border-2 border-[var(--accent)] focus:outline-none focus-visible:ring-4 focus-visible:ring-[color-mix(in_srgb,var(--accent)_40%,transparent)]"
-      style={{ left: ring.x, top: ring.y, width: ring.w, height: ring.h, borderRadius: ring.radius }}
-    >
-      <span
-        aria-hidden="true"
-        className="absolute inset-0 border-2 border-[var(--accent)] motion-safe:animate-ping"
-        style={{ borderRadius: ring.radius }}
-      />
-    </button>
+      className="pointer-events-none absolute"
+      style={{
+        left: ring.x,
+        top: ring.y,
+        width: ring.w,
+        height: ring.h,
+        borderRadius: ring.radius,
+        border: "2px solid var(--accent)",
+        boxShadow: "0 0 24px 6px color-mix(in srgb, var(--accent) 40%, transparent)",
+      }}
+    />
   );
 }

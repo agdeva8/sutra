@@ -7,9 +7,21 @@
  *
  * What is stored is a step *index*, not a key — the tour is a sequence, and "pick up
  * where you left off" is the whole reason for storing anything at all.
+ *
+ * Each step carries its `kind`, which is how the tour knows what to do with it:
+ *   - `card`   — a centred card with nothing on screen to point at (the sign-in offer).
+ *   - `nav`    — an arrow at one navigation button, waiting for the user's own tap.
+ *                `panel` (one screen) or `panels` (any of several) says which arrival
+ *                counts as "done".
+ *   - `screen` — an arrow at one control on the current screen, with Next.
+ *   - `dialog` — a centred card that shows the Scratch examples before the composer.
  */
+
 export const FIRST_RUN_TOUR_KEY = "sutra.firstRunTour";
 const KEY = FIRST_RUN_TOUR_KEY;
+
+/** Every screen the phone's "More" menu can land on. Any of them completes its step. */
+export const MORE_PANELS = ["todos", "memories", "sources", "motivation", "plan", "home"];
 
 /**
  * The steps, in order. `guestsOnly` is the one step a signed-in user never sees: the
@@ -17,13 +29,17 @@ const KEY = FIRST_RUN_TOUR_KEY;
  * person is offered is a way to keep what they are about to make.
  */
 export const TOUR_STEPS = [
-  { key: "signin", guestsOnly: true },
-  { key: "goal" },
-  { key: "timeline" },
-  { key: "today" },
-  { key: "scratch" },
-  { key: "scratch_composer" },
-  { key: "todos" },
+  { key: "signin", kind: "card", guestsOnly: true },
+  { key: "goal_nav", kind: "nav", panel: "state" },
+  { key: "goal_screen", kind: "screen" },
+  { key: "timeline_nav", kind: "nav", panel: "timeline" },
+  { key: "timeline_screen", kind: "screen" },
+  { key: "today_nav", kind: "nav", panel: "today" },
+  { key: "today_screen", kind: "screen" },
+  { key: "scratch_nav", kind: "nav", panel: "scratch" },
+  { key: "scratch_dialog", kind: "dialog" },
+  { key: "scratch_screen", kind: "screen" },
+  { key: "more_nav", kind: "nav", panels: MORE_PANELS },
 ];
 
 /** The last step. Finishing it, or skipping anywhere, ends the tour. */
@@ -82,6 +98,27 @@ export function advanceTour(from) {
     return;
   }
   write({ step: from + 1, done: false });
+}
+
+/** Jump to a step by index — a nav step's Skip uses it to pass over the visit. */
+export function goToStep(index) {
+  if (index > LAST_STEP) {
+    endTour();
+    return;
+  }
+  write({ step: Math.max(0, Math.floor(index)), done: false });
+}
+
+/**
+ * The next navigation step after `from`, or -1 when there is none. A nav step's Skip
+ * jumps here: it passes over the visit (and the screen step that follows it) without
+ * the user having to go anywhere.
+ */
+export function nextNavStep(from) {
+  for (let i = from + 1; i < TOUR_STEPS.length; i += 1) {
+    if (TOUR_STEPS[i].kind === "nav") return i;
+  }
+  return -1;
 }
 
 /**
